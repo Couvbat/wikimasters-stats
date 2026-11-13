@@ -6,6 +6,8 @@ Le script ne fait que lire. Il n'ouvre pas de paquet, ne met rien aux enchères,
 
 ## Installer
 
+Testé avec Tampermonkey sur Chrome et sur Zen.
+
 ### Sur Chrome
 
 1. Installe **Tampermonkey** depuis le Chrome Web Store.
@@ -16,10 +18,14 @@ Le script ne fait que lire. Il n'ouvre pas de paquet, ne met rien aux enchères,
 
 ### Sur Zen ou Firefox
 
-1. Installe **Tampermonkey** ou **Violentmonkey** depuis addons.mozilla.org.
-2. Clique sur l'icône de l'extension, puis « Créer un nouveau script » (Violentmonkey : le bouton « + », puis « Nouveau script »).
+1. Installe **Tampermonkey** depuis addons.mozilla.org.
+2. Clique sur l'icône Tampermonkey, puis « Créer un nouveau script ».
 3. Efface tout ce qui est dans l'éditeur, colle le contenu de `wikimasters-stats.user.js`, puis enregistre avec Ctrl+S.
 4. Recharge wiki-masters.com (F5). Le bouton « 📊 Stats » apparaît en bas à droite.
+
+Il n'y a rien à autoriser sur Zen ou Firefox : l'étape « Autoriser les scripts utilisateur » ne concerne que Chrome.
+
+Violentmonkey devrait aussi convenir (bouton « + », puis « Nouveau script »), mais le script n'a pas été testé avec.
 
 ### Si le bouton n'apparaît pas
 
