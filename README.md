@@ -35,7 +35,7 @@ Violentmonkey devrait aussi convenir (bouton « + », puis « Nouveau script »)
 
 ## Utiliser
 
-Le panneau a huit onglets. Dans tous les tableaux, un clic sur un en-tête de colonne trie selon cette colonne, et un second clic inverse le sens.
+Le panneau a neuf onglets. Dans tous les tableaux, un clic sur un en-tête de colonne trie selon cette colonne, et un second clic inverse le sens.
 
 ### Collection
 
@@ -52,6 +52,12 @@ La liste des cartes qui méritent une place aux enchères : doublons d'abord, pu
 ### Mes ventes
 
 Le bilan de tes enchères : ventes réussies et invendus, revenus, achats, solde, détail par rareté, et comparaison entre mise de départ et prix obtenu. Le site ne donne que tes enchères les plus récentes ; le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s'allonge avec le temps.
+
+### Échanges
+
+Le bilan de tes échanges avec d'autres joueurs : échanges conclus, refusés et contre-proposés, cartes données et reçues, et bilan en valeur. Deux tableaux détaillent avec qui tu échanges et ce que tu donnes et reçois par rareté. Dans la liste, un clic sur un échange le déplie pour montrer les cartes de chaque côté.
+
+Les échanges sont lus sur la page Échanges du site, à chaque visite ou avec le bouton « Actualiser mes échanges », et gardés en mémoire. Les valeurs sont celles d'aujourd'hui, pas celles du jour de l'échange, et une carte sans vente connue compte pour 1.
 
 ### Souhaits
 

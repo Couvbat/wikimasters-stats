@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.8.2
+// @version      1.9.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -31,7 +31,7 @@
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
       auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
-      obs: {}, obsSales: {}, obsRar: {},
+      obs: {}, obsSales: {}, obsRar: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: false }
     };
   }
@@ -51,7 +51,7 @@
         base.market = Object.assign(defaults().market, d.market || {});
         base.sell = Object.assign(defaults().sell, d.sell || {});
         if (!Array.isArray(base.pulls)) base.pulls = [];
-        for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar']) {
+        for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'trades']) {
           if (!isObj(base[k])) base[k] = {};
         }
       }
@@ -273,6 +273,40 @@
     }).filter(Boolean);
   }
 
+  // Échanges entre joueurs, lus sur la page Échanges du site et gardés en mémoire.
+  // Chaque entrée : s = statut, t = date, w = l'autre joueur, ini = 1 si c'est toi qui as proposé,
+  // g = cartes que tu donnes, r = cartes que tu reçois, wg et wr = wikibidous donnés et reçus.
+  const cleanCards = l => (Array.isArray(l) ? l : []).filter(c => Array.isArray(c) && okKey(c[0])).slice(0, 60)
+    .map(c => [c[0], str(c[1] || '?', 200), rarOf(c[2])]);
+  function tidyTrades() {
+    const ids = Object.keys(db.trades);
+    if (ids.length > 2000) {
+      ids.sort((x, y) => (db.trades[x].t < db.trades[y].t ? -1 : 1)).slice(0, ids.length - 2000).forEach(id => delete db.trades[id]);
+    }
+  }
+  function ingestTrades(j) {
+    const list = j && Array.isArray(j.trades) ? j.trades : null;
+    // Sans savoir qui tu es, impossible de dire quelle carte tu donnes et laquelle tu reçois.
+    if (!list || !db.userId) return;
+    for (const t of list) {
+      if (!t || !okKey(t.id) || !Array.isArray(t.items)) continue;
+      const ini = t.initiator_id === db.userId;
+      if (!ini && t.recipient_id !== db.userId) continue;
+      const other = (ini ? t.recipient : t.initiator) || {};
+      const side = mine => cleanCards(t.items.filter(i => i && (i.offered_by === db.userId) === mine)
+        .map(i => [i.card_id, i.card && i.card.wikipedia_title, i.snapshot_rarity || (i.card && i.card.rarity)]));
+      db.trades[t.id] = {
+        s: str(t.status, 20), t: str(t.updated_at || t.created_at, 40), w: str(other.username || '?', 40), ini: ini ? 1 : 0,
+        g: side(true), r: side(false),
+        wg: num(ini ? t.initiator_wikibidous : t.recipient_wikibidous), wr: num(ini ? t.recipient_wikibidous : t.initiator_wikibidous)
+      };
+    }
+    tidyTrades();
+    db.tradesAt = Date.now();
+    saveDb();
+    refresh();
+  }
+
   // Alertes du site : « une carte de ta liste de souhaits vient d'être mise en vente ».
   // Le site les charge lui-même sur chaque page ; on retient l'enchère et la carte concernées.
   // Chaque entrée : [carte, titre, date, état] ; état : 0 = pas vérifiée, 1 = vue en vente, 2 = terminée
@@ -345,6 +379,8 @@
           p.then(r => r.ok && r.clone().json().then(j => ingestCollection(j.collection, false))).catch(() => {});
         } else if (url.pathname === '/api/marketplace') {
           p.then(r => r.ok && r.clone().json().then(ingestMarket)).catch(() => {});
+        } else if (url.pathname === '/api/trades') {
+          p.then(r => r.ok && r.clone().json().then(ingestTrades)).catch(() => {});
         } else if (url.pathname === '/api/notifications') {
           p.then(r => r.ok && r.clone().json().then(ingestAlerts)).catch(() => {});
         } else if (url.pathname === '/api/cards' && url.searchParams.get('wishlist') === '1') {
@@ -561,6 +597,20 @@
         : seen + ' enchères lues. Leur prix sera enregistré quand elles seront finies, d’ici quelques minutes.', where);
     } catch (e) {
       endJob('Lecture du marché impossible (' + e.message + ').', where);
+    }
+  }
+
+  // Relit tes échanges, comme en ouvrant la page Échanges du site.
+  async function loadTrades() {
+    if (job.running) return;
+    if (!db.userId) return setStatus('Recharge d’abord la page (F5), pour que le script sache quel compte est le tien.', 'tradeStatus');
+    startJob('Lecture des échanges…', 'tradeStatus');
+    try {
+      const j = await getJSON('/api/trades');
+      ingestTrades(j);
+      endJob(plural((j.trades || []).length, 'échange lu', 'échanges lus') + '.', 'tradeStatus');
+    } catch (e) {
+      endJob('Lecture impossible (' + e.message + ').', 'tradeStatus');
     }
   }
 
@@ -784,6 +834,7 @@
     const data = {};
     for (const k of ['cards', 'collectionAt', 'prices', 'pulls', 'auctions', 'history', 'wish', 'wishAt', 'friends', 'me', 'sell']) data[k] = db[k];
     data.seen = observedExport();
+    data.trades = db.trades;
     download('wikimasters-sauvegarde-' + dayKey(new Date()) + '.json',
       JSON.stringify({ wmstatsBackup: 1, at: Date.now(), data }), 'application/json');
     setStatus('Sauvegarde créée. Importe ce fichier dans ton autre navigateur.', 'dataStatus');
@@ -860,6 +911,13 @@
     }
     if (!db.me && typeof b.me === 'string') db.me = b.me.slice(0, 40);
     mergeObserved(b.seen);
+    if (isObj(b.trades)) for (const id of Object.keys(b.trades).slice(0, 2000)) {
+      const t = b.trades[id];
+      if (!okKey(id) || db.trades[id] || !isObj(t)) continue;
+      db.trades[id] = { s: str(t.s, 20), t: str(t.t, 40), w: str(t.w || '?', 40), ini: t.ini ? 1 : 0,
+        g: cleanCards(t.g), r: cleanCards(t.r), wg: num(t.wg), wr: num(t.wr) };
+    }
+    tidyTrades();
     saveDb();
     return n;
   }
@@ -895,12 +953,12 @@
   }
 
   // ---------- interface ----------
-  const TABS = [['col', 'Collection'], ['sell', 'À vendre'], ['sales', 'Mes ventes'], ['wish', 'Souhaits'],
+  const TABS = [['col', 'Collection'], ['sell', 'À vendre'], ['sales', 'Mes ventes'], ['trades', 'Échanges'], ['wish', 'Souhaits'],
     ['pulls', 'Boosters'], ['trend', 'Évolution'], ['friends', 'Amis'], ['data', 'Sauvegarde']];
   const ui = {
     open: false, tab: 'col', chosen: new Set(['L', 'UR', 'SR']),
     sortKey: 'total', sortDir: -1, text: '', rarity: '', friend: '', frRarity: '',
-    wishRarity: '', wishAvail: false, wishOpen: new Set(), wishAll: false, metric: 0, sorts: {}, el: {}
+    wishRarity: '', wishAvail: false, wishOpen: new Set(), wishAll: false, tradeOpen: new Set(), metric: 0, sorts: {}, el: {}
   };
   const SVG = 'http://www.w3.org/2000/svg';
   function s(tag, attrs, ...kids) {
@@ -925,7 +983,7 @@
       else if (k in e) e[k] = props[k];
       else e.setAttribute(k, props[k]);
     }
-    for (const k of kids.flat(2)) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
+    for (const k of kids.flat(5)) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
     return e;
   }
 
@@ -1064,7 +1122,7 @@
     const e = ui.el;
     if (!e.load) return;
     const pro = proState();
-    e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = job.running;
+    e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
     const pending = alertsToCheck().length;
     e.wishCheck.disabled = job.running || !pending;
     e.wishCheck.textContent = 'Vérifier les annonces signalées (' + Math.min(pending, ALERT_BATCH) + ')';
@@ -1188,6 +1246,17 @@
         'Le site ne donne que tes enchères les plus récentes. Le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s’allonge avec le temps. ',
         'La comparaison à la valeur médiane est indicative : cette médiane inclut ta propre vente.'));
 
+    e.tradeStatus = h('div', { class: 'status' });
+    e.tradeTiles = h('div', { class: 'tiles' });
+    e.tradeBody = h('div', { class: 'scroll' });
+    e.tradeLoad = h('button', { class: 'b pri', onclick: loadTrades }, 'Actualiser mes échanges');
+    e.view_trades = h('div', null,
+      h('div', { class: 'bar' }, e.tradeLoad), e.tradeStatus, e.tradeTiles, e.tradeBody,
+      h('div', { class: 'note' },
+        'Les échanges sont lus sur la page Échanges du site, à chaque visite ou avec le bouton, et gardés en mémoire. ',
+        'Les valeurs sont celles d’aujourd’hui, pas celles du jour de l’échange, et une carte sans vente connue compte pour 1. ',
+        'Clique sur un échange pour voir les cartes.'));
+
     e.view_wish = h('div', null,
       h('div', { class: 'bar' }, e.wishLoad, e.wishCheck, e.wishSearch, e.stop2),
       h('div', { class: 'bar' },
@@ -1282,7 +1351,7 @@
       ? 'Collection vue le ' + new Date(db.collectionAt).toLocaleString('fr-FR')
       : 'Collection pas encore chargée';
     syncButtons();
-    ({ col: renderCol, sell: renderSell, sales: renderSales, wish: renderWish, pulls: renderPulls,
+    ({ col: renderCol, sell: renderSell, sales: renderSales, trades: renderTrades, wish: renderWish, pulls: renderPulls,
       trend: renderTrend, friends: renderFriends, data: () => {} })[ui.tab]();
   }
   const simpleTable = (heads, rows, leftCols) => h('table', null,
@@ -1391,6 +1460,92 @@
         withPrices ? { t: 'Valeur médiane', get: medOf, cell: a => (medOf(a) == null ? '—' : fmt(medOf(a)) + ' ₩') } : null
       ], A, renderSales, { limit: 200 }));
     e.salesBody.replaceChildren(...kids.flat(2));
+  }
+
+  // ----- onglet Échanges -----
+  const TRADE_STATUS = { accepted: 'Accepté', declined: 'Refusé', countered: 'Contre-proposé', pending: 'En attente',
+    cancelled: 'Annulé', canceled: 'Annulé', expired: 'Expiré' };
+  function renderTrades() {
+    const e = ui.el;
+    const cardsValue = l => l.reduce((a, c) => a + valueOf(c[0]), 0);
+    const T = Object.entries(db.trades)
+      .map(([id, t]) => ({ id, ...t, vg: cardsValue(t.g) + t.wg, vr: cardsValue(t.r) + t.wr }))
+      .sort(byDateDesc);
+    if (!T.length) {
+      e.tradeTiles.replaceChildren();
+      e.tradeBody.replaceChildren(h('div', { class: 'empty' },
+        'Aucun échange en mémoire. Clique sur « Actualiser mes échanges », ou ouvre la page Échanges du site.'));
+      return;
+    }
+    const withPrices = showPrices();
+    const done = T.filter(t => t.s === 'accepted');
+    const count = s => T.filter(t => t.s === s).length;
+    const sum = (l, f) => l.reduce((a, t) => a + f(t), 0);
+    const given = sum(done, t => t.g.length), got = sum(done, t => t.r.length);
+    const vg = sum(done, t => t.vg), vr = sum(done, t => t.vr);
+    const signed = v => (v > 0 ? '+' : '') + fmt(v) + ' ₩';
+    e.tradeTiles.replaceChildren(...[
+      tile('Échanges conclus', fmt(done.length), 'sur ' + plural(T.length, 'proposition', 'propositions') + ' · ' +
+        plural(count('declined'), 'refusée', 'refusées') + ', ' + plural(count('countered'), 'contre-proposée', 'contre-proposées')),
+      tile('Cartes données', fmt(given), sum(done, t => t.wg) ? fmt(sum(done, t => t.wg)) + ' ₩ donnés en plus' : null),
+      tile('Cartes reçues', fmt(got), sum(done, t => t.wr) ? fmt(sum(done, t => t.wr)) + ' ₩ reçus en plus' : null),
+      withPrices ? tile('Bilan en valeur', signed(vr - vg), 'reçu ' + fmt(vr) + ' ₩, donné ' + fmt(vg) + ' ₩') : null
+    ].filter(Boolean));
+    const kids = [];
+    // Par joueur
+    const byWho = {};
+    for (const t of T) {
+      const w = byWho[t.w] = byWho[t.w] || { w: t.w, ok: 0, no: 0, g: 0, r: 0, bal: 0 };
+      if (t.s === 'accepted') { w.ok++; w.g += t.g.length; w.r += t.r.length; w.bal += t.vr - t.vg; }
+      else if (t.s === 'declined') w.no++;
+    }
+    kids.push(h('h2', null, 'Avec qui tu échanges'), sortTable('tradeWho', [
+      { t: 'Joueur', left: true, asc: true, get: x => x.w.toLowerCase(), cell: x => x.w },
+      { t: 'Conclus', get: x => x.ok, cell: x => x.ok },
+      { t: 'Refusés', get: x => x.no, cell: x => x.no },
+      { t: 'Cartes données', get: x => x.g, cell: x => x.g },
+      { t: 'Cartes reçues', get: x => x.r, cell: x => x.r },
+      withPrices ? { t: 'Bilan en valeur', get: x => x.bal, cell: x => signed(x.bal) } : null
+    ], Object.values(byWho).sort((a, b) => b.ok - a.ok), renderTrades));
+    // Par rareté, sur les échanges conclus
+    const rc = {};
+    for (const t of done) {
+      for (const c of t.g) (rc[c[2]] = rc[c[2]] || { r: c[2], g: 0, got: 0 }).g++;
+      for (const c of t.r) (rc[c[2]] = rc[c[2]] || { r: c[2], g: 0, got: 0 }).got++;
+    }
+    const rarRows = RARITIES.concat('?').filter(r => rc[r]).map(r => rc[r]);
+    if (rarRows.length) {
+      kids.push(h('h2', null, 'Ce que tu donnes et reçois'), sortTable('tradeRar', [
+        { t: 'Rareté', asc: true, get: x => rarOrder(x.r), cell: x => rarBadge(x.r) },
+        { t: 'Données', get: x => x.g, cell: x => x.g },
+        { t: 'Reçues', get: x => x.got, cell: x => x.got },
+        { t: 'Écart', get: x => x.got - x.g, cell: x => (x.got - x.g > 0 ? '+' : '') + (x.got - x.g) }
+      ], rarRows, renderTrades));
+    }
+    // Liste des échanges, dépliable
+    const cardList = (label, l, wb) => h('tr', null,
+      h('td', null, label),
+      h('td', null, l.length || wb
+        ? [l.map((c, i) => [i ? ' · ' : '', rarBadge(c[2]), ' ', c[1], withPrices ? ' (' + fmt(valueOf(c[0])) + ' ₩)' : '']), wb ? (l.length ? ' · ' : '') + fmt(wb) + ' ₩' : '']
+        : 'rien'));
+    kids.push(h('h2', null, 'Tes échanges (' + fmt(T.length) + ')'), sortTable('trades', [
+      { t: 'Date', get: t => t.t, cell: t => [h('span', { class: 'caret' }, ui.tradeOpen.has(t.id) ? '▾' : '▸'), fmtDate(t.t)] },
+      { t: 'Avec', left: true, asc: true, get: t => t.w.toLowerCase(), cell: t => t.w },
+      { t: 'Proposé par', asc: true, get: t => t.ini, cell: t => (t.ini ? 'toi' : t.w) },
+      { t: 'Statut', asc: true, get: t => TRADE_STATUS[t.s] || t.s, cell: t => TRADE_STATUS[t.s] || t.s },
+      { t: 'Données', get: t => t.g.length, cell: t => t.g.length + (t.wg ? ' + ' + fmt(t.wg) + ' ₩' : '') },
+      { t: 'Reçues', get: t => t.r.length, cell: t => t.r.length + (t.wr ? ' + ' + fmt(t.wr) + ' ₩' : '') },
+      withPrices ? { t: 'Valeur donnée', get: t => t.vg, cell: t => fmt(t.vg) + ' ₩' } : null,
+      withPrices ? { t: 'Valeur reçue', get: t => t.vr, cell: t => fmt(t.vr) + ' ₩' } : null,
+      withPrices ? { t: 'Écart', get: t => t.vr - t.vg, cell: t => h('b', null, signed(t.vr - t.vg)) } : null
+    ], T, renderTrades, {
+      limit: 300,
+      rowClass: t => (t.s === 'accepted' ? 'top' : ''),
+      onRow: t => { ui.tradeOpen.has(t.id) ? ui.tradeOpen.delete(t.id) : ui.tradeOpen.add(t.id); renderTrades(); },
+      after: (t, n) => (ui.tradeOpen.has(t.id) ? h('tr', { class: 'det' }, h('td', { colspan: n },
+        h('table', null, h('tbody', null, cardList('Tu donnes', t.g, t.wg), cardList('Tu reçois', t.r, t.wr))))) : null)
+    }));
+    e.tradeBody.replaceChildren(...kids);
   }
 
   // ----- onglet Souhaits -----
