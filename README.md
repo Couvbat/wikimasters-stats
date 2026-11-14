@@ -51,7 +51,7 @@ L'essentiel en une page, à l'ouverture du panneau. Un bloc « À vérifier » a
 
 ### À vendre
 
-La liste des cartes qui méritent une place aux enchères, les plus chères d'abord. Tu règles la valeur minimale, et tu choisis d'inclure ou non tes favoris et les prix douteux. La case « Doublons d'abord » fait passer devant les cartes que tu as en plusieurs exemplaires. Les cartes déjà en vente sont retirées, et les lignes surlignées tiennent dans tes places de vente libres.
+La liste des cartes qui méritent une place aux enchères, les plus chères d'abord. Tu règles la valeur minimale, et tu choisis d'inclure ou non tes favoris et les prix douteux (inclus par défaut : décoche la case pour ne garder que les prix fiables ou moyens). La case « Doublons d'abord » fait passer devant les cartes que tu as en plusieurs exemplaires. Les cartes déjà en vente sont retirées, et les lignes surlignées tiennent dans tes places de vente libres.
 
 La colonne « Concurrence » montre l'annonce la moins chère d'un autre joueur sur la même carte (bouton « Chercher la concurrence »). Le prix conseillé reste la médiane des ventes : une mise de départ ou une offre en cours n'est pas un prix final, donc le script ne s'aligne jamais dessus. Une étiquette « concurrent à X ₩ » signale seulement un concurrent qui a déjà reçu une offre sous la médiane. Tes propres annonces ne comptent pas comme concurrence.
 

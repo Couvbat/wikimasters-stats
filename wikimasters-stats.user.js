@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.14.3
+// @version      1.14.4
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -36,7 +36,7 @@
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
       auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, trades: {}, tradesAt: 0,
-      friends: {}, me: '', sell: { min: 10, favs: false, doubt: false }
+      friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }
     };
   }
   const MAX_AUCTIONS = 3000; // enchères personnelles gardées en mémoire
@@ -54,6 +54,8 @@
         Object.assign(base, d);
         base.market = Object.assign(defaults().market, d.market || {});
         base.sell = Object.assign(defaults().sell, d.sell || {});
+        // Les prix douteux sont maintenant inclus par défaut : on coche la case une fois pour ceux qui avaient l'ancien réglage.
+        if (base.sell.v !== 2) { base.sell.doubt = true; base.sell.v = 2; }
         if (!Array.isArray(base.pulls)) base.pulls = [];
         for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'trades']) {
           if (!isObj(base[k])) base[k] = {};
