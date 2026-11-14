@@ -42,6 +42,8 @@ Le panneau a neuf onglets. Dans tous les tableaux, un clic sur un en-tête de co
 - **Charger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
 - **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
 - **Relever les fins d'enchères** : lit les 200 enchères sur le point de se terminer, pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
+- **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite 50 cartes par passage, et saute celles cherchées depuis moins d'une heure.
+- **Rafraîchir les annonces** : relit le prix et la fin des annonces déjà affichées dans cette colonne, sans attendre.
 - **Exporter en CSV** : le tableau tel qu'il est filtré et trié, à ouvrir dans Excel ou LibreOffice.
 - Clique sur un en-tête de colonne pour trier.
 

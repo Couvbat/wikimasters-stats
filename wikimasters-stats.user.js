@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.10.0
+// @version      1.11.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -694,8 +694,9 @@
   const SEARCH_BATCH = 50;        // cartes cherchées par passage
   const SEARCH_FRESH = 60 * 6e4;  // une carte cherchée depuis moins d'une heure n'est pas recherchée à nouveau
   // Cherche une liste de cartes [identifiant, titre] sur le marché, une recherche par seconde.
-  async function marketSearch(todo, label, noneText) {
-    startJob(label + ' : 0 / ' + todo.length, 'wishStatus');
+  async function marketSearch(todo, label, noneText, where) {
+    where = where || 'wishStatus';
+    startJob(label + ' : 0 / ' + todo.length, where);
     let i = 0, live = 0;
     try {
       for (const [cardId, title] of todo) {
@@ -709,16 +710,54 @@
         for (const id in db.alerts) if (db.alerts[id][0] === cardId) db.alerts[id][3] = found ? 1 : 2;
         db.wishSeen[cardId] = Date.now();
         i++;
-        setStatus(label + ' : ' + i + ' / ' + todo.length + ' · ' + plural(live, 'carte en vente', 'cartes en vente'), 'wishStatus');
+        setStatus(label + ' : ' + i + ' / ' + todo.length + ' · ' + plural(live, 'carte en vente', 'cartes en vente'), where);
         if (i < todo.length) await sleep(PRICE_DELAY + Math.random() * 500);
       }
       saveDb();
       endJob((job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '. ' : '') + plural(live, 'carte en vente', 'cartes en vente') +
-        ' sur ' + i + ', ' + (i - live) + ' ' + noneText + '.', 'wishStatus');
+        ' sur ' + i + ', ' + (i - live) + ' ' + noneText + '.', where);
     } catch (e) {
       saveDb();
-      endJob('Recherche interrompue (' + e.message + ') après ' + i + ' / ' + todo.length + '. Réessaie plus tard.', 'wishStatus');
+      endJob('Recherche interrompue (' + e.message + ') après ' + i + ' / ' + todo.length + '. Réessaie plus tard.', where);
     }
+  }
+  // Même chose pour ta collection : voir qui vend en ce moment les cartes que tu possèdes, et à quel prix.
+  function colCards() {
+    const seen = new Set(), out = [];
+    for (const c of Object.values(db.cards)) {
+      if (seen.has(c.cardId)) continue;
+      seen.add(c.cardId);
+      out.push(c);
+    }
+    return out;
+  }
+  // Les cartes de ta collection qui ont déjà une annonce connue.
+  function colLive() {
+    return colCards().filter(c => askOf(c.cardId)).map(c => [c.cardId, c.title]);
+  }
+  // Les cartes des raretés cochées pas encore cherchées, ou cherchées il y a le plus longtemps.
+  function colToSearch() {
+    const now = Date.now();
+    return colCards()
+      .filter(c => ui.chosen.has(c.rarity) && !(now - (db.wishSeen[c.cardId] || 0) < SEARCH_FRESH))
+      .sort((a, b) => (db.wishSeen[a.cardId] || 0) - (db.wishSeen[b.cardId] || 0) || rarOrder(a.rarity) - rarOrder(b.rarity))
+      .map(c => [c.cardId, c.title]);
+  }
+  function refreshCol() {
+    if (job.running) return;
+    const todo = colLive().slice(0, SEARCH_BATCH);
+    if (!todo.length) return setStatus('Aucune annonce connue à rafraîchir. Lance d’abord « Chercher mes cartes sur le marché ».');
+    return marketSearch(todo, 'Rafraîchissement', 'dont l’annonce est terminée', 'status');
+  }
+  function searchCol() {
+    if (job.running) return;
+    const todo = colToSearch().slice(0, SEARCH_BATCH);
+    if (!todo.length) {
+      return setStatus(Object.keys(db.cards).length
+        ? 'Toutes les cartes des raretés cochées ont été cherchées il y a moins d’une heure.'
+        : 'Charge d’abord ta collection.');
+    }
+    return marketSearch(todo, 'Recherche', 'sans annonce', 'status');
   }
   function checkAlerts() {
     if (job.running) return;
@@ -1200,6 +1239,11 @@
     e.wishCheck.disabled = job.running || !pending;
     e.wishCheck.textContent = 'Vérifier les annonces signalées (' + Math.min(pending, ALERT_BATCH) + ')';
     const live = wishLive().length;
+    const cLive = colLive().length, cSearch = colToSearch().length;
+    e.colRefresh.disabled = job.running || !cLive;
+    e.colRefresh.textContent = 'Rafraîchir les annonces (' + Math.min(cLive, SEARCH_BATCH) + (cLive > SEARCH_BATCH ? ' sur ' + cLive : '') + ')';
+    e.colSearch.disabled = job.running || !cSearch;
+    e.colSearch.textContent = 'Chercher mes cartes sur le marché (' + Math.min(cSearch, SEARCH_BATCH) + (cSearch > SEARCH_BATCH ? ' sur ' + cSearch : '') + ')';
     e.wishRefresh.disabled = job.running || !live;
     e.wishRefresh.textContent = 'Rafraîchir les annonces (' + Math.min(live, SEARCH_BATCH) + (live > SEARCH_BATCH ? ' sur ' + live : '') + ')';
     e.stop3.disabled = !job.running;
@@ -1234,6 +1278,8 @@
     e.mine2 = h('button', { class: 'b', onclick: () => scanMarket(1, 'salesStatus') }, 'Actualiser depuis la page Marché');
     e.wishLoad = h('button', { class: 'b pri', onclick: loadWish }, 'Charger ma liste de souhaits');
     e.wishCheck = h('button', { class: 'b', onclick: checkAlerts }, 'Vérifier les annonces signalées');
+    e.colRefresh = h('button', { class: 'b', title: 'Relit le prix et la fin des annonces de la colonne « En vente à »', onclick: refreshCol }, 'Rafraîchir les annonces');
+    e.colSearch = h('button', { class: 'b', title: 'Cherche sur le marché les cartes des raretés cochées, 50 par passage', onclick: searchCol }, 'Chercher mes cartes sur le marché');
     e.wishSearch = h('button', { class: 'b', onclick: searchWish }, 'Chercher mes souhaits sur le marché');
     e.wishRefresh = h('button', { class: 'b', title: 'Relit le prix et la fin des annonces déjà listées', onclick: refreshWish }, 'Rafraîchir les annonces');
     e.wishFold = h('button', { class: 'b', onclick: () => { ui.wishAll = !ui.wishAll; ui.wishOpen.clear(); renderWish(); } }, 'Tout déplier');
@@ -1259,7 +1305,8 @@
 
     e.view_col = h('div', null,
       e.tiles, e.rar, e.market,
-      h('div', { class: 'bar' }, e.load, e.fill, e.scan, e.stop, h('span', { class: 'sub' }, 'Prix pour :'), checks),
+      h('div', { class: 'bar' }, e.load, e.fill, e.scan, e.stop, h('span', { class: 'sub' }, 'Raretés :'), checks),
+      h('div', { class: 'bar' }, h('span', { class: 'sub' }, 'Annonces sur mes cartes :'), e.colRefresh, e.colSearch),
       h('div', { class: 'bar' }, h('label', { class: 'chk' },
         h('input', { type: 'checkbox', checked: db.autoPull !== false,
           onchange: ev => { db.autoPull = ev.target.checked; saveDb(); } }),
