@@ -41,8 +41,8 @@ Le panneau a neuf onglets. Dans tous les tableaux, un clic sur un en-tête de co
 
 - **Charger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
 - **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
-- **Relever les fins d'enchères** : lit les 200 enchères sur le point de se terminer, pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
-- **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite 50 cartes par passage, et saute celles cherchées depuis moins d'une heure.
+- **Relever les fins d'enchères** : lit les 500 enchères sur le point de se terminer, pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
+- **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite toutes les cartes d'un coup, une par seconde, et saute celles cherchées depuis moins d'une heure.
 - **Rafraîchir les annonces** : relit le prix et la fin des annonces déjà affichées dans cette colonne, sans attendre.
 - **Exporter en CSV** : le tableau tel qu'il est filtré et trié, à ouvrir dans Excel ou LibreOffice.
 - Clique sur un en-tête de colonne pour trier.
@@ -69,11 +69,11 @@ Une carte que tu as donnée n'est plus dans ta collection, donc l'onglet Collect
 
 Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». Clique sur « Charger ma liste de souhaits » pour la lire.
 
-Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en entier. Il retient à la place les alertes de mise en vente que le site t'envoie pour ces cartes. « Vérifier les annonces signalées » cherche chacune d'elles sur le marché par son titre, et affiche le prix le plus bas, la fin de l'enchère et si une offre a déjà été faite. C'est une recherche par seconde, 40 au plus par passage, avec un bouton Stop. Les enchères terminées sont retirées.
+Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en entier. Il retient à la place les alertes de mise en vente que le site t'envoie pour ces cartes. « Vérifier les annonces signalées » cherche chacune d'elles sur le marché par son titre, et affiche le prix le plus bas, la fin de l'enchère et si une offre a déjà été faite. C'est une recherche par seconde, avec un bouton Stop. Les enchères terminées sont retirées.
 
 « Rafraîchir les annonces » relit le prix et la fin des annonces déjà listées, sans attendre : utile avant d'enchérir, puisque les offres montent.
 
-« Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, qu'il y ait eu une alerte ou non. Elle traite 50 cartes par passage, en commençant par celles jamais cherchées : choisis une rareté pour cibler, et relance pour continuer. Une carte cherchée depuis moins d'une heure est sautée.
+« Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, qu'il y ait eu une alerte ou non. Elle traite toute la liste d'un coup, en commençant par celles jamais cherchées. Choisis une rareté pour cibler. Une carte cherchée depuis moins d'une heure est sautée.
 
 Chaque carte a une ligne. Quand elle est mise en vente plusieurs fois, la ligne porte une étiquette « 3 annonces » et décrit une seule de ces annonces, prix et fin d'enchère ensemble. Laquelle dépend du tri : la moins chère par défaut (« dès 30 ₩ »), la plus chère si tu tries par prix décroissant (« jusqu'à 120 ₩ »), celle qui finit le plus tôt ou le plus tard si tu tries par fin d'enchère. Le lien du prix mène à cette annonce-là. Un clic sur la ligne la déplie pour montrer chaque annonce avec son prix, sa fin et son lien ; un second clic la replie. Le bouton « Tout déplier » ouvre toutes les cartes d'un coup. Dans l'onglet Collection, la colonne « En vente à » affiche la moins chère suivie du nombre d'annonces entre parenthèses.
 
@@ -149,3 +149,11 @@ Les autres cartes sont comptées à 1.
 ## À savoir
 
 Les règles de WikiMasters interdisent les scripts qui jouent ou interagissent à ta place. Celui-ci se limite à lire des données que le site t'affiche déjà, mais c'est toi qui choisis de l'utiliser sur ton compte.
+
+## Rythme des requêtes
+
+Les traitements longs (prix, recherches sur le marché, annonces) n'ont plus de plafond : un clic traite toute la liste, à raison d'une requête par seconde, avec le temps restant estimé et un bouton Stop.
+
+Si le site demande de ralentir, le script fait une pause (le délai indiqué par le site, sinon 15 s, puis de plus en plus long), ralentit la suite, et reprend tout seul au même endroit. Il n'essaie pas de contourner cette limite : c'est la protection du site, et ses règles interdisent les outils qui jouent à ta place.
+
+Compte une quinzaine de minutes pour chercher toute une collection de 800 cartes.

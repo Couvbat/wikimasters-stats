@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.12.0
+// @version      1.13.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -21,7 +21,7 @@
   const PRICE_DELAY = 1000; // ms entre deux appels "ventes"
   const DISCARD = 1;        // wikibidous gagnés en défaussant une carte
   const MAX_PULLS = 1500;   // boosters gardés en mémoire
-  const MARKET_PAGES = 4;   // pages d'enchères lues par « Relever le marché »
+  const MARKET_PAGES = 10;  // pages d'enchères lues par « Relever les fins d'enchères »
   const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
   const nativeFetch = window.fetch.bind(window);
 
@@ -541,13 +541,48 @@
 
   // ---------- chargements à la demande ----------
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const job = { running: false, stop: false };
-  async function getJSON(path) {
-    const r = await nativeFetch(path, { credentials: 'same-origin', headers: { accept: 'application/json' } });
-    if (!r.ok) throw Object.assign(new Error('HTTP ' + r.status), { status: r.status });
-    return r.json();
+  const job = { running: false, stop: false, where: 'status', delay: PRICE_DELAY, msg: '' };
+  // Attente interrompue par le bouton Stop.
+  async function waitStoppable(ms) {
+    for (let t = 0; t < ms && !job.stop; t += 250) await sleep(250);
   }
-  function startJob(msg, where) { job.running = true; job.stop = false; setStatus(msg, where); syncButtons(); }
+  // Rythme entre deux requêtes d'un même traitement : une par seconde, ralenti si le site a déjà freiné.
+  const pace = () => waitStoppable(job.delay + Math.random() * 500);
+  // Le site freine quand on va trop vite (429) ou qu'il sature (5xx). On respecte le délai qu'il demande,
+  // ou on attend de plus en plus longtemps, puis on reprend au même endroit, plus lentement.
+  // On ne cherche pas à contourner ce frein : on l'attend.
+  const BUSY = new Set([429, 502, 503, 504]);
+  async function getJSON(path) {
+    for (let attempt = 0; ; attempt++) {
+      let r = null;
+      try {
+        r = await nativeFetch(path, { credentials: 'same-origin', headers: { accept: 'application/json' } });
+      } catch (e) {
+        r = null; // coupure réseau : traitée comme un site occupé
+      }
+      if (r && r.ok) return r.json();
+      const status = r ? r.status : 0;
+      if (r && !BUSY.has(status)) throw Object.assign(new Error('HTTP ' + status), { status });
+      if (!job.running || job.stop || attempt >= 6) throw Object.assign(new Error(status ? 'HTTP ' + status : 'réseau'), { status });
+      const asked = r ? Number(r.headers.get('retry-after')) : NaN;
+      const wait = Number.isFinite(asked) && asked > 0 ? Math.min(asked, 600) * 1000 : 15000 * Math.pow(2, attempt);
+      job.delay = Math.min(job.delay * 2, 8000);
+      const before = ui.el[job.where] ? ui.el[job.where].textContent : '';
+      setStatus('Le site demande de ralentir : pause de ' + Math.round(wait / 1000) + ' s, puis reprise automatique. ' + before, job.where);
+      await waitStoppable(wait);
+      setStatus(before, job.where);
+    }
+  }
+  // Temps restant estimé, au rythme actuel (qui ralentit si le site a freiné).
+  const eta = left => {
+    if (left <= 0) return '';
+    const s = Math.round(left * (job.delay + 550) / 1000);
+    return ' · encore ' + (s < 60 ? s + ' s' : '~' + Math.round(s / 60) + ' min');
+  };
+  function startJob(msg, where) {
+    job.running = true; job.stop = false; job.where = where || 'status'; job.delay = PRICE_DELAY;
+    setStatus(msg, where); syncButtons();
+  }
   function endJob(msg, where) { job.running = false; setStatus(msg, where); syncButtons(); refresh(); }
 
   async function loadCollection() {
@@ -584,8 +619,8 @@
         if (job.stop) break;
         await fetchSales(id, rarById[id]);
         i++;
-        setStatus('Prix : ' + i + ' / ' + ids.length);
-        if (i < ids.length) await sleep(PRICE_DELAY + Math.random() * 500);
+        setStatus('Prix : ' + i + ' / ' + ids.length + eta(ids.length - i));
+        if (i < ids.length) await pace();
       }
       endJob(job.stop ? 'Arrêté à ' + i + ' / ' + ids.length + '.' : 'Prix complétés pour ' + i + ' cartes.');
     } catch (e) {
@@ -611,7 +646,7 @@
         seen += (j.auctions || []).length;
         setStatus('Marché : ' + seen + ' enchères lues…', where);
         if (!j.hasMore) break;
-        if (page < pages) await sleep(PRICE_DELAY + Math.random() * 500);
+        if (page < pages) await pace();
       }
       endJob(pages === 1 ? 'Ventes en cours à jour.'
         : seen + ' enchères lues. Leur prix sera enregistré quand elles seront finies, d’ici quelques minutes.', where);
@@ -622,7 +657,7 @@
 
   // Les cartes passées dans tes échanges dont l'historique de ventes manque ou date.
   // Une carte donnée n'est plus dans ta collection : « Compléter les prix manquants » ne la voit donc jamais.
-  const TRADE_BATCH = 60;
+  const TRADE_BATCH = Infinity; // plus de plafond : tout est traité, au rythme du site
   function tradeCardsToPrice() {
     const out = [], seen = new Set();
     const list = Object.values(db.trades).sort(byDateDesc).sort((a, b) => (b.s === 'accepted') - (a.s === 'accepted'));
@@ -644,8 +679,8 @@
         if (job.stop) break;
         await fetchSales(id, rarity);
         i++;
-        setStatus('Prix : ' + i + ' / ' + todo.length, 'tradeStatus');
-        if (i < todo.length) await sleep(PRICE_DELAY + Math.random() * 500);
+        setStatus('Prix : ' + i + ' / ' + todo.length + eta(todo.length - i), 'tradeStatus');
+        if (i < todo.length) await pace();
       }
       endJob(job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '.' : 'Prix relevés pour ' + plural(i, 'carte échangée', 'cartes échangées') + '.', 'tradeStatus');
     } catch (e) {
@@ -679,7 +714,7 @@
         all.push(...cards);
         setStatus('Liste de souhaits : ' + all.length + ' cartes…', 'wishStatus');
         if (cards.length < PAGE_SIZE || (typeof j.total === 'number' && all.length >= j.total)) break;
-        await sleep(PRICE_DELAY + Math.random() * 500);
+        await pace();
       }
       if (job.stop) return endJob('Arrêté, liste inchangée.', 'wishStatus');
       ingestWish({ cards: all }, true);
@@ -690,8 +725,8 @@
   }
 
   // Pour chaque alerte récente, cherche la carte sur le marché par son titre, comme avec la barre de recherche.
-  const ALERT_BATCH = 40;
-  const SEARCH_BATCH = 50;        // cartes cherchées par passage
+  const ALERT_BATCH = Infinity;
+  const SEARCH_BATCH = Infinity;  // plus de plafond : tout est traité, au rythme du site
   const SEARCH_FRESH = 60 * 6e4;  // une carte cherchée depuis moins d'une heure n'est pas recherchée à nouveau
   // Cherche une liste de cartes [identifiant, titre] sur le marché, une recherche par seconde.
   async function marketSearch(todo, label, noneText, where) {
@@ -710,8 +745,9 @@
         for (const id in db.alerts) if (db.alerts[id][0] === cardId) db.alerts[id][3] = found ? 1 : 2;
         db.wishSeen[cardId] = Date.now();
         i++;
-        setStatus(label + ' : ' + i + ' / ' + todo.length + ' · ' + plural(live, 'carte en vente', 'cartes en vente'), where);
-        if (i < todo.length) await sleep(PRICE_DELAY + Math.random() * 500);
+        setStatus(label + ' : ' + i + ' / ' + todo.length + ' · ' + plural(live, 'carte en vente', 'cartes en vente') +
+          eta(todo.length - i), where);
+        if (i < todo.length) await pace();
       }
       saveDb();
       endJob((job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '. ' : '') + plural(live, 'carte en vente', 'cartes en vente') +
@@ -1280,7 +1316,7 @@
     e.wishLoad = h('button', { class: 'b pri', onclick: loadWish }, 'Charger ma liste de souhaits');
     e.wishCheck = h('button', { class: 'b', onclick: checkAlerts }, 'Vérifier les annonces signalées');
     e.colRefresh = h('button', { class: 'b', title: 'Relit le prix et la fin des annonces de la colonne « En vente à »', onclick: refreshCol }, 'Rafraîchir les annonces');
-    e.colSearch = h('button', { class: 'b', title: 'Cherche sur le marché les cartes des raretés cochées, 50 par passage', onclick: searchCol }, 'Chercher mes cartes sur le marché');
+    e.colSearch = h('button', { class: 'b', title: 'Cherche sur le marché toutes les cartes des raretés cochées, une par seconde', onclick: searchCol }, 'Chercher mes cartes sur le marché');
     e.wishSearch = h('button', { class: 'b', onclick: searchWish }, 'Chercher mes souhaits sur le marché');
     e.wishRefresh = h('button', { class: 'b', title: 'Relit le prix et la fin des annonces déjà listées', onclick: refreshWish }, 'Rafraîchir les annonces');
     e.wishFold = h('button', { class: 'b', onclick: () => { ui.wishAll = !ui.wishAll; ui.wishOpen.clear(); renderWish(); } }, 'Tout déplier');
@@ -1290,7 +1326,7 @@
     e.sellInfo = h('div', { class: 'sub', style: 'margin-bottom:10px' });
     e.load = h('button', { class: 'b pri', onclick: loadCollection }, 'Charger ma collection');
     e.fill = h('button', { class: 'b', onclick: fillPrices }, 'Compléter les prix manquants');
-    e.scan = h('button', { class: 'b', title: 'Lit les 200 enchères qui se terminent, pour enregistrer leur prix',
+    e.scan = h('button', { class: 'b', title: 'Lit les 500 enchères qui se terminent, pour enregistrer leur prix',
       onclick: () => scanMarket(MARKET_PAGES, 'status', 'ending_soon') }, 'Relever les fins d’enchères');
     e.stop = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
     e.mine = h('button', { class: 'b', onclick: () => scanMarket(1, 'sellStatus') }, 'Actualiser mes ventes en cours');
@@ -1404,9 +1440,9 @@
       h('div', { class: 'note' },
         'Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». ',
         'Le script retient les alertes de mise en vente que le site t’envoie. « Vérifier les annonces signalées » cherche chacune de ces cartes sur le marché ' +
-        'pour en lire le prix et la fin de l’enchère, une recherche par seconde, 40 au plus par passage. ',
-        '« Chercher mes souhaits sur le marché » fait la même recherche pour les cartes de ta liste, alerte ou non : 50 par passage, ' +
-        'en commençant par celles jamais cherchées. Choisis une rareté pour cibler, et relance pour continuer. ' +
+        'pour en lire le prix et la fin de l’enchère, une recherche par seconde. ',
+        '« Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, alerte ou non, ' +
+        'en commençant par celles jamais cherchées. Si le site demande de ralentir, le script fait une pause puis reprend seul. ' +
         'Une carte cherchée depuis moins d’une heure est sautée. Clique sur un en-tête de colonne pour trier. ',
         '« Chez un ami » vient des fichiers importés dans l’onglet Amis. ',
         'Ta liste part aussi dans le fichier que tu exportes pour tes amis, pour qu’ils voient ce que tu cherches.'));
