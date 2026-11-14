@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.3.0
+// @version      1.3.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -775,7 +775,7 @@
       tile('Cartes', fmt(nCards)),
       tile('Valeur totale', fmt(total) + ' ₩'),
       tile('Cartes déjà vendues aux enchères', known + ' sur ' + rows.length),
-      tile('Sans vente connue, comptées à 1 ₩', fmt(rows.length - known) + ' cartes · ' + (total ? fmt(100 * estTotal / total) : '0') + ' % de la valeur'),
+      tile('Sans vente connue, comptées à 1 ₩', fmt(rows.length - known) + ' cartes · ' + (total ? fmt(100 * estTotal / total) : '0') + ' % de la valeur totale'),
       proState() === true ? tile('Pas encore analysées', fmt(rows.filter(r => !db.prices[r.cardId]).length)) : null
     ].filter(Boolean) : [
       tile('Cartes', fmt(nCards)),
