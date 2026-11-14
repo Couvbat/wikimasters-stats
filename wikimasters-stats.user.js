@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.2.0
-// @description  Tableau de valeur de ta collection WikiMasters. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
+// @version      1.3.0
+// @description  Valeur de ta collection WikiMasters, cartes à vendre, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
 // @run-at       document-start
@@ -19,20 +19,42 @@
   const DAY = 864e5;
   const PAGE_SIZE = 50;
   const PRICE_DELAY = 1000; // ms entre deux appels "ventes"
+  const DISCARD = 1;        // wikibidous gagnés en défaussant une carte
+  const MAX_PULLS = 1500;   // boosters gardés en mémoire
+  const MARKET_PAGES = 4;   // pages d'enchères lues par « Relever le marché »
+  const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
   const nativeFetch = window.fetch.bind(window);
 
   // ---------- stockage local (reste dans ton navigateur) ----------
+  function defaults() {
+    return {
+      cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
+      pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
+      friends: {}, me: '', sell: { min: 10, favs: false, doubt: false }
+    };
+  }
   let db = loadDb();
   function loadDb() {
+    const base = defaults();
     try {
       const d = JSON.parse(localStorage.getItem(KEY));
-      if (d && d.cards && d.prices) { d.pro = d.pro || {}; return d; }
+      if (d && typeof d === 'object' && d.cards && d.prices) {
+        Object.assign(base, d);
+        base.market = Object.assign(defaults().market, d.market || {});
+        base.sell = Object.assign(defaults().sell, d.sell || {});
+        if (!Array.isArray(base.pulls)) base.pulls = [];
+      }
     } catch (e) {}
-    return { cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0 };
+    return base;
   }
   function saveDb() {
-    try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {}
+    try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {
+      // Plus de place : on sacrifie le relevé du marché, qui se refait en un clic.
+      try { db.market.asks = {}; localStorage.setItem(KEY, JSON.stringify(db)); } catch (e2) {}
+    }
   }
+  const byDateDesc = (a, b) => (a.t < b.t ? 1 : a.t > b.t ? -1 : 0);
+  const rarOf = r => (typeof r === 'string' && /^[A-Z]{1,3}$/.test(r) ? r : '?');
 
   function ingestCollection(items, replace) {
     if (!Array.isArray(items)) return;
@@ -44,7 +66,7 @@
       db.cards[it.id || c.id] = {
         cardId: c.id,
         title: c.wikipedia_title || '?',
-        rarity: c.rarity || '?',
+        rarity: rarOf(c.rarity),
         atk: c.atk, def: c.def, q: c.q_score, views: c.pageviews,
         cat: c.category || '', url: c.wikipedia_url || '',
         count: it.count || 1, shiny: !!it.is_shiny, starred: !!it.starred,
@@ -63,9 +85,42 @@
     const sales = src
       .filter(s => s && typeof s.final_price === 'number')
       .map(s => ({ p: s.final_price, t: s.settled_at || '' }))
-      .sort((a, b) => (a.t < b.t ? 1 : -1))
+      .sort(byDateDesc)
       .slice(0, 10);
     db.prices[cardId] = { at: Date.now(), sales };
+    saveDb();
+    refresh();
+  }
+
+  // Page Marché : enchères en cours, tes ventes en cours, et ton propre historique de ventes et d'achats.
+  function ingestMarket(j) {
+    if (!j || typeof j !== 'object') return;
+    const m = db.market, now = Date.now();
+    if (typeof j.maxConcurrentAuctions === 'number') m.max = j.maxConcurrentAuctions;
+    if (Array.isArray(j.selling)) m.selling = j.selling.map(a => a && a.card_id).filter(Boolean);
+    if (Array.isArray(j.history) || Array.isArray(j.won)) {
+      const mine = {};
+      for (const a of [].concat(j.history || [], j.won || [])) {
+        if (!a || typeof a.card_id !== 'string' || BAD_KEYS.has(a.card_id) || typeof a.final_price !== 'number') continue;
+        (mine[a.card_id] = mine[a.card_id] || []).push({ p: a.final_price, t: a.settled_at || a.end_at || '' });
+      }
+      for (const id in mine) mine[id] = mine[id].sort(byDateDesc).slice(0, 10);
+      db.mySales = mine;
+    }
+    if (Array.isArray(j.auctions)) {
+      for (const id in m.asks) if (now - m.asks[id].t > 2 * DAY) delete m.asks[id];
+      for (const a of j.auctions) {
+        if (!a || typeof a.card_id !== 'string' || BAD_KEYS.has(a.card_id) || a.final_price != null) continue;
+        const price = typeof a.effective_bid === 'number' ? a.effective_bid : a.base_amount;
+        if (typeof price !== 'number') continue;
+        m.asks[a.card_id] = { a: price, b: a.current_bid != null, t: now, r: rarOf(a.snapshot_rarity || (a.card && a.card.rarity)) };
+      }
+      const ids = Object.keys(m.asks);
+      if (ids.length > 4000) {
+        ids.sort((x, y) => m.asks[x].t - m.asks[y].t).slice(0, ids.length - 4000).forEach(id => delete m.asks[id]);
+      }
+    }
+    m.at = now;
     saveDb();
     refresh();
   }
@@ -83,7 +138,9 @@
   }
   // true = Pro, false = non Pro, undefined = pas encore vu
   function proState() { return db.userId ? db.pro[db.userId] : undefined; }
-  function showPrices() { return proState() === true || Object.keys(db.prices).length > 0; }
+  function showPrices() {
+    return proState() === true || Object.keys(db.prices).length > 0 || Object.keys(db.mySales).length > 0;
+  }
 
   // ---------- écoute passive : on lit ce que le site charge déjà ----------
   window.fetch = function (input, init) {
@@ -98,13 +155,16 @@
         if (u) p.then(r => r.ok && r.clone().json().then(j => ingestPro(u[1], j))).catch(() => {});
       } else if (url.origin === location.origin && method === 'POST' && /^\/api\/packs\//.test(url.pathname)) {
         // Tu viens d'ouvrir un paquet toi-même : on lit juste la liste des cartes tirées.
-        p.then(r => r.ok && r.clone().json().then(j => j && Array.isArray(j.cards) && onPull(j.cards))).catch(() => {});
+        const kind = url.pathname.split('/').pop();
+        p.then(r => r.ok && r.clone().json().then(j => j && Array.isArray(j.cards) && onPull(j.cards, kind))).catch(() => {});
       } else if (url.origin === location.origin && method === 'GET') {
         const m = url.pathname.match(/^\/api\/marketplace\/cards\/([^/]+)\/sales$/);
         if (m) {
           p.then(r => r.ok && r.clone().json().then(j => ingestSales(m[1], j))).catch(() => {});
         } else if (url.pathname === '/api/my-collection') {
           p.then(r => r.ok && r.clone().json().then(j => ingestCollection(j.collection, false))).catch(() => {});
+        } else if (url.pathname === '/api/marketplace') {
+          p.then(r => r.ok && r.clone().json().then(ingestMarket)).catch(() => {});
         }
       }
     } catch (e) {}
@@ -112,28 +172,76 @@
   };
 
   // ---------- calculs ----------
-  function priceOf(cardId) {
-    const p = db.prices[cardId];
-    if (!p) return null;
-    if (!p.sales.length) return { n: 0, at: p.at };
-    const v = p.sales.map(s => s.p);
-    return {
-      avg: v.reduce((a, b) => a + b, 0) / v.length, med: median(v),
-      last: v[0], min: Math.min(...v), max: Math.max(...v), n: v.length, at: p.at
-    };
-  }
   function median(a) {
     if (!a.length) return null;
     const s = [...a].sort((x, y) => x - y), m = s.length >> 1;
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
   }
+  // Fiabilité d'un prix : assez de ventes, assez récentes, pas trop dispersées.
+  // 2 = fiable, 1 = moyen, 0 = douteux
+  function reliability(sales) {
+    const v = sales.map(s => s.p);
+    const ts = Date.parse(sales[0].t);
+    const age = Number.isFinite(ts) ? Math.max(0, (Date.now() - ts) / DAY) : Infinity;
+    const spread = Math.max(...v) / Math.max(1, Math.min(...v));
+    let level = v.length >= 5 && age <= 30 ? 2 : v.length >= 2 && age <= 90 ? 1 : 0;
+    if (level > 0 && spread > 5) level--;
+    return { level, age, spread };
+  }
+  // Tendance : la moitié la plus récente des ventes comparée à la plus ancienne. 1 hausse, -1 baisse, 0 stable.
+  function trendOf(sales) {
+    if (sales.length < 4) return 0;
+    const half = Math.floor(sales.length / 2);
+    const recent = median(sales.slice(0, half).map(s => s.p));
+    const old = median(sales.slice(-half).map(s => s.p));
+    if (!old) return 0;
+    const ratio = recent / old;
+    return ratio > 1.25 ? 1 : ratio < 0.8 ? -1 : 0;
+  }
+  let priceCache = new Map();
+  function priceOf(cardId) {
+    if (priceCache.has(cardId)) return priceCache.get(cardId);
+    const rec = db.prices[cardId];
+    let sales = rec ? rec.sales : null, at = rec ? rec.at : 0, own = false;
+    const mine = db.mySales[cardId];
+    // Sans relevé Pro, tes propres ventes et achats de cette carte servent de prix.
+    if ((!sales || !sales.length) && mine && mine.length) { sales = mine; own = true; at = at || db.market.at; }
+    let out = null;
+    if (sales && !sales.length) out = { n: 0, at };
+    else if (sales) {
+      const v = sales.map(s => s.p);
+      out = {
+        avg: v.reduce((a, b) => a + b, 0) / v.length, med: median(v),
+        last: v[0], lastT: sales[0].t, min: Math.min(...v), max: Math.max(...v), n: v.length, at, own,
+        rel: reliability(sales), trend: trendOf(sales)
+      };
+    }
+    priceCache.set(cardId, out);
+    return out;
+  }
+  // Valeur d'une carte : médiane de ses ventes, jamais moins que la défausse ; sans vente connue, la défausse.
+  function valueOf(cardId) {
+    const p = priceOf(cardId);
+    return p && p.n ? Math.max(p.med, DISCARD) : DISCARD;
+  }
+  function askOf(cardId) {
+    const a = db.market.asks[cardId];
+    return a && Date.now() - a.t < 2 * DAY ? a : null;
+  }
+  // Niveau de prix par rareté, d'après les enchères en cours qui ont déjà reçu une offre.
+  function marketByRarity() {
+    const by = {}, now = Date.now();
+    for (const a of Object.values(db.market.asks)) {
+      if (!a.b || now - a.t > DAY) continue;
+      (by[a.r] = by[a.r] || []).push(a.a);
+    }
+    return RARITIES.filter(r => by[r] && by[r].length >= 3).map(r => ({ r, med: median(by[r]), n: by[r].length }));
+  }
   function buildRows() {
-    const rows = Object.entries(db.cards).map(([id, c]) => ({ id, ...c, price: priceOf(c.cardId) }));
+    const rows = Object.entries(db.cards).map(([id, c]) => ({ id, ...c, price: priceOf(c.cardId), ask: askOf(c.cardId) }));
     for (const r of rows) {
       const known = r.price && r.price.n > 0;
-      // Sans vente connue, on ne suppose rien : la carte vaut ce que rapporte la défausse.
-      // C'est aussi le plancher de toute carte.
-      r.value = known ? Math.max(r.price.med, DISCARD) : DISCARD;
+      r.value = valueOf(r.cardId);
       r.est = !known;
       r.total = r.value * r.count;
     }
@@ -158,8 +266,8 @@
     if (!r.ok) throw Object.assign(new Error('HTTP ' + r.status), { status: r.status });
     return r.json();
   }
-  function startJob(msg) { job.running = true; job.stop = false; setStatus(msg); syncButtons(); }
-  function endJob(msg) { job.running = false; setStatus(msg); syncButtons(); refresh(); }
+  function startJob(msg, where) { job.running = true; job.stop = false; setStatus(msg, where); syncButtons(); }
+  function endJob(msg, where) { job.running = false; setStatus(msg, where); syncButtons(); refresh(); }
 
   async function loadCollection() {
     if (job.running) return;
@@ -206,8 +314,27 @@
     }
   }
 
-  // ---------- après un booster : prix des cartes tirées ----------
-  const DISCARD = 1; // wikibidous gagnés en défaussant une carte
+  // Lit les premières pages de la page Marché, comme si tu les feuilletais.
+  async function scanMarket(pages, where) {
+    if (job.running) return;
+    startJob('Lecture du marché…', where);
+    let seen = 0;
+    try {
+      for (let page = 1; page <= pages && !job.stop; page++) {
+        const j = await getJSON('/api/marketplace?page=' + page + '&limit=50&sort=recent' + (page === 1 ? '&mine=1' : ''));
+        ingestMarket(j);
+        seen += (j.auctions || []).length;
+        setStatus('Marché : ' + seen + ' enchères lues…', where);
+        if (!j.hasMore) break;
+        if (page < pages) await sleep(PRICE_DELAY + Math.random() * 500);
+      }
+      endJob(pages === 1 ? 'Ventes en cours à jour.' : 'Marché relevé : ' + seen + ' enchères lues.', where);
+    } catch (e) {
+      endJob('Lecture du marché impossible (' + e.message + ').', where);
+    }
+  }
+
+  // ---------- après un booster : mémoire des tirages et prix des cartes tirées ----------
   const pull = { open: false, cards: [], queue: [], busy: false, note: '' };
   function advice(price) {
     if (!price) return { cls: 'unk', text: '—' };
@@ -216,29 +343,35 @@
       ? { cls: 'sell', text: 'Vendre ~' + fmt(Math.round(price.med)) + ' ₩' }
       : { cls: 'drop', text: 'Défausser' };
   }
-  function onPull(list) {
-    const pro = proState();
-    if (pro === false || db.autoPull === false) return;
+  function onPull(list, kind) {
     const cards = [];
     for (const it of list) {
       const c = (it && it.card) || it;
       if (!c) continue;
       const cardId = it.card ? c.id : (c.card_id || c.id);
-      if (cardId) cards.push({ cardId, title: c.wikipedia_title || c.title || '?', rarity: c.rarity || '?' });
+      if (typeof cardId === 'string' && !BAD_KEYS.has(cardId)) {
+        cards.push({ cardId, title: String(c.wikipedia_title || c.title || '?').slice(0, 200), rarity: rarOf(c.rarity) });
+      }
     }
     if (!cards.length) return;
-    pull.cards = cards;
-    pull.open = true;
-    pull.note = pro === true ? '' : 'Statut Pro pas encore détecté : recharge la page (F5) pour activer les prix.';
-    if (pro === true) {
-      const now = Date.now();
-      for (const c of cards) {
-        const p = db.prices[c.cardId];
-        if ((!p || now - p.at > DAY) && !pull.queue.includes(c.cardId)) pull.queue.push(c.cardId);
+    db.pulls.push({ t: Date.now(), k: String(kind || '').slice(0, 20), c: cards.map(c => [c.cardId, c.title, c.rarity]) });
+    if (db.pulls.length > MAX_PULLS) db.pulls.splice(0, db.pulls.length - MAX_PULLS);
+    saveDb();
+    const pro = proState();
+    if (pro !== false && db.autoPull !== false) {
+      pull.cards = cards;
+      pull.open = true;
+      pull.note = pro === true ? '' : 'Statut Pro pas encore détecté : recharge la page (F5) pour activer les prix.';
+      if (pro === true) {
+        const now = Date.now();
+        for (const c of cards) {
+          const p = db.prices[c.cardId];
+          if ((!p || now - p.at > DAY) && !pull.queue.includes(c.cardId)) pull.queue.push(c.cardId);
+        }
+        runPullQueue();
       }
-      runPullQueue();
     }
-    renderPull();
+    refresh();
   }
   async function runPullQueue() {
     if (pull.busy) return;
@@ -271,21 +404,85 @@
             ' · ' + p.n + ' vente' + (p.n > 1 ? 's' : '');
       return h('div', { class: 'row' },
         h('span', { class: 'r r-' + c.rarity }, c.rarity),
-        h('div', { class: 't' }, h('b', null, c.title), h('span', null, info)),
+        h('div', { class: 't' }, h('b', null, c.title), h('span', null, info, p && p.n ? [' · ', relCell(p)] : null)),
         h('span', { class: 'adv ' + a.cls }, a.text));
     });
     if (pull.note) rows.push(h('div', { class: 'row sub' }, pull.note));
     e.pullList.replaceChildren(...rows);
   }
 
+  // ---------- amis : export, import, comparaison ----------
+  function myCards() {
+    const mine = {};
+    for (const c of Object.values(db.cards)) {
+      const m = mine[c.cardId];
+      if (m) m.count += c.count;
+      else mine[c.cardId] = { title: c.title, rarity: c.rarity, count: c.count };
+    }
+    return mine;
+  }
+  function download(name, text, type) {
+    const a = h('a', { href: URL.createObjectURL(new Blob([text], { type })), download: name });
+    ui.el.host.shadowRoot.append(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+  function exportMine() {
+    const pseudo = (db.me || '').trim();
+    if (!pseudo) return setStatus('Écris d’abord ton pseudo.', 'frStatus');
+    const mine = myCards();
+    const ids = Object.keys(mine);
+    if (!ids.length) return setStatus('Charge d’abord ta collection dans l’onglet Collection.', 'frStatus');
+    // Volontairement sans les prix : seulement ce que chacun voit de sa propre collection.
+    const data = { wmstats: 1, pseudo, at: Date.now(), cards: ids.map(id => [id, mine[id].title, mine[id].rarity, mine[id].count]) };
+    download('wikimasters-collection-' + pseudo.replace(/[^\w-]+/g, '_') + '.json', JSON.stringify(data), 'application/json');
+    setStatus('Fichier créé : envoie-le à tes amis.', 'frStatus');
+  }
+  // Le fichier d'un ami est une donnée extérieure : on ne garde que des champs simples, bornés.
+  function parseFriend(text) {
+    const j = JSON.parse(text);
+    if (!j || j.wmstats !== 1 || typeof j.pseudo !== 'string' || !Array.isArray(j.cards)) throw new Error('fichier non reconnu');
+    let pseudo = j.pseudo.trim().slice(0, 40) || 'ami';
+    if (BAD_KEYS.has(pseudo)) pseudo = 'ami';
+    const cards = {};
+    for (const c of j.cards.slice(0, 20000)) {
+      if (!Array.isArray(c) || typeof c[0] !== 'string' || typeof c[1] !== 'string') continue;
+      const id = c[0].slice(0, 64);
+      if (BAD_KEYS.has(id)) continue;
+      const n = Math.max(1, Math.min(999, Math.floor(Number(c[3]) || 1)));
+      cards[id] = [c[1].slice(0, 200), rarOf(c[2]), (cards[id] ? cards[id][2] : 0) + n];
+    }
+    return { pseudo, at: typeof j.at === 'number' ? j.at : Date.now(), cards };
+  }
+  async function importFriend(file) {
+    if (!file) return;
+    try {
+      if (file.size > 5e6) throw new Error('fichier trop gros');
+      const f = parseFriend(await file.text());
+      if (!db.friends[f.pseudo] && Object.keys(db.friends).length >= 10) throw new Error('10 amis au maximum, retire-en un');
+      db.friends[f.pseudo] = { at: f.at, cards: f.cards };
+      ui.friend = f.pseudo;
+      saveDb();
+      setStatus('Collection de ' + f.pseudo + ' importée : ' + Object.keys(f.cards).length + ' cartes différentes.', 'frStatus');
+    } catch (e) {
+      setStatus('Import impossible : ' + e.message + '.', 'frStatus');
+    }
+    refresh();
+  }
+
   // ---------- interface ----------
+  const TABS = [['col', 'Collection'], ['sell', 'À vendre'], ['pulls', 'Boosters'], ['friends', 'Amis']];
   const ui = {
-    open: false, chosen: new Set(['L', 'UR', 'SR']),
-    sortKey: 'total', sortDir: -1, text: '', rarity: '', el: {}
+    open: false, tab: 'col', chosen: new Set(['L', 'UR', 'SR']),
+    sortKey: 'total', sortDir: -1, text: '', rarity: '', friend: '', frRarity: '', el: {}
   };
   const nf = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 });
   const fmt = v => (v == null || Number.isNaN(v) ? '—' : nf.format(v));
   const fmtDate = t => (t ? new Date(t).toLocaleDateString('fr-FR') : '—');
+  const ago = t => {
+    const m = Math.round((Date.now() - t) / 6e4);
+    return m < 1 ? 'à l’instant' : m < 60 ? 'il y a ' + m + ' min' : m < 1440 ? 'il y a ' + Math.round(m / 60) + ' h' : 'il y a ' + Math.round(m / 1440) + ' j';
+  };
 
   function h(tag, props, ...kids) {
     const e = document.createElement(tag);
@@ -295,7 +492,7 @@
       else if (k in e) e[k] = props[k];
       else e.setAttribute(k, props[k]);
     }
-    for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
+    for (const k of kids.flat(2)) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
     return e;
   }
 
@@ -311,7 +508,12 @@
       display:flex;flex-direction:column;overflow:hidden;font-size:13px}
     header{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid #26302c}
     h1{font-size:17px;margin:0;flex:1;font-weight:700}
+    h2{font-size:14px;margin:16px 0 8px;font-weight:700}
     .sub{color:#8b9a94;font-size:12px}
+    .tabs{display:flex;gap:4px;padding:8px 14px 0;border-bottom:1px solid #26302c;flex-wrap:wrap}
+    .tab{background:none;border:0;border-bottom:2px solid transparent;color:#8b9a94;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer}
+    .tab:hover{color:#e5e7eb}
+    .tab.on{color:#34d399;border-bottom-color:#34d399}
     .body{padding:14px 18px;overflow:auto;flex:1}
     .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
     .tile{background:#151c19;border:1px solid #26302c;border-radius:10px;padding:10px 12px}
@@ -324,17 +526,23 @@
     button.b:disabled{opacity:.45;cursor:default}
     button.x{background:none;border:0;color:#8b9a94;font-size:22px;cursor:pointer;line-height:1}
     label.chk{display:inline-flex;gap:4px;align-items:center;color:#cbd5d1;cursor:pointer}
-    input[type=text],select{background:#151c19;color:#e5e7eb;border:1px solid #33413b;border-radius:8px;padding:7px 10px;font-size:13px}
+    input[type=text],input[type=number],select{background:#151c19;color:#e5e7eb;border:1px solid #33413b;border-radius:8px;padding:7px 10px;font-size:13px}
     input[type=text]{min-width:220px}
+    input[type=number]{width:90px}
+    input[type=file]{color:#8b9a94;font-size:12px}
     .status{color:#fbbf24;min-height:18px;margin-bottom:8px}
-    .rar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+    .rar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;align-items:center}
     .pill{background:#151c19;border:1px solid #26302c;border-radius:999px;padding:4px 10px;font-variant-numeric:tabular-nums}
     .pill i{font-style:normal;color:#8b9a94}
+    .scroll{overflow-x:auto}
     table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
     th,td{padding:6px 8px;border-bottom:1px solid #1f2925;text-align:right;white-space:nowrap}
     th:first-child,td:first-child{text-align:left;white-space:normal}
-    th{position:sticky;top:-14px;background:#0f1412;color:#8b9a94;font-weight:600;cursor:pointer;user-select:none}
-    th:hover{color:#e5e7eb}
+    td.l,th.l{text-align:left;white-space:normal}
+    th{background:#0f1412;color:#8b9a94;font-weight:600}
+    th.s{cursor:pointer;user-select:none}
+    th.s:hover{color:#e5e7eb}
+    tr.top td{background:#12241c}
     td a{color:#e5e7eb;text-decoration:none}
     td a:hover{color:#34d399}
     .est{color:#8b9a94;font-style:italic}
@@ -343,7 +551,11 @@
     .r-R{background:#c4b5fd;color:#111}.r-PC{background:#7dd3fc;color:#111}.r-C{background:#4b5563}
     .adv{display:inline-block;border-radius:999px;padding:3px 9px;font-weight:700;font-size:12px;white-space:nowrap}
     .adv.sell{background:#10b981;color:#04130d}.adv.drop{background:#374151;color:#e5e7eb}.adv.unk{background:#1c2622;color:#8b9a94}
-    .pull{position:fixed;right:18px;bottom:66px;z-index:2147483000;width:min(420px,calc(100vw - 36px));background:#0f1412;
+    .rel{white-space:nowrap;cursor:help}
+    .rel::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:#6b7280}
+    .rel.l2::before{background:#34d399}.rel.l1::before{background:#fbbf24}.rel.l0::before{background:#f87171}
+    .tag{display:inline-block;border:1px solid #33413b;border-radius:5px;padding:0 5px;font-size:11px;color:#8b9a94;margin-left:6px}
+    .pull{position:fixed;right:18px;bottom:66px;z-index:2147483000;width:min(440px,calc(100vw - 36px));background:#0f1412;
       color:#e5e7eb;border:1px solid #26302c;border-radius:12px;box-shadow:0 8px 28px #000a;font-size:13px;display:none}
     .pull.open{display:block}
     .pull header{padding:9px 12px;border-bottom:0}
@@ -356,20 +568,30 @@
     .note{color:#8b9a94;font-size:12px;margin-top:10px}
   `;
 
+  const REL = ['Douteux', 'Moyen', 'Fiable'];
+  const ARROW = { '1': ' ↑', '-1': ' ↓', '0': '' };
+  function relCell(p) {
+    if (!p || !p.n) return '—';
+    const age = Number.isFinite(p.rel.age) ? 'dernière il y a ' + Math.round(p.rel.age) + ' j' : 'date inconnue';
+    const title = p.n + ' vente' + (p.n > 1 ? 's' : '') + ', ' + age + ', écart ×' + fmt(p.rel.spread) +
+      (p.trend ? (p.trend > 0 ? ', prix en hausse' : ', prix en baisse') : '') + (p.own ? ', d’après tes propres ventes et achats' : '');
+    return h('span', { class: 'rel l' + p.rel.level, title }, REL[p.rel.level] + ARROW[p.trend]);
+  }
+  const rarBadge = r => h('span', { class: 'r r-' + r }, r);
   const estCell = (r, v) => h('span', { class: r.est ? 'est' : '' }, fmt(v));
   const pr = (r, k) => (r.price ? r.price[k] : undefined);
   const COLS = [
     { k: 'title', t: 'Carte', get: r => r.title.toLowerCase(),
       cell: r => [r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title) : r.title,
         r.shiny ? ' ✨' : '', r.starred ? ' ★' : ''] },
-    { k: 'rarity', t: 'Rareté', get: r => { const i = RARITIES.indexOf(r.rarity); return i < 0 ? 99 : i; },
-      cell: r => h('span', { class: 'r r-' + r.rarity }, r.rarity) },
+    { k: 'rarity', t: 'Rareté', get: r => { const i = RARITIES.indexOf(r.rarity); return i < 0 ? 99 : i; }, cell: r => rarBadge(r.rarity) },
     { k: 'count', t: 'Ex.', get: r => r.count, cell: r => r.count },
     { k: 'atk', t: 'ATK', get: r => r.atk, cell: r => fmt(r.atk) },
     { k: 'def', t: 'DEF', get: r => r.def, cell: r => fmt(r.def) },
     { k: 'q', t: 'Q-Score', get: r => r.q, cell: r => fmt(r.q) },
     { k: 'views', t: 'Vues 30j', get: r => r.views, cell: r => fmt(r.views) },
     { k: 'value', t: 'Valeur', price: true, get: r => r.value, cell: r => estCell(r, r.value) },
+    { k: 'rel', t: 'Fiabilité', price: true, get: r => (pr(r, 'n') ? r.price.rel.level : null), cell: r => relCell(r.price) },
     { k: 'last', t: 'Dernière', price: true, get: r => pr(r, 'last'), cell: r => fmt(pr(r, 'last')) },
     { k: 'min', t: 'Min', price: true, get: r => pr(r, 'min'), cell: r => fmt(pr(r, 'min')) },
     { k: 'max', t: 'Max', price: true, get: r => pr(r, 'max'), cell: r => fmt(pr(r, 'max')) },
@@ -377,15 +599,17 @@
     { k: 'total', t: 'Total', price: true, get: r => r.total, cell: r => estCell(r, r.total) },
     { k: 'adv', t: 'Conseil', price: true, get: r => (pr(r, 'n') ? r.price.med : null),
       cell: r => { const a = advice(r.price); return r.price ? h('span', { class: 'adv ' + a.cls }, a.text) : '—'; } },
-    { k: 'at', t: 'Prix du', price: true, get: r => pr(r, 'at'), cell: r => (r.price ? fmtDate(r.price.at) : '—') }
+    { k: 'ask', t: 'En vente à', ask: true, get: r => (r.ask ? r.ask.a : null),
+      cell: r => (r.ask ? h('span', { title: r.ask.b ? 'Une enchère en cours a déjà reçu une offre' : 'Mise de départ d’une enchère en cours, sans offre' },
+        fmt(r.ask.a) + (r.ask.b ? ' •' : '')) : '—') }
   ];
 
-  function setStatus(msg) { if (ui.el.status) ui.el.status.textContent = msg || ''; }
+  function setStatus(msg, where) { const el = ui.el[where || 'status']; if (el) el.textContent = msg || ''; }
   function syncButtons() {
     const e = ui.el;
     if (!e.load) return;
     const pro = proState();
-    e.load.disabled = job.running;
+    e.load.disabled = e.scan.disabled = e.mine.disabled = job.running;
     e.fill.disabled = job.running || pro !== true;
     e.stop.disabled = !job.running;
     e.fill.textContent = pro === true
@@ -393,7 +617,7 @@
       : 'Prix : réservé aux comptes Pro';
     e.pro.textContent = pro === true ? ''
       : pro === false
-        ? 'Compte non Pro : le site ne donne pas l’historique des ventes, donc pas de valeurs ici. Le reste du tableau et l’export fonctionnent.'
+        ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Les valeurs viennent seulement de tes propres ventes et achats, lus sur la page Marché.'
         : 'Statut Pro pas encore détecté : recharge la page (F5).';
   }
 
@@ -403,45 +627,98 @@
     const root = host.attachShadow({ mode: 'open' });
     const e = ui.el;
     e.host = host;
-    e.status = h('div', { class: 'status' });
-    e.tiles = h('div', { class: 'tiles' });
-    e.rar = h('div', { class: 'rar' });
-    e.table = h('div');
+    for (const k of ['status', 'sellStatus', 'frStatus']) e[k] = h('div', { class: 'status' });
+    for (const k of ['tiles', 'pullTiles']) e[k] = h('div', { class: 'tiles' });
+    for (const k of ['rar', 'market']) e[k] = h('div', { class: 'rar' });
+    for (const k of ['table', 'sellTable', 'pullBody', 'frBody']) e[k] = h('div', { class: 'scroll' });
     e.sub = h('div', { class: 'sub' });
     e.pro = h('div', { class: 'sub', style: 'margin-bottom:10px' });
+    e.sellInfo = h('div', { class: 'sub', style: 'margin-bottom:10px' });
     e.load = h('button', { class: 'b pri', onclick: loadCollection }, 'Charger ma collection');
     e.fill = h('button', { class: 'b', onclick: fillPrices }, 'Compléter les prix manquants');
+    e.scan = h('button', { class: 'b', onclick: () => scanMarket(MARKET_PAGES) }, 'Relever le marché');
     e.stop = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
+    e.mine = h('button', { class: 'b', onclick: () => scanMarket(1, 'sellStatus') }, 'Actualiser mes ventes en cours');
     const checks = RARITIES.map(r => h('label', { class: 'chk' },
       h('input', {
         type: 'checkbox', checked: ui.chosen.has(r),
         onchange: ev => { ev.target.checked ? ui.chosen.add(r) : ui.chosen.delete(r); syncButtons(); }
       }), r));
+    const rarSelect = onchange => h('select', { onchange },
+      h('option', { value: '' }, 'Toutes les raretés'), RARITIES.map(r => h('option', { value: r }, r)));
+    const sellOpt = (key, label) => h('label', { class: 'chk' },
+      h('input', { type: 'checkbox', checked: !!db.sell[key], onchange: ev => { db.sell[key] = ev.target.checked; saveDb(); refresh(); } }), label);
+
+    e.view_col = h('div', null,
+      e.tiles, e.rar, e.market,
+      h('div', { class: 'bar' }, e.load, e.fill, e.scan, e.stop, h('span', { class: 'sub' }, 'Prix pour :'), checks),
+      h('div', { class: 'bar' }, h('label', { class: 'chk' },
+        h('input', { type: 'checkbox', checked: db.autoPull !== false,
+          onchange: ev => { db.autoPull = ev.target.checked; saveDb(); } }),
+        'Afficher les prix des cartes tirées après chaque booster que j’ouvre')),
+      e.pro,
+      h('div', { class: 'bar' },
+        h('input', { type: 'text', placeholder: 'Filtrer par titre, catégorie, étiquette…',
+          oninput: ev => { ui.text = ev.target.value.toLowerCase(); renderTable(); } }),
+        rarSelect(ev => { ui.rarity = ev.target.value; renderTable(); }),
+        h('button', { class: 'b', onclick: exportCsv }, 'Exporter en CSV'),
+        h('button', { class: 'b', onclick: clearPrices }, 'Oublier les prix')),
+      e.status, e.table,
+      h('div', { class: 'note' },
+        'Valeur = médiane des 10 dernières ventes (moins sensible qu’une moyenne aux enchères qui s’emballent). ',
+        'En italique : carte sans vente connue, comptée à 1 wikibidou, ce que rapporte la défausse. ',
+        'Fiabilité = assez de ventes, assez récentes, pas trop dispersées ; survole-la pour le détail. ',
+        'Les prix se remplissent aussi tout seuls quand tu ouvres l’onglet Marché d’une carte.'));
+
+    e.view_sell = h('div', null,
+      h('div', { class: 'bar' },
+        h('span', null, 'Valeur minimale pour vendre :'),
+        h('input', { type: 'number', min: 2, step: 1, value: db.sell.min,
+          onchange: ev => { db.sell.min = Math.max(2, Math.floor(Number(ev.target.value) || 2)); ev.target.value = db.sell.min; saveDb(); refresh(); } }),
+        sellOpt('favs', 'Inclure mes favoris ★'),
+        sellOpt('doubt', 'Inclure les prix douteux'),
+        e.mine),
+      e.sellInfo, e.sellStatus, e.sellTable,
+      h('div', { class: 'note' },
+        'Les doublons passent en premier, puis les cartes les plus chères. Les cartes déjà mises en vente sont retirées de la liste. ',
+        'Les lignes surlignées tiennent dans tes places de vente libres. Le script ne met rien en vente : c’est toi qui le fais sur le site.'));
+
+    e.view_pulls = h('div', null, e.pullTiles, e.pullBody,
+      h('div', { class: 'bar', style: 'margin-top:12px' },
+        h('button', { class: 'b', onclick: () => { db.pulls = []; saveDb(); refresh(); } }, 'Effacer l’historique des boosters')),
+      h('div', { class: 'note' },
+        'Seuls les boosters ouverts depuis l’installation de cette version sont comptés. ',
+        'La valeur utilise les prix connus aujourd’hui ; une carte sans vente connue compte pour 1.'));
+
+    e.frSelect = h('select', { onchange: ev => { ui.friend = ev.target.value; renderFriends(); } });
+    e.view_friends = h('div', null,
+      h('div', { class: 'bar' },
+        h('span', null, 'Mon pseudo :'),
+        h('input', { type: 'text', value: db.me || '', style: 'min-width:140px', placeholder: 'ton pseudo',
+          oninput: ev => { db.me = ev.target.value.slice(0, 40); saveDb(); } }),
+        h('button', { class: 'b pri', onclick: exportMine }, 'Exporter ma collection pour mes amis')),
+      h('div', { class: 'bar' },
+        h('span', null, 'Importer le fichier d’un ami :'),
+        h('input', { type: 'file', accept: '.json,application/json',
+          onchange: ev => { importFriend(ev.target.files[0]); ev.target.value = ''; } })),
+      h('div', { class: 'bar' },
+        h('span', null, 'Comparer avec :'), e.frSelect,
+        rarSelect(ev => { ui.frRarity = ev.target.value; renderFriends(); }),
+        h('button', { class: 'b', onclick: () => { if (ui.friend) { delete db.friends[ui.friend]; ui.friend = ''; saveDb(); refresh(); } } }, 'Retirer cet ami')),
+      e.frStatus, e.frBody,
+      h('div', { class: 'note' },
+        'Le fichier exporté contient la liste de tes cartes et leur nombre d’exemplaires, sans aucun prix. ',
+        'Il fonctionne avec ou sans compte Pro.'));
+
+    const views = TABS.map(([k]) => e['view_' + k]);
     e.back = h('div', { class: 'back', onclick: ev => { if (ev.target === e.back) toggle(false); } },
       h('div', { class: 'panel' },
         h('header', null,
-          h('div', { style: 'flex:1' }, h('h1', null, 'Stats de collection'), e.sub),
+          h('div', { style: 'flex:1' }, h('h1', null, 'Stats WikiMasters'), e.sub),
           h('button', { class: 'x', title: 'Fermer', onclick: () => toggle(false) }, '×')),
-        h('div', { class: 'body' },
-          e.tiles, e.rar,
-          h('div', { class: 'bar' }, e.load, e.fill, e.stop, h('span', { class: 'sub' }, 'Prix pour :'), checks),
-          h('div', { class: 'bar' }, h('label', { class: 'chk' },
-            h('input', { type: 'checkbox', checked: db.autoPull !== false,
-              onchange: ev => { db.autoPull = ev.target.checked; saveDb(); } }),
-            'Afficher les prix des cartes tirées après chaque booster que j’ouvre')),
-          e.pro,
-          h('div', { class: 'bar' },
-            h('input', { type: 'text', placeholder: 'Filtrer par titre, catégorie, étiquette…',
-              oninput: ev => { ui.text = ev.target.value.toLowerCase(); renderTable(); } }),
-            h('select', { onchange: ev => { ui.rarity = ev.target.value; renderTable(); } },
-              h('option', { value: '' }, 'Toutes les raretés'), RARITIES.map(r => h('option', { value: r }, r))),
-            h('button', { class: 'b', onclick: exportCsv }, 'Exporter en CSV'),
-            h('button', { class: 'b', onclick: clearPrices }, 'Oublier les prix')),
-          e.status, e.table,
-          h('div', { class: 'note' },
-            'Valeur = médiane des 10 dernières ventes (moins sensible qu’une moyenne aux enchères qui s’emballent). ',
-            'Conseil = vendre si cette valeur dépasse le wikibidou que rapporte la défausse. En italique : carte sans vente connue, comptée à 1 wikibidou, ce que rapporte la défausse. ',
-            'Les prix se remplissent aussi tout seuls quand tu ouvres l’onglet Marché d’une carte.'))));
+        h('div', { class: 'tabs' }, TABS.map(([k, label]) =>
+          (e['tab_' + k] = h('button', { class: 'tab', onclick: () => setTab(k) }, label)))),
+        h('div', { class: 'body' }, views)));
     e.pullList = h('div');
     e.pull = h('div', { class: 'pull' },
       h('header', null, h('h1', null, 'Dernier booster'),
@@ -451,8 +728,17 @@
       h('button', { class: 'fab', onclick: () => toggle() }, '📊 Stats'), e.pull, e.back);
     document.documentElement.append(host);
     document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && ui.open) toggle(false); });
+    setTab(ui.tab);
   }
 
+  function setTab(t) {
+    ui.tab = t;
+    for (const [k] of TABS) {
+      ui.el['view_' + k].style.display = k === t ? '' : 'none';
+      ui.el['tab_' + k].classList.toggle('on', k === t);
+    }
+    refresh();
+  }
   function toggle(force) {
     ui.open = force == null ? !ui.open : force;
     ui.el.back.classList.toggle('open', ui.open);
@@ -462,25 +748,36 @@
   let rowsCache = [];
   function refresh() {
     if (!ui.el.host) return;
+    priceCache = new Map();
     renderPull();
     if (!ui.open) return;
     rowsCache = buildRows();
-    const rows = rowsCache;
-    const e = ui.el;
+    ui.el.sub.textContent = db.collectionAt
+      ? 'Collection vue le ' + new Date(db.collectionAt).toLocaleString('fr-FR')
+      : 'Collection pas encore chargée';
+    syncButtons();
+    ({ col: renderCol, sell: renderSell, pulls: renderPulls, friends: renderFriends })[ui.tab]();
+  }
+  const tile = (label, val) => h('div', { class: 'tile' }, h('span', null, label), h('b', null, val));
+  const plural = (n, one, many) => fmt(n) + ' ' + (n > 1 ? many : one);
+
+  // ----- onglet Collection -----
+  function renderCol() {
+    const rows = rowsCache, e = ui.el;
     const nCards = rows.reduce((a, r) => a + r.count, 0);
     const total = rows.reduce((a, r) => a + r.total, 0);
     const estTotal = rows.reduce((a, r) => a + (r.est ? r.total : 0), 0);
     const known = rows.filter(r => r.price && r.price.n > 0).length;
-    const tile = (label, val) => h('div', { class: 'tile' }, h('span', null, label), h('b', null, val));
     const withPrices = showPrices();
     const avg = k => (rows.length ? rows.reduce((a, r) => a + (r[k] || 0), 0) / rows.length : null);
     if (!withPrices && (COLS.find(c => c.k === ui.sortKey) || {}).price) { ui.sortKey = 'rarity'; ui.sortDir = 1; }
     e.tiles.replaceChildren(...(withPrices ? [
       tile('Cartes', fmt(nCards)),
       tile('Valeur totale', fmt(total) + ' ₩'),
-      tile('Dont sans vente connue', total ? fmt(100 * estTotal / total) + ' %' : '—'),
-      tile('Prix connus', known + ' / ' + rows.length)
-    ] : [
+      tile('Cartes déjà vendues aux enchères', known + ' sur ' + rows.length),
+      tile('Sans vente connue, comptées à 1 ₩', fmt(rows.length - known) + ' cartes · ' + (total ? fmt(100 * estTotal / total) : '0') + ' % de la valeur'),
+      proState() === true ? tile('Pas encore analysées', fmt(rows.filter(r => !db.prices[r.cardId]).length)) : null
+    ].filter(Boolean) : [
       tile('Cartes', fmt(nCards)),
       tile('Cartes différentes', fmt(rows.length)),
       tile('ATK moyenne', fmt(avg('atk'))),
@@ -489,14 +786,18 @@
     e.rar.replaceChildren(...RARITIES.filter(r => rows.some(x => x.rarity === r)).map(r => {
       const g = rows.filter(x => x.rarity === r);
       const n = g.reduce((a, x) => a + x.count, 0);
-      return h('span', { class: 'pill' }, h('span', { class: 'r r-' + r }, r), ' ',
+      return h('span', { class: 'pill' }, rarBadge(r), ' ',
         n, h('i', null, n > 1 ? ' cartes' : ' carte'),
         withPrices ? [h('i', null, ' · '), fmt(g.reduce((a, x) => a + x.total, 0)), ' ₩'] : null);
     }));
-    e.sub.textContent = db.collectionAt
-      ? 'Collection vue le ' + new Date(db.collectionAt).toLocaleString('fr-FR')
-      : 'Collection pas encore chargée';
-    syncButtons();
+    const mk = marketByRarity();
+    e.market.replaceChildren(...(mk.length
+      ? [h('span', { class: 'sub' }, 'Enchères avec offre en ce moment :'),
+        ...mk.map(x => h('span', { class: 'pill', title: x.n + ' enchères avec offre' }, rarBadge(x.r), ' ', h('i', null, 'autour de '), fmt(x.med), ' ₩')),
+        h('span', { class: 'sub' }, '(relevé ' + ago(db.market.at) + ')')]
+      : [h('span', { class: 'sub' }, db.market.at
+        ? 'Marché relevé ' + ago(db.market.at) + ' : pas assez d’enchères avec offre pour donner un niveau de prix.'
+        : 'Marché pas encore relevé : clique sur « Relever le marché » ou ouvre la page Marché du site.')]));
     renderTable();
   }
 
@@ -523,8 +824,10 @@
     }
     const rows = visibleRows();
     const withPrices = showPrices();
-    const cols = COLS.filter(c => withPrices || !c.price);
+    const withAsks = rowsCache.some(r => r.ask);
+    const cols = COLS.filter(c => (c.price ? withPrices : c.ask ? withAsks : true));
     const head = h('tr', null, cols.map(c => h('th', {
+      class: 's',
       onclick: () => {
         if (ui.sortKey === c.k) ui.sortDir = -ui.sortDir;
         else { ui.sortKey = c.k; ui.sortDir = c.k === 'title' || c.k === 'rarity' ? 1 : -1; }
@@ -535,6 +838,171 @@
     e.table.replaceChildren(h('table', null, h('thead', null, head), h('tbody', null, body)));
   }
 
+  // ----- onglet À vendre -----
+  function sellList() {
+    const selling = new Set(db.market.selling || []);
+    const s = db.sell;
+    return rowsCache
+      .filter(r => r.price && r.price.n > 0 && r.value >= s.min && (s.favs || !r.starred) &&
+        (s.doubt || r.price.rel.level > 0) && !selling.has(r.cardId))
+      .sort((a, b) => (b.count > 1) - (a.count > 1) || b.value - a.value);
+  }
+  function renderSell() {
+    const e = ui.el, m = db.market;
+    const used = m.selling ? m.selling.length : null;
+    const free = used != null && m.max ? Math.max(0, m.max - used) : null;
+    if (!showPrices()) {
+      e.sellInfo.textContent = '';
+      e.sellTable.replaceChildren(h('div', { class: 'empty' },
+        'Aucun prix connu pour l’instant. Avec un compte Pro, complète les prix dans l’onglet Collection. ' +
+        'Sans compte Pro, ouvre la page Marché du site : tes propres ventes et achats serviront de prix.'));
+      return;
+    }
+    const list = sellList();
+    const top = free == null ? 0 : Math.min(free, list.length);
+    const gain = list.slice(0, top).reduce((a, r) => a + Math.round(r.value), 0);
+    e.sellInfo.textContent = (free == null
+      ? 'Places de vente inconnues : clique sur « Actualiser mes ventes en cours » ou ouvre la page Marché. '
+      : 'Ventes en cours : ' + used + ' / ' + m.max + ', soit ' + plural(free, 'place libre', 'places libres') + '. ') +
+      plural(list.length, 'carte', 'cartes') + ' à vendre à partir de ' + fmt(db.sell.min) + ' ₩.' +
+      (top > 1 ? ' Les ' + top + ' premières rapporteraient environ ' + fmt(gain) + ' ₩.'
+        : top === 1 ? ' La première rapporterait environ ' + fmt(gain) + ' ₩.' : '');
+    if (!list.length) {
+      e.sellTable.replaceChildren(h('div', { class: 'empty' }, 'Aucune carte ne passe ce seuil avec les réglages actuels.'));
+      return;
+    }
+    const head = h('tr', null, ['#', 'Carte', 'Rareté', 'Ex.', 'Prix conseillé', 'Fiabilité', 'Dernière vente', 'Fourchette', 'Ventes']
+      .map((t, i) => h('th', { class: i === 1 ? 'l' : '' }, t)));
+    const body = list.map((r, i) => h('tr', { class: i < top ? 'top' : '' },
+      h('td', null, i + 1),
+      h('td', { class: 'l' }, r.title, r.shiny ? ' ✨' : '', r.starred ? ' ★' : '', r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null),
+      h('td', null, rarBadge(r.rarity)),
+      h('td', null, r.count),
+      h('td', null, h('b', null, fmt(Math.round(r.value)) + ' ₩')),
+      h('td', null, relCell(r.price)),
+      h('td', null, fmtDate(r.price.lastT)),
+      h('td', null, fmt(r.price.min) + ' à ' + fmt(r.price.max)),
+      h('td', null, r.price.n)));
+    e.sellTable.replaceChildren(h('table', null, h('thead', null, head), h('tbody', null, body)));
+  }
+
+  // ----- onglet Boosters -----
+  function renderPulls() {
+    const e = ui.el, P = db.pulls;
+    if (!P.length) {
+      e.pullTiles.replaceChildren();
+      e.pullBody.replaceChildren(h('div', { class: 'empty' },
+        'Aucun booster enregistré pour l’instant. Ouvre un paquet sur le site : il sera compté ici.'));
+      return;
+    }
+    const withPrices = showPrices();
+    let nCards = 0, total = 0, best = 0;
+    const byRar = {}, all = [];
+    for (const pl of P) {
+      let v = 0;
+      for (const [id, title, r] of pl.c) {
+        const x = valueOf(id);
+        v += x; nCards++;
+        byRar[r] = (byRar[r] || 0) + 1;
+        all.push({ title, r, v: x, t: pl.t });
+      }
+      total += v;
+      if (v > best) best = v;
+    }
+    e.pullTiles.replaceChildren(...[
+      tile('Boosters ouverts', fmt(P.length)),
+      tile('Cartes tirées', fmt(nCards)),
+      withPrices ? tile('Valeur moyenne par booster', fmt(total / P.length) + ' ₩') : null,
+      withPrices ? tile('Meilleur booster', fmt(best) + ' ₩') : null
+    ].filter(Boolean));
+    const rarRows = RARITIES.concat('?').filter(r => byRar[r]).map(r => h('tr', null,
+      h('td', null, rarBadge(r)), h('td', null, fmt(byRar[r])), h('td', null, fmt(100 * byRar[r] / nCards) + ' %'),
+      h('td', null, '1 carte sur ' + fmt(nCards / byRar[r]))));
+    const kids = [
+      h('h2', null, 'Ce que tu tires'),
+      h('table', null, h('thead', null, h('tr', null, ['Rareté', 'Cartes', 'Part', 'Fréquence'].map(t => h('th', null, t)))), h('tbody', null, rarRows))
+    ];
+    if (withPrices) {
+      const bestCards = all.filter(c => c.v > DISCARD).sort((a, b) => b.v - a.v).slice(0, 10);
+      if (bestCards.length) {
+        kids.push(h('h2', null, 'Tes meilleurs tirages'),
+          h('table', null, h('thead', null, h('tr', null, ['Carte', 'Rareté', 'Valeur', 'Tirée le'].map(t => h('th', null, t)))),
+            h('tbody', null, bestCards.map(c => h('tr', null,
+              h('td', null, c.title), h('td', null, rarBadge(c.r)), h('td', null, fmt(c.v) + ' ₩'), h('td', null, fmtDate(c.t)))))));
+      }
+    }
+    const lastPulls = P.slice(-10).reverse();
+    kids.push(h('h2', null, 'Derniers boosters'),
+      h('table', null, h('thead', null, h('tr', null, ['Ouvert', 'Cartes', withPrices ? 'Valeur' : null].filter(Boolean).map((t, i) => h('th', { class: i === 1 ? 'l' : '' }, t)))),
+        h('tbody', null, lastPulls.map(pl => h('tr', null,
+          h('td', null, new Date(pl.t).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })),
+          h('td', { class: 'l' }, pl.c.map(([, title, r], i) => [i ? ' · ' : '', rarBadge(r), ' ', title])),
+          withPrices ? h('td', null, fmt(pl.c.reduce((a, [id]) => a + valueOf(id), 0)) + ' ₩') : null)))));
+    e.pullBody.replaceChildren(...kids);
+  }
+
+  // ----- onglet Amis -----
+  function renderFriends() {
+    const e = ui.el;
+    const names = Object.keys(db.friends).sort();
+    if (!names.includes(ui.friend)) ui.friend = names[0] || '';
+    e.frSelect.replaceChildren(...(names.length
+      ? names.map(n => h('option', { value: n, selected: n === ui.friend }, n))
+      : [h('option', { value: '' }, 'aucun ami importé')]));
+    const f = db.friends[ui.friend];
+    if (!f) {
+      e.frBody.replaceChildren(h('div', { class: 'empty' },
+        'Exporte ta collection et envoie le fichier à un ami. Quand il t’envoie le sien, importe-le ici pour voir qui a quoi.'));
+      return;
+    }
+    const mine = myCards();
+    if (!Object.keys(mine).length) {
+      e.frBody.replaceChildren(h('div', { class: 'empty' }, 'Charge d’abord ta collection dans l’onglet Collection.'));
+      return;
+    }
+    const withPrices = showPrices();
+    const order = r => { const i = RARITIES.indexOf(r); return i < 0 ? 99 : i; };
+    const sortFn = (a, b) => (b.count > 1) - (a.count > 1) || order(a.rarity) - order(b.rarity) || a.title.localeCompare(b.title);
+    const keep = c => !ui.frRarity || c.rarity === ui.frRarity;
+    const theirs = [], ours = [];
+    let common = 0;
+    for (const id in f.cards) {
+      if (mine[id]) { common++; continue; }
+      const c = { id, title: f.cards[id][0], rarity: f.cards[id][1], count: f.cards[id][2] };
+      if (keep(c)) theirs.push(c);
+    }
+    for (const id in mine) {
+      if (f.cards[id]) continue;
+      const c = { id, title: mine[id].title, rarity: mine[id].rarity, count: mine[id].count };
+      if (keep(c)) ours.push(c);
+    }
+    theirs.sort(sortFn); ours.sort(sortFn);
+    const LIMIT = 300;
+    const list = (title, items) => {
+      const heads = ['Carte', 'Rareté', 'Ex.', withPrices ? 'Valeur' : null].filter(Boolean);
+      return [h('h2', null, title + ' (' + fmt(items.length) + ')'),
+        items.length ? h('table', null, h('thead', null, h('tr', null, heads.map(t => h('th', null, t)))),
+          h('tbody', null, items.slice(0, LIMIT).map(c => {
+            const p = priceOf(c.id);
+            return h('tr', null,
+              h('td', null, c.title, c.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null),
+              h('td', null, rarBadge(c.rarity)), h('td', null, c.count),
+              withPrices ? h('td', null, p && p.n ? fmt(Math.max(p.med, DISCARD)) + ' ₩' : '—') : null);
+          }))) : h('div', { class: 'sub' }, 'Aucune.'),
+        items.length > LIMIT ? h('div', { class: 'sub' }, '… et ' + fmt(items.length - LIMIT) + ' autres. Filtre par rareté pour les voir.') : null];
+    };
+    const dupT = theirs.filter(c => c.count > 1).length, dupO = ours.filter(c => c.count > 1).length;
+    e.frBody.replaceChildren(...[
+      h('div', { class: 'tiles' },
+        tile('En commun', fmt(common)),
+        tile('Ses doublons qui te manquent', fmt(dupT)),
+        tile('Tes doublons qui lui manquent', fmt(dupO))),
+      h('div', { class: 'sub' }, 'Collection de ' + ui.friend + ' exportée le ' + fmtDate(f.at) + '. Les doublons sont en tête : ce sont les échanges les plus faciles.'),
+      list('Chez ' + ui.friend + ', pas chez toi', theirs),
+      list('Chez toi, pas chez ' + ui.friend, ours)
+    ].flat(2).filter(Boolean));
+  }
+
   function exportCsv() {
     refresh();
     const cell = v => {
@@ -542,19 +1010,19 @@
       return /[";\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
     const head = ['Carte', 'Rareté', 'Exemplaires', 'Shiny', 'ATK', 'DEF', 'Q-Score', 'Vues 30j', 'Catégorie', 'Étiquettes',
-      'Valeur', 'Sans vente connue', 'Moyenne', 'Dernière vente', 'Min', 'Max', 'Nb ventes', 'Valeur totale', 'Conseil',
-      'Prix relevé le', 'Obtenue le', 'Wikipédia'];
+      'Valeur', 'Sans vente connue', 'Fiabilité', 'Tendance', 'Moyenne', 'Dernière vente', 'Date dernière vente', 'Min', 'Max',
+      'Nb ventes', 'Valeur totale', 'Conseil', 'En vente à', 'Prix relevé le', 'Obtenue le', 'Wikipédia'];
     const lines = visibleRows().map(r => {
       const p = r.price || {};
+      const sold = p.n > 0;
       return [r.title, r.rarity, r.count, r.shiny ? 'oui' : 'non', r.atk, r.def, r.q, r.views, r.cat, r.tags.join(', '),
-        r.value, r.est ? 'oui' : 'non', p.avg, p.last, p.min, p.max, p.n, r.total, r.price ? advice(r.price).text : '',
-        p.at ? fmtDate(p.at) : '', r.obtained ? fmtDate(r.obtained) : '', r.url].map(cell).join(';');
+        r.value, r.est ? 'oui' : 'non', sold ? REL[p.rel.level] : '', sold ? (p.trend > 0 ? 'hausse' : p.trend < 0 ? 'baisse' : 'stable') : '',
+        p.avg, p.last, sold ? fmtDate(p.lastT) : '', p.min, p.max, p.n, r.total, r.price ? advice(r.price).text : '',
+        r.ask ? r.ask.a : '', p.at ? fmtDate(p.at) : '', r.obtained ? fmtDate(r.obtained) : '', r.url].map(cell).join(';');
     });
-    const blob = new Blob(['\ufeff' + [head.join(';'), ...lines].join('\r\n')], { type: 'text/csv;charset=utf-8' });
-    const a = h('a', { href: URL.createObjectURL(blob), download: 'wikimasters-collection-' + new Date().toISOString().slice(0, 10) + '.csv' });
-    ui.el.host.shadowRoot.append(a);
-    a.click();
-    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    // Le caractère 65279 en tête de fichier fait reconnaître les accents par Excel.
+    download('wikimasters-collection-' + new Date().toISOString().slice(0, 10) + '.csv',
+      String.fromCharCode(65279) + [head.join(';'), ...lines].join('\r\n'), 'text/csv;charset=utf-8');
   }
 
   function clearPrices() {
