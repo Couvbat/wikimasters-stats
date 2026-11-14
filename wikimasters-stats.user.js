@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.15.0
+// @version      1.16.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -28,6 +28,8 @@
   const MARKET_PAGES = 10;  // pages d'enchères lues par « Relever les fins d'enchères »
   const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
   const nativeFetch = window.fetch.bind(window);
+  // Vu passer pendant la visite : titre de carte → carte, enchère → carte et prix. Sert aux pastilles posées sur les cartes du site.
+  const seenTitle = new Map(), seenAuction = new Map();
 
   // ---------- stockage local (reste dans ton navigateur) ----------
   function defaults() {
@@ -176,6 +178,8 @@
         if (!a || typeof a.card_id !== 'string' || BAD_KEYS.has(a.card_id) || a.final_price != null) continue;
         const price = typeof a.effective_bid === 'number' ? a.effective_bid : a.base_amount;
         if (typeof price !== 'number') continue;
+        if (okKey(a.id)) seenAuction.set(a.id, { c: a.card_id, a: price, b: a.current_bid != null });
+        if (a.card && typeof a.card.wikipedia_title === 'string') seenTitle.set(a.card.wikipedia_title, a.card_id);
         const end = Date.parse(a.end_at);
         // Enchère observée : on note où en est l'offre. Une fois l'enchère finie, la dernière offre vue sert de prix de vente.
         if (okKey(a.id) && Number.isFinite(end)) {
@@ -402,6 +406,12 @@
           p.then(r => r.ok && r.clone().json().then(ingestAlerts)).catch(() => {});
         } else if (url.pathname === '/api/cards' && url.searchParams.get('wishlist') === '1') {
           p.then(r => r.ok && r.clone().json().then(j => ingestWish(j, false))).catch(() => {});
+        } else if (url.pathname === '/api/cards') {
+          // Page « Toutes les cartes » : on apprend seulement les titres, pour poser les pastilles de valeur.
+          p.then(r => r.ok && r.clone().json().then(j => {
+            if (j && Array.isArray(j.cards)) for (const c of j.cards) if (c && okKey(c.id) && typeof c.wikipedia_title === 'string') seenTitle.set(c.wikipedia_title, c.id);
+            overlaySoon();
+          })).catch(() => {});
         }
       }
     } catch (e) {}
@@ -485,6 +495,8 @@
     return pct >= DEAL_PCT ? pct : 0;
   }
   const isDeal = c => dealPct(c.ask, c.price) > 0;
+  // Enchère max conseillée : la valeur médiane. Au-delà, tu paies la carte plus cher que ce qu'elle se vend d'habitude.
+  const maxBid = price => (price && price.n ? Math.max(DISCARD, Math.floor(price.med)) : null);
   // Une enchère dure 12 h au plus : une alerte plus ancienne concerne forcément une enchère terminée.
   const ALERT_TTL = 12 * 36e5;
   // Les alertes récentes dont on ne connaît pas encore le prix, une par carte, les plus récentes d'abord.
@@ -987,10 +999,43 @@
     const mine = {};
     for (const c of Object.values(db.cards)) {
       const m = mine[c.cardId];
-      if (m) m.count += c.count;
-      else mine[c.cardId] = { title: c.title, rarity: c.rarity, count: c.count };
+      if (m) { m.count += c.count; m.starred = m.starred || c.starred; }
+      else mine[c.cardId] = { title: c.title, rarity: c.rarity, count: c.count, starred: !!c.starred };
     }
     return mine;
+  }
+  // Échange proposé avec un ami : ce qu'il cherche et que tu as en trop, contre ce que tu cherches et qu'il a en trop.
+  // Par défaut, seulement des doublons (personne ne perd une carte), jamais tes favoris.
+  // On part de tout ce qui est possible, puis on retire du côté le plus lourd tant que l'écart de valeur diminue.
+  function tradeFor(f, mine, singles) {
+    const val = id => { const p = priceOf(id); return { v: p && p.n ? Math.max(p.med, DISCARD) : DISCARD, unknown: !p }; };
+    const giveAll = [], recvAll = [];
+    for (const id in (f.wish || {})) {
+      const m = mine[id];
+      if (!m || m.starred || (!singles && m.count < 2)) continue;
+      giveAll.push(Object.assign({ id, title: m.title, rarity: m.rarity, count: m.count }, val(id)));
+    }
+    for (const id in db.wish) {
+      const c = f.cards[id];
+      if (!c || mine[id] || (!singles && c[2] < 2)) continue;
+      recvAll.push(Object.assign({ id, title: c[0], rarity: c[1], count: c[2] }, val(id)));
+    }
+    const byVal = (a, b) => b.v - a.v || a.title.localeCompare(b.title);
+    giveAll.sort(byVal); recvAll.sort(byVal);
+    const give = giveAll.slice(), recv = recvAll.slice();
+    const sum = l => l.reduce((a, c) => a + c.v, 0);
+    if (give.length && recv.length) {
+      for (;;) {
+        const gap = sum(recv) - sum(give);
+        const heavy = gap > 0 ? recv : give;
+        if (heavy.length <= 1) break;
+        let best = -1, bestGap = Math.abs(gap);
+        heavy.forEach((c, k) => { const g = Math.abs(Math.abs(gap) - c.v); if (g < bestGap) { bestGap = g; best = k; } });
+        if (best < 0) break;
+        heavy.splice(best, 1);
+      }
+    }
+    return { give, recv, giveAll, recvAll, gTot: sum(give), rTot: sum(recv) };
   }
   function download(name, text, type) {
     const a = h('a', { href: URL.createObjectURL(new Blob([text], { type })), download: name });
@@ -1293,6 +1338,13 @@
     .rel.l2::before{background:#34d399}.rel.l1::before{background:#fbbf24}.rel.l0::before{background:#f87171}
     .tag.deal{border-color:#10b981;color:#34d399;font-weight:700}
     .tag.warn{border-color:#f59e0b;color:#fbbf24;font-weight:700}
+    .tag.bad{border-color:#ef4444;color:#f87171;font-weight:700}
+    .trade{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-bottom:8px}
+    .trade ul{list-style:none;margin:0;padding:0}
+    .trade li{display:flex;gap:6px;align-items:center;padding:3px 0;border-bottom:1px solid #1d2622}
+    .trade li .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .trade .tot{display:flex;justify-content:space-between;margin-top:6px;font-weight:700}
+    .balance{padding:8px 12px;border-radius:8px;background:#151c19;border:1px solid #26302c;margin-bottom:12px}
     .home{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
     .card{background:#151c19;border:1px solid #26302c;border-radius:10px;padding:12px 14px}
     .card h2{margin:0 0 8px;display:flex;justify-content:space-between;align-items:center}
@@ -1507,6 +1559,9 @@
         chk('Afficher les prix des cartes tirées après chaque booster',
           'Après chaque paquet que tu ouvres toi-même, un petit panneau donne la valeur de chaque carte tirée (compte Pro).',
           db.autoPull !== false, ev => { db.autoPull = ev.target.checked; saveDb(); }),
+        chk('Afficher la valeur sur les cartes du site',
+          'Pose une petite pastille sur chaque carte affichée par le site (Collection, Marché, Toutes les cartes…) : valeur médiane, et sur le Marché l’écart avec le prix de l’annonce. Survole la pastille pour le détail.',
+          db.overlay !== false, ev => { db.overlay = ev.target.checked; saveDb(); overlaySoon(); }),
         btn('Exporter en CSV', 'Télécharge le tableau tel qu’il est filtré et trié, à ouvrir dans Excel ou LibreOffice.', exportCsv),
         btn('Oublier les prix', 'Efface tous les prix relevés (pas ta collection). Utile seulement pour tout relever de zéro.', clearPrices)),
       e.table,
@@ -1562,6 +1617,8 @@
             onchange: ev => { importFriend(ev.target.files[0]); ev.target.value = ''; } })),
         group('Comparer', null, e.frSelect,
           rarSelect(ev => { ui.frRarity = ev.target.value; renderFriends(); }),
+          chk('Cartes en un seul exemplaire', 'Décochée, l’échange proposé ne contient que des doublons : personne ne perd une carte. Cochée, il peut aussi contenir des cartes que l’un de vous n’a qu’en un exemplaire.',
+            !!ui.frSingles, ev => { ui.frSingles = ev.target.checked; renderFriends(); }),
           btn('Retirer cet ami', 'Oublie le fichier de cet ami.', () => { if (ui.friend) { delete db.friends[ui.friend]; ui.friend = ''; saveDb(); refresh(); } }))),
       e.frStatus, e.frBody);
 
@@ -1692,6 +1749,7 @@
     if (!ui.el.host) return;
     priceCache = new Map();
     renderPull();
+    overlaySoon();
     if (!ui.open) return;
     rowsCache = buildRows();
     snapshot(rowsCache);
@@ -2002,7 +2060,8 @@
         h('td', null, 'Annonce ' + (k + 1)),
         h('td', null, auctionLink(au.i, h('b', null, fmt(au.a) + ' ₩'), 'Annonce ' + (k + 1))),
         h('td', null, au.b ? 'une offre a déjà été faite' : 'pas encore d’offre'),
-        h('td', null, au.e > now ? 'fin dans ' + left(au.e - now) : 'fin inconnue'))))))) : null);
+        h('td', null, au.e > now ? 'fin dans ' + left(au.e - now) : 'fin inconnue'),
+        withPrices && maxBid(c.price) != null ? h('td', null, roomTag(c.price, au)) : null)))))) : null);
     e.wishBody.replaceChildren(
       sortTable('wish', [
         { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(),
@@ -2028,6 +2087,14 @@
             const f = c.ask ? feat(c) : null;
             return f && f.e > now ? h('span', { title: multi(c) ? 'Fin de l’annonce affichée sur cette ligne : ' + WHICH[mode] : '' }, 'dans ' + left(f.e - now)) : '—';
           } },
+        withPrices ? { t: 'Enchère max', tip: 'Jusqu’à ce montant, tu paies la carte au plus sa valeur médiane : au-delà, tu la paies plus cher qu’elle ne se vend d’habitude. ' +
+            'L’étiquette verte dit combien il te reste de marge sur l’annonce de la ligne, la rouge qu’elle est déjà trop chère. « ≈ » : prix douteux, à prendre avec prudence.',
+          get: c => maxBid(c.price),
+          cell: c => {
+            const mx = maxBid(c.price);
+            if (mx == null) return '—';
+            return [h('b', null, (c.price.rel.level === 0 ? '≈ ' : '') + fmt(mx) + ' ₩'), c.ask ? roomTag(c.price, feat(c)) : null];
+          } } : null,
         { t: 'Alerte du site', tip: 'Depuis quand le site t’a signalé la mise en vente de cette carte.', get: c => (c.alert ? c.alert[2] : null), cell: c => (c.alert ? ago(c.alert[2]) : '—') },
         { t: 'Cherchée', tip: 'Quand le script a cherché cette carte sur le marché pour la dernière fois.', get: c => db.wishSeen[c.id] || null, cell: c => (db.wishSeen[c.id] ? ago(db.wishSeen[c.id]) : '—') },
         { t: 'Chez un ami', asc: true, get: c => c.friends.join(', '), cell: c => (c.friends.length ? c.friends.join(', ') : '—') }
@@ -2115,6 +2182,15 @@
   const tile = (label, val, sub, tip) => h('div', { class: 'tile' },
     h('span', null, label, tip ? help(tip) : null), h('b', null, val), sub ? h('small', null, sub) : null);
   const plural = (n, one, many) => fmt(n) + ' ' + (n > 1 ? many : one);
+  // Marge entre l'enchère max conseillée et le prix actuel d'une annonce.
+  function roomTag(price, au) {
+    const mx = maxBid(price);
+    if (mx == null || !au) return null;
+    const room = mx - au.a;
+    return room > 0
+      ? h('span', { class: 'tag deal', 'data-tip': 'Tu peux monter jusqu’à ' + fmt(mx) + ' ₩, soit ' + fmt(room) + ' ₩ au-dessus du prix actuel (' + fmt(au.a) + ' ₩).' }, '+' + fmt(room) + ' ₩')
+      : h('span', { class: 'tag bad', 'data-tip': 'Le prix actuel (' + fmt(au.a) + ' ₩) atteint déjà la valeur médiane : enchérir revient à payer la carte plus cher qu’elle ne se vend d’habitude.' }, 'trop cher');
+  }
 
   // ----- onglet Collection -----
   function renderCol() {
@@ -2525,7 +2601,66 @@
     }
     iWant.sort(sortFn); theyWant.sort(sortFn);
     const hasWish = Object.keys(db.wish).length > 0, friendHasWish = Object.keys(f.wish || {}).length > 0;
+    // ----- tous les amis d'un coup d'œil -----
+    const sumV = l => l.reduce((a, c) => a + c.v, 0);
+    let overview = null;
+    if (names.length > 1) {
+      const rows = names.map(n => {
+        const t = tradeFor(db.friends[n], mine, ui.frSingles);
+        return { n, at: db.friends[n].at, gN: t.giveAll.length, gV: sumV(t.giveAll), rN: t.recvAll.length, rV: sumV(t.recvAll),
+          bal: t.give.length && t.recv.length ? Math.min(t.gTot, t.rTot) : 0 };
+      });
+      overview = [h('h2', null, 'Tous mes amis', help('Pour chaque ami : ce que tu peux lui donner (cartes de sa liste de souhaits que tu as en double), ' +
+        'ce qu’il peut te donner (cartes de ta liste qu’il a en double), et la valeur de l’échange équilibré proposé. Un clic sur une ligne ouvre cet ami.')),
+      sortTable('frall', [
+        { t: 'Ami', left: true, asc: true, get: r => r.n.toLowerCase(), cell: r => r.n },
+        { t: 'Fichier du', get: r => r.at, cell: r => fmtDate(r.at) },
+        { t: 'Tu peux lui donner', tip: 'Cartes de sa liste de souhaits que tu as en trop.', get: r => r.gN,
+          cell: r => fmt(r.gN) + (withPrices && r.gN ? ' · ' + fmt(Math.round(r.gV)) + ' ₩' : '') },
+        { t: 'Il peut te donner', tip: 'Cartes de ta liste de souhaits qu’il a en trop.', get: r => r.rN,
+          cell: r => fmt(r.rN) + (withPrices && r.rN ? ' · ' + fmt(Math.round(r.rV)) + ' ₩' : '') },
+        withPrices ? { t: 'Échange équilibré', tip: 'Valeur de chaque côté de l’échange proposé. 0 : aucune carte possible dans un des deux sens.',
+          get: r => r.bal, cell: r => (r.bal ? fmt(Math.round(r.bal)) + ' ₩' : '—') } : null
+      ], rows, renderFriends, { canClick: () => true, rowClass: r => (r.n === ui.friend ? 'top' : ''),
+        onRow: r => { ui.friend = r.n; renderFriends(); } })];
+    }
+    // ----- échange proposé avec l'ami choisi -----
+    const T = tradeFor(f, mine, ui.frSingles);
+    const what = ui.frSingles ? '' : ' en double';
+    const side = (title, tipText, items, tot, empty) => h('div', { class: 'card' },
+      h('h2', null, h('span', null, title, help(tipText))),
+      items.length ? h('ul', null, items.map(c => h('li', null, rarBadge(c.rarity), h('span', { class: 'grow' }, c.title),
+        c.count > 1 ? h('span', { class: 'tag' }, '×' + c.count) : null,
+        withPrices ? h('b', c.unknown ? { class: 'est', 'data-tip': 'Prix pas encore relevé : compté 1 ₩.' } : null, fmt(Math.round(c.v)) + ' ₩') : null)))
+        : h('div', { class: 'sub' }, empty),
+      withPrices && items.length ? h('div', { class: 'tot' }, h('span', null, 'Total'), h('span', null, fmt(Math.round(tot)) + ' ₩')) : null);
+    const gap = T.rTot - T.gTot;
+    let verdict;
+    if (!T.give.length && !T.recv.length) verdict = null;
+    else if (!T.give.length) verdict = 'Tu n’as aucune carte de sa liste' + what + ' : propose-lui des wikibidous contre ces cartes.';
+    else if (!T.recv.length) verdict = 'Il n’a aucune carte de ta liste' + what + ' : propose-lui ces cartes contre des wikibidous.';
+    else if (!withPrices) verdict = 'Prix inconnus : l’équilibre n’est pas calculé.';
+    else if (Math.abs(gap) <= Math.max(2, 0.1 * Math.max(T.gTot, T.rTot))) verdict = 'Échange équilibré : ' + fmt(Math.round(T.gTot)) + ' ₩ contre ' + fmt(Math.round(T.rTot)) + ' ₩.';
+    else if (gap > 0) verdict = 'Tu reçois ' + fmt(Math.round(gap)) + ' ₩ de plus que tu ne donnes : ajoute ' + fmt(Math.round(gap)) + ' wikibidous de ton côté pour équilibrer.';
+    else verdict = 'Tu donnes ' + fmt(Math.round(-gap)) + ' ₩ de plus que tu ne reçois : demande ' + fmt(Math.round(-gap)) + ' wikibidous en retour.';
+    const left = T.giveAll.length - T.give.length + T.recvAll.length - T.recv.length;
+    const proposal = [
+      h('h2', null, 'Échange proposé avec ' + ui.friend, help('Ce qu’il cherche et que tu as' + what + ', contre ce que tu cherches et qu’il a' + what +
+        '. Le script garde le plus de cartes possible tout en équilibrant la valeur des deux côtés. Tes favoris ★ ne sont jamais proposés. ' +
+        'Rien n’est envoyé : à toi de proposer l’échange sur le site.')),
+      !hasWish || !friendHasWish
+        ? h('div', { class: 'sub' }, !hasWish ? 'Charge ta liste de souhaits (onglet Souhaits) pour voir ce qu’il peut te donner.'
+          : 'Le fichier de ' + ui.friend + ' ne contient pas sa liste de souhaits : demande-lui d’exporter à nouveau.')
+        : null,
+      hasWish || friendHasWish ? h('div', { class: 'trade' },
+        side('Tu donnes', 'Cartes de la liste de souhaits de ' + ui.friend + ' que tu as' + what + '. Le ×N est ton nombre d’exemplaires.',
+          T.give, T.gTot, friendHasWish ? 'Aucune carte de sa liste' + what + ' chez toi.' : '—'),
+        side('Tu reçois', 'Cartes de ta liste de souhaits que ' + ui.friend + ' a' + what + '. Le ×N est son nombre d’exemplaires.',
+          T.recv, T.rTot, hasWish ? 'Aucune carte de ta liste' + what + ' chez lui.' : '—')) : null,
+      verdict ? h('div', { class: 'balance' }, verdict,
+        left > 0 ? h('div', { class: 'sub' }, plural(left, 'autre carte possible a été laissée de côté', 'autres cartes possibles ont été laissées de côté') + ' pour équilibrer : voir les listes plus bas.') : null) : null];
     e.frBody.replaceChildren(...[
+      overview,
       h('div', { class: 'tiles' },
         tile('En commun', fmt(common)),
         tile('Ses doublons qui te manquent', fmt(dupT)),
@@ -2533,6 +2668,7 @@
         tile('Tes souhaits dans sa collection', hasWish ? fmt(iWant.length) : '—', hasWish ? null : 'charge ta liste dans l’onglet Souhaits'),
         tile('Ses souhaits dans ta collection', friendHasWish ? fmt(theyWant.length) : '—', friendHasWish ? null : 'son fichier ne contient pas de liste')),
       h('div', { class: 'sub' }, 'Collection de ' + ui.friend + ' exportée le ' + fmtDate(f.at) + '. Les doublons sont en tête : ce sont les échanges les plus faciles.'),
+      proposal,
       hasWish ? list('Sur ta liste de souhaits, chez ' + ui.friend, iWant) : null,
       friendHasWish ? list(ui.friend + ' les cherche, et tu les as', theyWant) : null,
       list('Chez ' + ui.friend + ', pas chez toi', theirs),
@@ -2610,7 +2746,116 @@
   // Chaque minute, les enchères observées qui viennent de finir deviennent des prix.
   setInterval(() => { if (!job.running && settleObserved()) { saveDb(); refresh(); } }, 60000);
 
-  const start = () => { mount(); openSellForm(); };
+  // ---------- valeur affichée sur les cartes du site ----------
+  // Une pastille sur chaque carte que le site affiche : Collection, Marché, Toutes les cartes, boosters…
+  // Lecture seule : le script pose un petit élément par-dessus la carte, il ne clique sur rien.
+  // Sur le Marché, la carte est reconnue par son annonce ; ailleurs, par son titre (le texte de son image).
+  const BADGE = 'wmstats-badge';
+  let titleIdx = null, scanTimer = 0;
+  function cardByTitle(t) {
+    if (seenTitle.has(t)) return seenTitle.get(t);
+    if (!titleIdx) {
+      titleIdx = new Map();
+      const add = (id, title) => { if (okKey(id) && typeof title === 'string' && !titleIdx.has(title)) titleIdx.set(title, id); };
+      for (const c of Object.values(db.cards)) add(c.cardId, c.title);
+      for (const id in db.wish) add(id, db.wish[id][0]);
+      for (const p of db.pulls) for (const c of p.c || []) add(c[0], c[1]);
+      for (const a of Object.values(db.auctions)) add(a[1], a[2]);
+      for (const t of Object.values(db.trades)) for (const c of (t.g || []).concat(t.r || [])) add(c[0], c[1]);
+      for (const n in db.friends) {
+        const f = db.friends[n];
+        for (const id in f.cards || {}) add(id, f.cards[id][0]);
+        for (const id in f.wish || {}) add(id, f.wish[id][0]);
+      }
+    }
+    return titleIdx.get(t) || null;
+  }
+  function auctionInfo(id) {
+    if (seenAuction.has(id)) return seenAuction.get(id);
+    const o = db.obs[id];
+    if (o) return { c: o[0], a: o[1], b: !!o[2] };
+    for (const cid in db.market.asks) {
+      const x = (db.market.asks[cid].list || []).find(y => y.i === id);
+      if (x) return { c: cid, a: x.a, b: x.b };
+    }
+    return null;
+  }
+  function overlaySoon() {
+    titleIdx = null;
+    if (!scanTimer) scanTimer = setTimeout(scanCards, 250);
+  }
+  // Contenu de la pastille d'une carte. au = l'annonce quand la carte est affichée sur le Marché.
+  function badgeFor(cardId, au, mine) {
+    const p = priceOf(cardId);
+    const have = mine[cardId];
+    if (!p) return null;
+    const lines = ['WikiMasters Stats'];
+    let text, border = '#6b7280', bg = 'rgba(10,15,13,.85)';
+    if (!p.n) {
+      text = '1 ₩';
+      lines.push('Aucune vente connue : la carte vaut la défausse, 1 ₩.');
+    } else {
+      const med = Math.max(p.med, DISCARD), mx = maxBid(p);
+      text = (p.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(med)) + ' ₩';
+      border = ['#6b7280', '#f59e0b', '#10b981'][p.rel.level];
+      lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? ' observées' : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
+      if (au) {
+        const pct = Math.round(100 * (1 - au.a / med));
+        lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
+        lines.push('Enchère max conseillée : ' + fmt(mx) + ' ₩' + (mx > au.a ? ', marge ' + fmt(mx - au.a) + ' ₩' : ' : déjà atteinte'));
+        if (dealPct(au, p)) { text += ' · −' + pct + ' %'; bg = 'rgba(6,95,70,.92)'; lines.push('Bonne affaire : ' + pct + ' % sous la valeur.'); }
+        else if (au.a >= med) { text += ' · trop cher'; bg = 'rgba(127,29,29,.92)'; }
+      } else {
+        lines.push('Enchère max conseillée : ' + fmt(mx) + ' ₩');
+      }
+    }
+    if (have) { text += ' ✓'; lines.push('Tu l’as déjà' + (have.count > 1 ? ' (' + have.count + ' exemplaires)' : '') + '.'); }
+    return { text, border, bg, tip: lines.join('\n') };
+  }
+  function scanCards() {
+    scanTimer = 0;
+    const on = db.overlay !== false && showPrices();
+    const keep = new Set();
+    if (on) {
+      const mine = myCards();
+      for (const card of document.querySelectorAll('.rounded-2xl.cursor-pointer')) {
+        // Le titre est dans le h3 de la carte ; à défaut, dans le texte de l'image (sauf le logo des cartes sans image).
+        const h3 = card.querySelector('h3'), img = card.querySelector('img[alt]:not([alt=""]):not([alt="WikiMasters"])');
+        const title = ((h3 && h3.textContent) || (img && img.alt) || '').trim();
+        const link = card.closest('a[href^="/marketplace/"]');
+        if (!title && !link) continue;
+        const auId = link ? link.getAttribute('href').split('/')[2] : '';
+        const au = auId ? auctionInfo(auId) : null;
+        const cardId = au ? au.c : title ? cardByTitle(title) : null;
+        const b = cardId ? badgeFor(cardId, au, mine) : null;
+        let el = card.querySelector(':scope > .' + BADGE);
+        if (!b) { if (el) el.remove(); continue; }
+        keep.add(card);
+        const key = cardId + '|' + b.text + '|' + b.bg + '|' + b.border + '|' + b.tip;
+        if (el && el.dataset.key === key) continue;
+        if (!el) {
+          el = document.createElement('span');
+          el.className = BADGE;
+          if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
+          card.append(el);
+        }
+        el.dataset.key = key;
+        el.textContent = b.text;
+        el.title = b.tip;
+        el.style.cssText = 'position:absolute;top:6px;right:6px;z-index:40;padding:1px 7px;border-radius:999px;' +
+          'font:700 11px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:#fff;white-space:nowrap;pointer-events:auto;cursor:help;' +
+          'box-shadow:0 1px 4px rgba(0,0,0,.6);background:' + b.bg + ';border:1.5px solid ' + b.border;
+      }
+    }
+    for (const el of document.querySelectorAll('.' + BADGE)) if (!keep.has(el.parentElement)) el.remove();
+  }
+  function startOverlay() {
+    new MutationObserver(() => { if (!scanTimer) scanTimer = setTimeout(scanCards, 300); })
+      .observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['alt', 'href'] });
+    overlaySoon();
+  }
+
+  const start = () => { mount(); openSellForm(); startOverlay(); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();

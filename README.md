@@ -37,6 +37,10 @@ Le panneau a dix onglets. Dans tous les tableaux, un clic sur un en-tête de col
 
 **Survole un bouton, une case ou un petit « ? »** : une bulle explique ce qu'il fait. Les boutons sont regroupés par rôle, et les options moins utiles sont rangées dans des sections repliables.
 
+### Valeur sur les cartes du site
+
+Sur les pages du site (Collection, Marché, Toutes les cartes, boosters…), chaque carte dont le prix est connu porte une petite pastille en haut à droite : sa valeur médiane. Le contour dit la fiabilité (vert fiable, orange moyen, gris douteux), « ≈ » signale un prix douteux et « ✓ » une carte que tu as déjà. Sur le Marché, la pastille compare aussi avec le prix de l'annonce : verte « −40 % » pour une bonne affaire, rouge « trop cher » quand l'annonce atteint déjà la valeur. Survole la pastille pour le détail : nombre de ventes, enchère max conseillée, marge. Une carte jamais relevée n'a pas de pastille. La case « Afficher la valeur sur les cartes du site » (onglet Collection, « Options et export ») la désactive.
+
 ### Accueil
 
 L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres clés (valeur et variation, cartes, places de vente libres, revenus de la semaine, bonnes affaires), puis des blocs. Un bloc « À vérifier » apparaît en tête quand les chiffres risquent d'être faux : collection pas rechargée depuis plus d'un jour, ou cartes L, UR, SR sans prix relevé. Ensuite : valeur de la collection et variation depuis le dernier relevé, les cartes à vendre en premier avec tes places libres, tes souhaits en vente (bonnes affaires d'abord, puis ceux qui finissent bientôt), ton dernier booster et tes dernières enchères. Chaque bloc a un lien « voir → » vers son onglet.
@@ -81,6 +85,8 @@ Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en
 
 **Bonnes affaires** : une annonce au moins 30 % sous la valeur médiane de la carte (sur 3 ventes ou plus) porte une étiquette verte « bonne affaire −40 % » et remonte en tête. Une case filtre sur elles seules. Pour qu'elles soient repérées, il faut la valeur médiane : « Relever les prix des souhaits en vente » (compte Pro) la relève pour les seuls souhaits actuellement en vente.
 
+**Enchère max** : la valeur médiane de la carte. Jusqu'à ce montant, tu ne paies pas la carte plus cher qu'elle ne se vend d'habitude. L'étiquette verte « +75 ₩ » donne la marge qu'il te reste sur l'annonce de la ligne, la rouge « trop cher » dit qu'elle a déjà dépassé. En dépliant une carte, chaque annonce a sa propre marge.
+
 Les alertes de plus de 12 h sont ignorées : une enchère dure 12 h au plus, elles concernent donc forcément une vente terminée.
 
 « Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, qu'il y ait eu une alerte ou non. Elle traite toute la liste d'un coup, en commençant par celles jamais cherchées. Choisis une rareté pour cibler. Une carte cherchée depuis moins d'une heure est sautée.
@@ -110,6 +116,10 @@ Une courbe de la valeur totale, du nombre de cartes ou du nombre de cartes déj�
 3. Importe son fichier : tu vois ce qu'il a et que tu n'as pas, ce que tu as et qu'il n'a pas, avec les doublons en tête.
 
 Si vos listes de souhaits sont chargées, l'onglet montre aussi les cartes que tu cherches et qu'il possède, et celles qu'il cherche et que tu possèdes.
+
+**Échange proposé** : le script prépare un échange tout fait. D'un côté, les cartes de sa liste de souhaits que tu as en double ; de l'autre, les cartes de ta liste qu'il a en double. Il garde le plus de cartes possible tout en équilibrant la valeur, puis dit combien de wikibidous ajouter d'un côté ou de l'autre. Par défaut, seulement des doublons (personne ne perd une carte) et jamais tes favoris ★ ; la case « Cartes en un seul exemplaire » élargit aux autres. Rien n'est envoyé : c'est toi qui proposes l'échange sur le site.
+
+Avec plusieurs amis, un tableau « Tous mes amis » résume pour chacun ce que tu peux lui donner, ce qu'il peut te donner et la valeur de l'échange équilibré. Un clic sur une ligne ouvre cet ami.
 
 Le fichier contient la liste des cartes, leur nombre d'exemplaires, la liste de souhaits et les prix observés. Il ne contient jamais l'historique réservé au Pro, et il fonctionne avec ou sans compte Pro.
 
