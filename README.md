@@ -55,7 +55,11 @@ Le bilan de tes enchères : ventes réussies et invendus, revenus, achats, solde
 
 ### Souhaits
 
-Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». Clique sur « Charger ma liste de souhaits », et l'onglet indique pour chaque carte si elle est en vente en ce moment (d'après le dernier relevé du marché) et si un ami l'a (d'après les fichiers importés dans l'onglet Amis).
+Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». Clique sur « Charger ma liste de souhaits » pour la lire.
+
+Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en entier. Il retient à la place les alertes de mise en vente que le site t'envoie pour ces cartes. « Vérifier les annonces signalées » cherche chacune d'elles sur le marché par son titre, et affiche le prix le plus bas, la fin de l'enchère et si une offre a déjà été faite. C'est une recherche par seconde, 40 au plus par passage, avec un bouton Stop. Les enchères terminées sont retirées.
+
+L'onglet indique aussi si un ami possède la carte, d'après les fichiers importés dans l'onglet Amis.
 
 ### Boosters
 
