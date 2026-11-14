@@ -1,13 +1,17 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.14.0
+// @version      1.14.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
 // @run-at       document-start
 // @inject-into  page
 // @grant        none
+// @homepageURL  https://github.com/Couvbat/wikimasters-stats
+// @supportURL   https://github.com/Couvbat/wikimasters-stats/issues
+// @updateURL    https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js
+// @downloadURL  https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js
 // ==/UserScript==
 (function () {
   'use strict';

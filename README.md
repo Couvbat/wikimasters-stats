@@ -8,29 +8,27 @@ Le script ne fait que lire. Il n'ouvre pas de paquet, ne met rien aux enchères,
 
 Testé avec Tampermonkey sur Chrome et sur Zen.
 
-### Sur Chrome
-
-1. Installe **Tampermonkey** depuis le Chrome Web Store.
-2. **Autorise les scripts utilisateur, sinon rien ne se lance.** Ouvre `chrome://extensions`, clique sur « Détails » de Tampermonkey et active « Autoriser les scripts utilisateur ». Si cette option n'existe pas chez toi, active le « Mode développeur » en haut à droite de la page des extensions.
-3. Clique sur l'icône Tampermonkey, puis « Créer un nouveau script ».
-4. Efface tout ce qui est dans l'éditeur, colle le contenu de `wikimasters-stats.user.js`, puis enregistre avec Ctrl+S.
-5. Recharge wiki-masters.com (F5). Le bouton « 📊 Stats » apparaît en bas à droite.
-
-### Sur Zen ou Firefox
-
-1. Installe **Tampermonkey** depuis addons.mozilla.org.
-2. Clique sur l'icône Tampermonkey, puis « Créer un nouveau script ».
-3. Efface tout ce qui est dans l'éditeur, colle le contenu de `wikimasters-stats.user.js`, puis enregistre avec Ctrl+S.
+1. Installe **Tampermonkey** : Chrome Web Store pour Chrome, addons.mozilla.org pour Zen ou Firefox.
+2. **Sur Chrome seulement : autorise les scripts utilisateur, sinon rien ne se lance.** Ouvre `chrome://extensions`, clique sur « Détails » de Tampermonkey et active « Autoriser les scripts utilisateur ». Si cette option n'existe pas chez toi, active le « Mode développeur » en haut à droite de la page des extensions. Rien à faire sur Zen ou Firefox.
+3. **Ouvre ce lien** : [installer le script](https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js). Tampermonkey affiche une page d'installation : clique sur « Installer ».
 4. Recharge wiki-masters.com (F5). Le bouton « 📊 Stats » apparaît en bas à droite.
 
-Il n'y a rien à autoriser sur Zen ou Firefox : l'étape « Autoriser les scripts utilisateur » ne concerne que Chrome.
+### Mises à jour
 
-Violentmonkey devrait aussi convenir (bouton « + », puis « Nouveau script »), mais le script n'a pas été testé avec.
+Installé par ce lien, le script se met à jour tout seul : Tampermonkey vérifie régulièrement s'il existe une version plus récente. Pour forcer la vérification : tableau de bord Tampermonkey, puis « Rechercher des mises à jour » dans le menu de l'extension.
+
+**Si tu avais installé le script en le collant à la main**, il ne se mettra pas à jour : supprime-le du tableau de bord Tampermonkey, puis réinstalle-le avec le lien ci-dessus. Tes données ne sont pas perdues, elles sont rangées par le site et non par le script.
+
+### Installation manuelle
+
+Si le lien ne fonctionne pas : icône Tampermonkey, « Créer un nouveau script », efface tout, colle le contenu de `wikimasters-stats.user.js`, puis Ctrl+S. Cette méthode ne donne pas de mises à jour automatiques.
+
+Violentmonkey devrait aussi convenir, mais le script n'a pas été testé avec.
 
 ### Si le bouton n'apparaît pas
 
 - Sur Chrome, revérifie l'étape 2 : c'est la cause la plus fréquente.
-- Dans le tableau de bord de l'extension, « WikiMasters – Stats de collection » doit être dans la liste, avec son interrupteur allumé. S'il n'y est pas, le script n'a pas été enregistré : recolle-le et refais Ctrl+S.
+- Dans le tableau de bord de l'extension, « WikiMasters – Stats de collection » doit être dans la liste, avec son interrupteur allumé. S'il n'y est pas, le script n'a pas été enregistré : réinstalle-le avec le lien ci-dessus.
 - Sur le site, l'icône de l'extension doit afficher un petit « 1 ». Sinon, recharge la page.
 
 ## Utiliser
