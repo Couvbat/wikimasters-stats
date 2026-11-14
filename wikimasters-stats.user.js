@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.6.1
+// @version      1.6.2
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -159,11 +159,16 @@
         const price = typeof a.effective_bid === 'number' ? a.effective_bid : a.base_amount;
         if (typeof price !== 'number') continue;
         const end = Date.parse(a.end_at);
-        const ask = { a: price, b: a.current_bid != null, t: now, r: rarOf(a.snapshot_rarity || (a.card && a.card.rarity)),
-          e: Number.isFinite(end) ? end : 0, i: str(a.id, 80) };
-        // Plusieurs enchères peuvent porter sur la même carte : on garde la moins chère encore en cours.
+        const item = { i: str(a.id, 80), a: price, b: a.current_bid != null, e: Number.isFinite(end) ? end : 0 };
+        // Plusieurs enchères peuvent porter sur la même carte : on les garde toutes, de la moins chère à la plus chère.
+        // Les champs a, b, e, i du niveau supérieur reprennent la moins chère.
         const cur = m.asks[a.card_id];
-        if (!cur || cur.i === ask.i || !(cur.e > now) || ask.a <= cur.a) m.asks[a.card_id] = ask;
+        const list = (cur ? (cur.list || [{ i: cur.i, a: cur.a, b: cur.b, e: cur.e }]) : [])
+          .filter(x => x && x.i !== item.i && (!x.e || x.e > now));
+        list.push(item);
+        list.sort((x, y) => x.a - y.a);
+        m.asks[a.card_id] = { a: list[0].a, b: list[0].b, e: list[0].e, i: list[0].i, t: now,
+          r: rarOf(a.snapshot_rarity || (a.card && a.card.rarity)), list: list.slice(0, 20) };
         if (okKey(a.id) && db.alerts[a.id]) db.alerts[a.id][3] = 1;
       }
       const ids = Object.keys(m.asks);
@@ -311,10 +316,14 @@
     return p && p.n ? Math.max(p.med, DISCARD) : DISCARD;
   }
   // Une enchère en cours sur cette carte : valable jusqu'à sa fin si elle est connue, sinon 48 h.
+  // Renvoie la moins chère, avec dans « list » toutes les enchères encore en cours sur la carte.
   function askOf(cardId) {
     const a = db.market.asks[cardId];
     if (!a) return null;
-    return (a.e ? a.e > Date.now() : Date.now() - a.t < 2 * DAY) ? a : null;
+    const now = Date.now();
+    const list = (a.list || [{ i: a.i, a: a.a, b: a.b, e: a.e }]).filter(x => x && (x.e ? x.e > now : now - a.t < 2 * DAY));
+    if (!list.length) return null;
+    return { a: list[0].a, b: list[0].b, e: list[0].e, i: list[0].i, t: a.t, r: a.r, list };
   }
   // Les alertes récentes dont on ne connaît pas encore le prix, une par carte, les plus récentes d'abord.
   function alertsToCheck() {
@@ -331,9 +340,12 @@
   // Niveau de prix par rareté, d'après les enchères en cours qui ont déjà reçu une offre.
   function marketByRarity() {
     const by = {}, now = Date.now();
-    for (const a of Object.values(db.market.asks)) {
-      if (!a.b || now - a.t > DAY) continue;
-      (by[a.r] = by[a.r] || []).push(a.a);
+    for (const id in db.market.asks) {
+      const raw = db.market.asks[id];
+      if (now - raw.t > DAY) continue;
+      const live = askOf(id);
+      if (!live) continue;
+      for (const x of live.list) if (x.b) (by[raw.r] = by[raw.r] || []).push(x.a);
     }
     return RARITIES.filter(r => by[r] && by[r].length >= 3).map(r => ({ r, med: median(by[r]), n: by[r].length }));
   }
@@ -484,9 +496,11 @@
       for (const [cardId, title] of todo) {
         if (job.stop) break;
         const j = await getJSON('/api/marketplace?page=1&limit=50&sort=recent&q=' + encodeURIComponent(title));
+        // La recherche fait foi pour cette carte : on repart de ce qu'elle renvoie.
+        delete db.market.asks[cardId];
         ingestMarket(j);
         const found = (j.auctions || []).some(x => x && x.card_id === cardId);
-        if (found) live++; else delete db.market.asks[cardId];
+        if (found) live++;
         for (const id in db.alerts) if (db.alerts[id][0] === cardId) db.alerts[id][3] = found ? 1 : 2;
         db.wishSeen[cardId] = Date.now();
         i++;
@@ -918,8 +932,9 @@
     { k: 'adv', t: 'Conseil', price: true, get: r => (pr(r, 'n') ? r.price.med : null),
       cell: r => { const a = advice(r.price); return r.price ? h('span', { class: 'adv ' + a.cls }, a.text) : '—'; } },
     { k: 'ask', t: 'En vente à', ask: true, get: r => (r.ask ? r.ask.a : null),
-      cell: r => (r.ask ? auctionLink(r.ask.i, fmt(r.ask.a) + (r.ask.b ? ' •' : ''),
-        r.ask.b ? 'Une enchère en cours a déjà reçu une offre' : 'Mise de départ d’une enchère en cours, sans offre') : '—') }
+      cell: r => (r.ask ? auctionLink(r.ask.i, fmt(r.ask.a) + (r.ask.b ? ' •' : '') + (r.ask.list.length > 1 ? ' (' + r.ask.list.length + ')' : ''),
+        (r.ask.list.length > 1 ? r.ask.list.length + ' annonces, de ' + fmt(r.ask.a) + ' à ' + fmt(r.ask.list[r.ask.list.length - 1].a) + ' ₩ ; la moins chère : ' : '') +
+        (r.ask.b ? 'une offre a déjà été faite' : 'mise de départ, sans offre')) : '—') }
   ];
 
   function setStatus(msg, where) { const el = ui.el[where || 'status']; if (el) el.textContent = msg || ''; }
@@ -1268,7 +1283,9 @@
     const toCheck = all.filter(c => !c.ask && c.alert).length;
     e.wishTiles.replaceChildren(
       tile('Cartes souhaitées', fmt(Object.keys(db.wish).length), db.wishAt ? 'liste lue ' + ago(db.wishAt) : 'liste pas encore chargée'),
-      tile('En vente, prix connu', fmt(onSale), db.market.at ? 'dernier relevé ' + ago(db.market.at) : 'marché pas encore relevé'),
+      tile('En vente, prix connu', fmt(onSale), onSale
+        ? plural(all.reduce((n, c) => n + (c.ask ? c.ask.list.length : 0), 0), 'annonce', 'annonces') + ' · relevé ' + ago(db.market.at)
+        : db.market.at ? 'dernier relevé ' + ago(db.market.at) : 'marché pas encore relevé'),
       tile('Signalées, à vérifier', fmt(toCheck), 'alertes du site des dernières 24 h'),
       tile('Chez un ami', fmt(atFriends), plural(Object.keys(db.friends).length, 'ami importé', 'amis importés')));
     const left = ms => { const m = Math.round(ms / 6e4); return m < 60 ? m + ' min' : Math.round(m / 60) + ' h'; };
@@ -1281,24 +1298,31 @@
       return;
     }
     const LIMIT = 400;
+    // Une ligne par annonce : une carte mise en vente trois fois occupe trois lignes, de la moins chère à la plus chère.
+    const lines = [];
+    for (const c of list) {
+      if (c.ask) for (const au of c.ask.list) lines.push({ ...c, au, nAu: c.ask.list.length });
+      else lines.push({ ...c, au: null, nAu: 0 });
+    }
     e.wishBody.replaceChildren(
       sortTable('wish', [
-        { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(), cell: c => c.title },
+        { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(),
+          cell: c => [c.title, c.nAu > 1 ? h('span', { class: 'tag' }, c.nAu + ' annonces') : null] },
         { t: 'Rareté', asc: true, get: c => rarOrder(c.rarity), cell: c => rarBadge(c.rarity) },
         withPrices ? { t: 'Valeur médiane', get: c => (c.price && c.price.n ? c.price.med : null),
           cell: c => (c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') } : null,
-        { t: 'En vente à', asc: true, get: c => (c.ask ? c.ask.a : null),
-          cell: c => (c.ask
-            ? auctionLink(c.ask.i, h('b', null, fmt(c.ask.a) + ' ₩' + (c.ask.b ? ' •' : '')),
-              c.ask.b ? 'Cette enchère a déjà reçu une offre' : 'Mise de départ, pas encore d’offre')
+        { t: 'En vente à', asc: true, get: c => (c.au ? c.au.a : null),
+          cell: c => (c.au
+            ? auctionLink(c.au.i, h('b', null, fmt(c.au.a) + ' ₩' + (c.au.b ? ' •' : '')),
+              c.au.b ? 'Cette enchère a déjà reçu une offre' : 'Mise de départ, pas encore d’offre')
             : c.alert ? auctionLink(c.alert[4], h('span', { class: 'est' }, 'à vérifier'), 'Prix pas encore lu') : '—') },
-        { t: 'Fin de l’enchère', asc: true, get: c => (c.ask && c.ask.e > now ? c.ask.e : null),
-          cell: c => (c.ask && c.ask.e > now ? 'dans ' + left(c.ask.e - now) : '—') },
+        { t: 'Fin de l’enchère', asc: true, get: c => (c.au && c.au.e > now ? c.au.e : null),
+          cell: c => (c.au && c.au.e > now ? 'dans ' + left(c.au.e - now) : '—') },
         { t: 'Alerte du site', get: c => (c.alert ? c.alert[2] : null), cell: c => (c.alert ? ago(c.alert[2]) : '—') },
         { t: 'Cherchée', get: c => db.wishSeen[c.id] || null, cell: c => (db.wishSeen[c.id] ? ago(db.wishSeen[c.id]) : '—') },
         { t: 'Chez un ami', asc: true, get: c => c.friends.join(', '), cell: c => (c.friends.length ? c.friends.join(', ') : '—') }
-      ], list, renderWish, { limit: LIMIT, rowClass: c => (rank(c) < 3 ? 'top' : '') }),
-      ...(list.length > LIMIT ? [h('div', { class: 'sub' }, '… et ' + fmt(list.length - LIMIT) + ' autres. Filtre par rareté pour les voir.')] : []));
+      ], lines, renderWish, { limit: LIMIT, rowClass: c => (rank(c) < 3 ? 'top' : '') }),
+      ...(lines.length > LIMIT ? [h('div', { class: 'sub' }, '… et ' + fmt(lines.length - LIMIT) + ' autres lignes. Filtre par rareté pour les voir.')] : []));
   }
 
   // ----- onglet Évolution -----

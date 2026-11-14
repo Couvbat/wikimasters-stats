@@ -61,7 +61,9 @@ Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en
 
 « Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, qu'il y ait eu une alerte ou non. Elle traite 50 cartes par passage, en commençant par celles jamais cherchées : choisis une rareté pour cibler, et relance pour continuer. Une carte cherchée depuis moins d'une heure est sautée.
 
-Le prix d'une annonce est un lien : un clic ouvre l'enchère sur le site, dans un nouvel onglet. Une alerte pas encore vérifiée a aussi son lien.
+Quand une carte est mise en vente plusieurs fois, chaque annonce a sa propre ligne, avec son prix et sa fin d'enchère, et une étiquette « 3 annonces » à côté du titre. Dans l'onglet Collection, la colonne « En vente à » affiche la moins chère suivie du nombre d'annonces entre parenthèses.
+
+Le prix d'une annonce est un lien : un clic ouvre cette enchère sur le site, dans un nouvel onglet. Une alerte pas encore vérifiée a aussi son lien.
 
 L'onglet indique aussi si un ami possède la carte, d'après les fichiers importés dans l'onglet Amis.
 
