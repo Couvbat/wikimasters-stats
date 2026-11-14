@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.16.0
+// @version      1.16.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -167,6 +167,27 @@
     const m = db.market, now = Date.now();
     if (typeof j.maxConcurrentAuctions === 'number') m.max = j.maxConcurrentAuctions;
     if (Array.isArray(j.selling)) m.selling = j.selling.map(a => a && a.card_id).filter(Boolean);
+    // Tes propres listes (Mes enchères, Mes ventes, Gagnées, Historique) : on retient la carte de chaque annonce,
+    // pour poser la pastille de valeur. Seules les annonces en cours gardent leur prix, comparé à la valeur.
+    for (const k of ['bidding', 'selling', 'won', 'history']) {
+      if (!Array.isArray(j[k])) continue;
+      const live = k === 'bidding' || k === 'selling';
+      for (const a of j[k]) {
+        if (!a || !okKey(a.card_id)) continue;
+        const price = typeof a.effective_bid === 'number' ? a.effective_bid : a.current_bid != null ? a.current_bid : a.base_amount;
+        if (okKey(a.id)) {
+          seenAuction.set(a.id, live && typeof price === 'number'
+            ? { c: a.card_id, a: price, b: a.current_bid != null, m: !!db.userId && a.current_bidder_id === db.userId }
+            : { c: a.card_id, a: null });
+        }
+        if (a.card && typeof a.card.wikipedia_title === 'string') seenTitle.set(a.card.wikipedia_title, a.card_id);
+        const end = Date.parse(a.end_at);
+        if (k === 'bidding' && a.final_price == null && typeof price === 'number' && okKey(a.id) && Number.isFinite(end)) {
+          db.obs[a.id] = [a.card_id, price, a.current_bid != null ? 1 : 0, end, now, rarOf(a.snapshot_rarity || (a.card && a.card.rarity))];
+        }
+      }
+    }
+    if (Array.isArray(j.bidding)) queueBidPrices(j.bidding);
     if (Array.isArray(j.history) || Array.isArray(j.won)) {
       for (const a of j.history || []) recordAuction(a, a && typeof a.final_price === 'number' ? 's' : 'u');
       for (const a of j.won || []) if (a && typeof a.final_price === 'number') recordAuction(a, 'b');
@@ -178,7 +199,7 @@
         if (!a || typeof a.card_id !== 'string' || BAD_KEYS.has(a.card_id) || a.final_price != null) continue;
         const price = typeof a.effective_bid === 'number' ? a.effective_bid : a.base_amount;
         if (typeof price !== 'number') continue;
-        if (okKey(a.id)) seenAuction.set(a.id, { c: a.card_id, a: price, b: a.current_bid != null });
+        if (okKey(a.id)) seenAuction.set(a.id, { c: a.card_id, a: price, b: a.current_bid != null, m: !!db.userId && a.current_bidder_id === db.userId });
         if (a.card && typeof a.card.wikipedia_title === 'string') seenTitle.set(a.card.wikipedia_title, a.card_id);
         const end = Date.parse(a.end_at);
         // Enchère observée : on note où en est l'offre. Une fois l'enchère finie, la dernière offre vue sert de prix de vente.
@@ -972,6 +993,34 @@
     }
     pull.busy = false;
     renderPull();
+  }
+  // Cartes où tu enchéris : leur prix est relevé tout seul quand le site affiche Mes enchères (compte Pro),
+  // une carte à la fois, à peu près au rythme d'après un booster. Rien n'est redemandé avant 24 h.
+  // Si un autre relevé tourne ou si le site refuse ou freine, on s'arrête là : la suite viendra au prochain passage.
+  const bidQ = { queue: [], busy: false };
+  function queueBidPrices(list) {
+    if (proState() !== true) return;
+    for (const a of list) {
+      const id = a && a.card_id;
+      if (!okKey(id) || bidQ.queue.some(x => x[0] === id)) continue;
+      const r = rarOf(a.snapshot_rarity || (a.card && a.card.rarity));
+      if (priceStale(id, r)) bidQ.queue.push([id, r]);
+    }
+    runBidQueue();
+  }
+  async function runBidQueue() {
+    if (bidQ.busy) return;
+    bidQ.busy = true;
+    try {
+      while (bidQ.queue.length && !job.running && !pull.busy) {
+        const [id, r] = bidQ.queue.shift();
+        if (!priceStale(id, r)) continue;
+        await fetchSales(id, r);
+        if (bidQ.queue.length) await sleep(900 + Math.random() * 400);
+      }
+    } catch (e) {}
+    bidQ.queue.length = 0;
+    bidQ.busy = false;
   }
   function renderPull() {
     const e = ui.el;
@@ -2799,9 +2848,9 @@
       text = (p.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(med)) + ' ₩';
       border = ['#6b7280', '#f59e0b', '#10b981'][p.rel.level];
       lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? ' observées' : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
-      if (au) {
+      if (au && au.a != null) {
         const pct = Math.round(100 * (1 - au.a / med));
-        lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
+        lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
         lines.push('Enchère max conseillée : ' + fmt(mx) + ' ₩' + (mx > au.a ? ', marge ' + fmt(mx - au.a) + ' ₩' : ' : déjà atteinte'));
         if (dealPct(au, p)) { text += ' · −' + pct + ' %'; bg = 'rgba(6,95,70,.92)'; lines.push('Bonne affaire : ' + pct + ' % sous la valeur.'); }
         else if (au.a >= med) { text += ' · trop cher'; bg = 'rgba(127,29,29,.92)'; }
