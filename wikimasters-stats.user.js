@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.11.1
+// @version      1.12.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -2007,7 +2007,9 @@
     e.sellTable.replaceChildren(sortTable('sell', [
       { t: '#', asc: true, get: r => rankOf.get(r), cell: r => rankOf.get(r) },
       { t: 'Carte', left: true, asc: true, get: r => r.title.toLowerCase(),
-        cell: r => [r.title, r.shiny ? ' ✨' : '', r.starred ? ' ★' : '', r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null] },
+        cell: r => [h('a', { class: 'go', href: sellLink(r.cardId), target: '_blank', rel: 'noopener',
+          title: 'Ouvrir le formulaire de mise en vente sur le site' }, r.title, ' ↗'),
+        r.shiny ? ' ✨' : '', r.starred ? ' ★' : '', r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null] },
       { t: 'Rareté', asc: true, get: r => rarOrder(r.rarity), cell: r => rarBadge(r.rarity) },
       { t: 'Ex.', get: r => r.count, cell: r => r.count },
       { t: 'Prix conseillé', get: r => r.value, cell: r => h('b', null, fmt(Math.round(r.value)) + ' ₩') },
@@ -2188,9 +2190,47 @@
     refresh();
   }
 
+  // ---------- raccourci vers la mise en vente ----------
+  // Le site n'a pas d'adresse pour mettre une carte en vente : le formulaire s'ouvre depuis la carte, page Collection.
+  // Un lien « /collection#wm-sell=<carte> » fait ces gestes à ta place : chercher la carte, l'ouvrir,
+  // cliquer « Mettre aux enchères ». Le script s'arrête au formulaire : mise de départ, durée et
+  // « Lancer l'enchère » restent à toi.
+  const sellLink = cardId => '/collection#wm-sell=' + encodeURIComponent(cardId);
+  async function openSellForm() {
+    const m = /^#wm-sell=([^&]+)$/.exec(location.hash);
+    if (!m || location.pathname !== '/collection') return;
+    const cardId = decodeURIComponent(m[1]);
+    history.replaceState(null, '', location.pathname + location.search);
+    const card = Object.values(db.cards).find(c => c.cardId === cardId);
+    if (!card) return;
+    const until = async (fn, ms) => {
+      for (let t = 0; t < ms; t += 200) { const v = fn(); if (v) return v; await sleep(200); }
+      return null;
+    };
+    const mine = el => !el.closest('#wm-stats-host');
+    const input = await until(() => [...document.querySelectorAll('input')].find(i => mine(i) && /Rechercher/i.test(i.placeholder || '')), 10000);
+    if (!input) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, card.title);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const title = await until(() => [...document.querySelectorAll('h3')].find(h => mine(h) && h.textContent.trim() === card.title), 8000);
+    if (!title) return;
+    const sellBtn = () => [...document.querySelectorAll('button')].find(b => mine(b) && /Mettre aux enchères/.test(b.textContent));
+    // Le clic se fait sur la carte, quelques niveaux au-dessus du titre ; on remonte jusqu'à ce que la fiche s'ouvre.
+    let el = title;
+    for (let i = 0; i < 5 && el && !sellBtn(); i++, el = el.parentElement) {
+      el.click();
+      await until(sellBtn, 700);
+    }
+    const btn = sellBtn();
+    if (btn) btn.click();
+  }
+  window.addEventListener('hashchange', () => openSellForm());
+
   // Chaque minute, les enchères observées qui viennent de finir deviennent des prix.
   setInterval(() => { if (!job.running && settleObserved()) { saveDb(); refresh(); } }, 60000);
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
-  else mount();
+  const start = () => { mount(); openSellForm(); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
 })();

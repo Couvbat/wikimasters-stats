@@ -49,7 +49,9 @@ Le panneau a neuf onglets. Dans tous les tableaux, un clic sur un en-tête de co
 
 ### À vendre
 
-La liste des cartes qui méritent une place aux enchères : doublons d'abord, puis les plus chères. Tu règles la valeur minimale, et tu choisis d'inclure ou non tes favoris et les prix douteux. Les cartes déjà en vente sont retirées, et les lignes surlignées tiennent dans tes places de vente libres. Le script ne met rien en vente : c'est toi qui le fais sur le site.
+La liste des cartes qui méritent une place aux enchères : doublons d'abord, puis les plus chères. Tu règles la valeur minimale, et tu choisis d'inclure ou non tes favoris et les prix douteux. Les cartes déjà en vente sont retirées, et les lignes surlignées tiennent dans tes places de vente libres.
+
+Un clic sur le nom d'une carte ouvre, dans un nouvel onglet, la page Collection du site avec le formulaire « Mettre aux enchères » de cette carte déjà ouvert. Le script s'arrête là : la mise de départ, la durée et le bouton « Lancer l'enchère » restent à toi.
 
 ### Mes ventes
 
