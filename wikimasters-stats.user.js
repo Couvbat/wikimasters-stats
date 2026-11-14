@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.9.0
+// @version      1.10.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -510,13 +510,31 @@
     days.slice(0, Math.max(0, days.length - 400)).forEach(d => delete db.history[d]);
     saveDb();
   }
+  // Il arrive que le site réponde « aucune vente » pour une carte qui en a : constaté sur des UR et SR très vendues.
+  // Pour les raretés où « jamais vendue » est rare, une réponse vide est donc redemandée une fois,
+  // et n'est gardée qu'une heure au lieu de 24.
+  const DOUBT_EMPTY = new Set(['L', 'UR', 'SR', 'R']);
+  function priceStale(cardId, rarity) {
+    const p = db.prices[cardId];
+    if (!p) return true;
+    const age = Date.now() - p.at;
+    return age > DAY || (!p.sales.length && DOUBT_EMPTY.has(rarity) && age > 36e5);
+  }
+  async function fetchSales(cardId, rarity) {
+    const url = '/api/marketplace/cards/' + encodeURIComponent(cardId) + '/sales';
+    const empty = j => !j || !((Array.isArray(j.recent) && j.recent.length) || (Array.isArray(j.sales) && j.sales.length));
+    let j = await getJSON(url);
+    if (empty(j) && DOUBT_EMPTY.has(rarity)) {
+      await sleep(1500);
+      j = await getJSON(url);
+    }
+    ingestSales(cardId, j);
+  }
   function missingIds() {
-    const now = Date.now();
     const ids = new Set();
     for (const c of Object.values(db.cards)) {
       if (!ui.chosen.has(c.rarity)) continue;
-      const p = db.prices[c.cardId];
-      if (!p || now - p.at > DAY) ids.add(c.cardId);
+      if (priceStale(c.cardId, c.rarity)) ids.add(c.cardId);
     }
     return [...ids];
   }
@@ -560,9 +578,11 @@
     startJob('Prix : 0 / ' + ids.length);
     let i = 0;
     try {
+      const rarById = {};
+      for (const c of Object.values(db.cards)) rarById[c.cardId] = c.rarity;
       for (const id of ids) {
         if (job.stop) break;
-        ingestSales(id, await getJSON('/api/marketplace/cards/' + encodeURIComponent(id) + '/sales'));
+        await fetchSales(id, rarById[id]);
         i++;
         setStatus('Prix : ' + i + ' / ' + ids.length);
         if (i < ids.length) await sleep(PRICE_DELAY + Math.random() * 500);
@@ -597,6 +617,39 @@
         : seen + ' enchères lues. Leur prix sera enregistré quand elles seront finies, d’ici quelques minutes.', where);
     } catch (e) {
       endJob('Lecture du marché impossible (' + e.message + ').', where);
+    }
+  }
+
+  // Les cartes passées dans tes échanges dont l'historique de ventes manque ou date.
+  // Une carte donnée n'est plus dans ta collection : « Compléter les prix manquants » ne la voit donc jamais.
+  const TRADE_BATCH = 60;
+  function tradeCardsToPrice() {
+    const out = [], seen = new Set();
+    const list = Object.values(db.trades).sort(byDateDesc).sort((a, b) => (b.s === 'accepted') - (a.s === 'accepted'));
+    for (const t of list) for (const c of t.g.concat(t.r)) {
+      if (seen.has(c[0]) || !priceStale(c[0], c[2])) continue;
+      seen.add(c[0]);
+      out.push([c[0], c[2]]);
+    }
+    return out;
+  }
+  async function fillTradePrices() {
+    if (job.running || proState() !== true) return;
+    const todo = tradeCardsToPrice().slice(0, TRADE_BATCH);
+    if (!todo.length) return setStatus('Toutes les cartes échangées ont déjà un prix relevé.', 'tradeStatus');
+    startJob('Prix : 0 / ' + todo.length, 'tradeStatus');
+    let i = 0;
+    try {
+      for (const [id, rarity] of todo) {
+        if (job.stop) break;
+        await fetchSales(id, rarity);
+        i++;
+        setStatus('Prix : ' + i + ' / ' + todo.length, 'tradeStatus');
+        if (i < todo.length) await sleep(PRICE_DELAY + Math.random() * 500);
+      }
+      endJob(job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '.' : 'Prix relevés pour ' + plural(i, 'carte échangée', 'cartes échangées') + '.', 'tradeStatus');
+    } catch (e) {
+      endJob('Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + todo.length + '. Réessaie plus tard.', 'tradeStatus');
     }
   }
 
@@ -688,6 +741,26 @@
         !(owned && owned.has(id)))
       .sort((a, b) => (db.wishSeen[a] || 0) - (db.wishSeen[b] || 0) || rarOrder(db.wish[a][1]) - rarOrder(db.wish[b][1]));
   }
+  // Les cartes de la liste qui ont une annonce connue ou une alerte récente : celles dont les prix peuvent avoir bougé.
+  function wishLive() {
+    const owned = db.wishHideOwned ? ownedIds() : null;
+    const titles = {};
+    for (const id in db.wish) titles[id] = [db.wish[id][0], db.wish[id][1]];
+    for (const a of Object.values(db.alerts)) if (!titles[a[0]]) titles[a[0]] = [a[1], ''];
+    const out = [];
+    for (const id in titles) {
+      if ((ui.wishRarity && titles[id][1] !== ui.wishRarity) || (owned && owned.has(id))) continue;
+      if (askOf(id) || alertOf(id)) out.push([id, titles[id][0]]);
+    }
+    return out;
+  }
+  // Relit les annonces déjà affichées, sans attendre l'heure de délai de la recherche générale.
+  function refreshWish() {
+    if (job.running) return;
+    const todo = wishLive().slice(0, SEARCH_BATCH);
+    if (!todo.length) return setStatus('Aucune annonce à rafraîchir pour l’instant.', 'wishStatus');
+    return marketSearch(todo, 'Rafraîchissement', 'dont l’annonce est terminée');
+  }
   function searchWish() {
     if (job.running) return;
     const todo = wishToSearch().slice(0, SEARCH_BATCH).map(id => [id, db.wish[id][0]]);
@@ -730,8 +803,7 @@
       if (pro === true) {
         const now = Date.now();
         for (const c of cards) {
-          const p = db.prices[c.cardId];
-          if ((!p || now - p.at > DAY) && !pull.queue.includes(c.cardId)) pull.queue.push(c.cardId);
+          if (priceStale(c.cardId, c.rarity) && !pull.queue.includes(c.cardId)) pull.queue.push(c.cardId);
         }
         runPullQueue();
       }
@@ -744,7 +816,8 @@
     try {
       while (pull.queue.length) {
         const id = pull.queue[0];
-        ingestSales(id, await getJSON('/api/marketplace/cards/' + encodeURIComponent(id) + '/sales'));
+        const pulled = pull.cards.find(c => c.cardId === id);
+        await fetchSales(id, pulled ? pulled.rarity : '');
         pull.queue.shift();
         if (pull.queue.length) await sleep(600 + Math.random() * 300);
       }
@@ -1126,6 +1199,11 @@
     const pending = alertsToCheck().length;
     e.wishCheck.disabled = job.running || !pending;
     e.wishCheck.textContent = 'Vérifier les annonces signalées (' + Math.min(pending, ALERT_BATCH) + ')';
+    const live = wishLive().length;
+    e.wishRefresh.disabled = job.running || !live;
+    e.wishRefresh.textContent = 'Rafraîchir les annonces (' + Math.min(live, SEARCH_BATCH) + (live > SEARCH_BATCH ? ' sur ' + live : '') + ')';
+    e.stop3.disabled = !job.running;
+    if (job.running) e.tradeFill.disabled = true;
     const toSearch = wishToSearch().length;
     e.wishSearch.disabled = job.running || !toSearch;
     e.wishSearch.textContent = 'Chercher mes souhaits sur le marché (' + Math.min(toSearch, SEARCH_BATCH) +
@@ -1157,6 +1235,7 @@
     e.wishLoad = h('button', { class: 'b pri', onclick: loadWish }, 'Charger ma liste de souhaits');
     e.wishCheck = h('button', { class: 'b', onclick: checkAlerts }, 'Vérifier les annonces signalées');
     e.wishSearch = h('button', { class: 'b', onclick: searchWish }, 'Chercher mes souhaits sur le marché');
+    e.wishRefresh = h('button', { class: 'b', title: 'Relit le prix et la fin des annonces déjà listées', onclick: refreshWish }, 'Rafraîchir les annonces');
     e.wishFold = h('button', { class: 'b', onclick: () => { ui.wishAll = !ui.wishAll; ui.wishOpen.clear(); renderWish(); } }, 'Tout déplier');
     e.stop2 = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
     e.sub = h('div', { class: 'sub' });
@@ -1250,15 +1329,19 @@
     e.tradeTiles = h('div', { class: 'tiles' });
     e.tradeBody = h('div', { class: 'scroll' });
     e.tradeLoad = h('button', { class: 'b pri', onclick: loadTrades }, 'Actualiser mes échanges');
+    e.tradeFill = h('button', { class: 'b', onclick: fillTradePrices }, 'Relever les prix des cartes échangées');
+    e.stop3 = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
     e.view_trades = h('div', null,
-      h('div', { class: 'bar' }, e.tradeLoad), e.tradeStatus, e.tradeTiles, e.tradeBody,
+      h('div', { class: 'bar' }, e.tradeLoad, e.tradeFill, e.stop3), e.tradeStatus, e.tradeTiles, e.tradeBody,
       h('div', { class: 'note' },
         'Les échanges sont lus sur la page Échanges du site, à chaque visite ou avec le bouton, et gardés en mémoire. ',
-        'Les valeurs sont celles d’aujourd’hui, pas celles du jour de l’échange, et une carte sans vente connue compte pour 1. ',
+        'Les valeurs sont celles d’aujourd’hui, pas celles du jour de l’échange. Une carte sans prix connu n’est pas comptée : ' +
+        'elle apparaît comme « + 1 ? » et rend le bilan incomplet. Les cartes que tu as données ne sont plus dans ta collection, ' +
+        'donc leur prix se relève ici, avec « Relever les prix des cartes échangées » (compte Pro). ',
         'Clique sur un échange pour voir les cartes.'));
 
     e.view_wish = h('div', null,
-      h('div', { class: 'bar' }, e.wishLoad, e.wishCheck, e.wishSearch, e.stop2),
+      h('div', { class: 'bar' }, e.wishLoad, e.wishRefresh, e.wishCheck, e.wishSearch, e.stop2),
       h('div', { class: 'bar' },
         rarSelect(ev => { ui.wishRarity = ev.target.value; syncButtons(); renderWish(); }),
         h('label', { class: 'chk' },
@@ -1467,10 +1550,24 @@
     cancelled: 'Annulé', canceled: 'Annulé', expired: 'Expiré' };
   function renderTrades() {
     const e = ui.el;
-    const cardsValue = l => l.reduce((a, c) => a + valueOf(c[0]), 0);
+    // Une carte dont le script ne connaît aucune vente n'a pas de valeur ici : on la compte à part, sans l'inventer.
+    // Une carte analysée récemment et jamais vendue vaut la défausse ; une carte jamais analysée reste « inconnue ».
+    const known = c => {
+      const p = priceOf(c[0]);
+      if (p && p.n) return Math.max(p.med, DISCARD);
+      return db.prices[c[0]] && !priceStale(c[0], c[2]) ? DISCARD : null;
+    };
+    const cardsValue = l => l.reduce((a, c) => a + (known(c) || 0), 0);
+    const unknown = l => l.filter(c => known(c) == null).length;
     const T = Object.entries(db.trades)
-      .map(([id, t]) => ({ id, ...t, vg: cardsValue(t.g) + t.wg, vr: cardsValue(t.r) + t.wr }))
+      .map(([id, t]) => ({ id, ...t, vg: cardsValue(t.g) + t.wg, vr: cardsValue(t.r) + t.wr, ug: unknown(t.g), ur: unknown(t.r) }))
       .sort(byDateDesc);
+    const toPrice = tradeCardsToPrice().length;
+    e.tradeFill.disabled = job.running || proState() !== true || !toPrice;
+    e.tradeFill.textContent = proState() === true
+      ? 'Relever les prix des cartes échangées (' + Math.min(toPrice, TRADE_BATCH) + (toPrice > TRADE_BATCH ? ' sur ' + toPrice : '') + ')'
+      : 'Prix des cartes échangées : réservé aux comptes Pro';
+    e.stop3.disabled = !job.running;
     if (!T.length) {
       e.tradeTiles.replaceChildren();
       e.tradeBody.replaceChildren(h('div', { class: 'empty' },
@@ -1484,19 +1581,24 @@
     const given = sum(done, t => t.g.length), got = sum(done, t => t.r.length);
     const vg = sum(done, t => t.vg), vr = sum(done, t => t.vr);
     const signed = v => (v > 0 ? '+' : '') + fmt(v) + ' ₩';
+    const missing = sum(done, t => t.ug + t.ur);
+    // « + 2 ? » : deux cartes de ce côté n'ont pas de prix connu et ne sont pas comptées.
+    const withGap = (v, n) => fmt(v) + ' ₩' + (n ? ' + ' + n + ' ?' : '');
+    const gapTitle = n => (n ? plural(n, 'carte sans prix connu, non comptée', 'cartes sans prix connu, non comptées') : '');
     e.tradeTiles.replaceChildren(...[
       tile('Échanges conclus', fmt(done.length), 'sur ' + plural(T.length, 'proposition', 'propositions') + ' · ' +
         plural(count('declined'), 'refusée', 'refusées') + ', ' + plural(count('countered'), 'contre-proposée', 'contre-proposées')),
       tile('Cartes données', fmt(given), sum(done, t => t.wg) ? fmt(sum(done, t => t.wg)) + ' ₩ donnés en plus' : null),
       tile('Cartes reçues', fmt(got), sum(done, t => t.wr) ? fmt(sum(done, t => t.wr)) + ' ₩ reçus en plus' : null),
-      withPrices ? tile('Bilan en valeur', signed(vr - vg), 'reçu ' + fmt(vr) + ' ₩, donné ' + fmt(vg) + ' ₩') : null
+      withPrices ? tile('Bilan en valeur', signed(vr - vg) + (missing ? ' ?' : ''), 'reçu ' + fmt(vr) + ' ₩, donné ' + fmt(vg) + ' ₩' +
+        (missing ? ' · incomplet : ' + gapTitle(missing) : '')) : null
     ].filter(Boolean));
     const kids = [];
     // Par joueur
     const byWho = {};
     for (const t of T) {
-      const w = byWho[t.w] = byWho[t.w] || { w: t.w, ok: 0, no: 0, g: 0, r: 0, bal: 0 };
-      if (t.s === 'accepted') { w.ok++; w.g += t.g.length; w.r += t.r.length; w.bal += t.vr - t.vg; }
+      const w = byWho[t.w] = byWho[t.w] || { w: t.w, ok: 0, no: 0, g: 0, r: 0, bal: 0, miss: 0 };
+      if (t.s === 'accepted') { w.ok++; w.g += t.g.length; w.r += t.r.length; w.bal += t.vr - t.vg; w.miss += t.ug + t.ur; }
       else if (t.s === 'declined') w.no++;
     }
     kids.push(h('h2', null, 'Avec qui tu échanges'), sortTable('tradeWho', [
@@ -1505,7 +1607,8 @@
       { t: 'Refusés', get: x => x.no, cell: x => x.no },
       { t: 'Cartes données', get: x => x.g, cell: x => x.g },
       { t: 'Cartes reçues', get: x => x.r, cell: x => x.r },
-      withPrices ? { t: 'Bilan en valeur', get: x => x.bal, cell: x => signed(x.bal) } : null
+      withPrices ? { t: 'Bilan en valeur', get: x => x.bal,
+        cell: x => h('span', { title: x.miss ? 'Incomplet : ' + gapTitle(x.miss) : '' }, signed(x.bal) + (x.miss ? ' ?' : '')) } : null
     ], Object.values(byWho).sort((a, b) => b.ok - a.ok), renderTrades));
     // Par rareté, sur les échanges conclus
     const rc = {};
@@ -1526,7 +1629,9 @@
     const cardList = (label, l, wb) => h('tr', null,
       h('td', null, label),
       h('td', null, l.length || wb
-        ? [l.map((c, i) => [i ? ' · ' : '', rarBadge(c[2]), ' ', c[1], withPrices ? ' (' + fmt(valueOf(c[0])) + ' ₩)' : '']), wb ? (l.length ? ' · ' : '') + fmt(wb) + ' ₩' : '']
+        ? [l.map((c, i) => [i ? ' · ' : '', rarBadge(c[2]), ' ', c[1],
+          withPrices ? (known(c) == null ? h('span', { class: 'est' }, ' (prix inconnu)') : ' (' + fmt(known(c)) + ' ₩)') : '']),
+        wb ? (l.length ? ' · ' : '') + fmt(wb) + ' ₩' : '']
         : 'rien'));
     kids.push(h('h2', null, 'Tes échanges (' + fmt(T.length) + ')'), sortTable('trades', [
       { t: 'Date', get: t => t.t, cell: t => [h('span', { class: 'caret' }, ui.tradeOpen.has(t.id) ? '▾' : '▸'), fmtDate(t.t)] },
@@ -1535,9 +1640,10 @@
       { t: 'Statut', asc: true, get: t => TRADE_STATUS[t.s] || t.s, cell: t => TRADE_STATUS[t.s] || t.s },
       { t: 'Données', get: t => t.g.length, cell: t => t.g.length + (t.wg ? ' + ' + fmt(t.wg) + ' ₩' : '') },
       { t: 'Reçues', get: t => t.r.length, cell: t => t.r.length + (t.wr ? ' + ' + fmt(t.wr) + ' ₩' : '') },
-      withPrices ? { t: 'Valeur donnée', get: t => t.vg, cell: t => fmt(t.vg) + ' ₩' } : null,
-      withPrices ? { t: 'Valeur reçue', get: t => t.vr, cell: t => fmt(t.vr) + ' ₩' } : null,
-      withPrices ? { t: 'Écart', get: t => t.vr - t.vg, cell: t => h('b', null, signed(t.vr - t.vg)) } : null
+      withPrices ? { t: 'Valeur donnée', get: t => t.vg, cell: t => h('span', { title: gapTitle(t.ug) }, withGap(t.vg, t.ug)) } : null,
+      withPrices ? { t: 'Valeur reçue', get: t => t.vr, cell: t => h('span', { title: gapTitle(t.ur) }, withGap(t.vr, t.ur)) } : null,
+      withPrices ? { t: 'Écart', get: t => t.vr - t.vg,
+        cell: t => h('b', { title: t.ug + t.ur ? 'Incomplet : ' + gapTitle(t.ug + t.ur) : '' }, signed(t.vr - t.vg) + (t.ug + t.ur ? ' ?' : '')) } : null
     ], T, renderTrades, {
       limit: 300,
       rowClass: t => (t.s === 'accepted' ? 'top' : ''),

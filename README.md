@@ -40,7 +40,7 @@ Le panneau a neuf onglets. Dans tous les tableaux, un clic sur un en-tête de co
 ### Collection
 
 - **Charger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
-- **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h.
+- **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
 - **Relever les fins d'enchères** : lit les 200 enchères sur le point de se terminer, pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
 - **Exporter en CSV** : le tableau tel qu'il est filtré et trié, à ouvrir dans Excel ou LibreOffice.
 - Clique sur un en-tête de colonne pour trier.
@@ -57,13 +57,17 @@ Le bilan de tes enchères : ventes réussies et invendus, revenus, achats, solde
 
 Le bilan de tes échanges avec d'autres joueurs : échanges conclus, refusés et contre-proposés, cartes données et reçues, et bilan en valeur. Deux tableaux détaillent avec qui tu échanges et ce que tu donnes et reçois par rareté. Dans la liste, un clic sur un échange le déplie pour montrer les cartes de chaque côté.
 
-Les échanges sont lus sur la page Échanges du site, à chaque visite ou avec le bouton « Actualiser mes échanges », et gardés en mémoire. Les valeurs sont celles d'aujourd'hui, pas celles du jour de l'échange, et une carte sans vente connue compte pour 1.
+Les échanges sont lus sur la page Échanges du site, à chaque visite ou avec le bouton « Actualiser mes échanges », et gardés en mémoire. Les valeurs sont celles d'aujourd'hui, pas celles du jour de l'échange.
+
+Une carte que tu as donnée n'est plus dans ta collection, donc l'onglet Collection ne relève jamais son prix. Le bouton « Relever les prix des cartes échangées » (compte Pro) le fait pour toutes les cartes passées dans tes échanges. Tant qu'une carte n'a pas de prix connu, elle n'est pas comptée : elle apparaît comme « + 1 ? » et le bilan est marqué incomplet, plutôt que d'afficher une valeur inventée.
 
 ### Souhaits
 
 Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». Clique sur « Charger ma liste de souhaits » pour la lire.
 
 Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en entier. Il retient à la place les alertes de mise en vente que le site t'envoie pour ces cartes. « Vérifier les annonces signalées » cherche chacune d'elles sur le marché par son titre, et affiche le prix le plus bas, la fin de l'enchère et si une offre a déjà été faite. C'est une recherche par seconde, 40 au plus par passage, avec un bouton Stop. Les enchères terminées sont retirées.
+
+« Rafraîchir les annonces » relit le prix et la fin des annonces déjà listées, sans attendre : utile avant d'enchérir, puisque les offres montent.
 
 « Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, qu'il y ait eu une alerte ou non. Elle traite 50 cartes par passage, en commençant par celles jamais cherchées : choisis une rareté pour cibler, et relance pour continuer. Une carte cherchée depuis moins d'une heure est sautée.
 
