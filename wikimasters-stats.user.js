@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.3.1
+// @version      1.3.2
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -519,6 +519,7 @@
     .tile{background:#151c19;border:1px solid #26302c;border-radius:10px;padding:10px 12px}
     .tile b{display:block;font-size:20px;margin-top:2px;color:#34d399;font-variant-numeric:tabular-nums}
     .tile span{color:#8b9a94;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+    .tile small{display:block;color:#8b9a94;font-size:12px;margin-top:2px}
     .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
     button.b{background:#1c2622;color:#e5e7eb;border:1px solid #33413b;border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer}
     button.b:hover:not(:disabled){border-color:#34d399}
@@ -758,7 +759,7 @@
     syncButtons();
     ({ col: renderCol, sell: renderSell, pulls: renderPulls, friends: renderFriends })[ui.tab]();
   }
-  const tile = (label, val) => h('div', { class: 'tile' }, h('span', null, label), h('b', null, val));
+  const tile = (label, val, sub) => h('div', { class: 'tile' }, h('span', null, label), h('b', null, val), sub ? h('small', null, sub) : null);
   const plural = (n, one, many) => fmt(n) + ' ' + (n > 1 ? many : one);
 
   // ----- onglet Collection -----
@@ -774,8 +775,9 @@
     e.tiles.replaceChildren(...(withPrices ? [
       tile('Cartes', fmt(nCards)),
       tile('Valeur totale', fmt(total) + ' ₩'),
-      tile('Cartes déjà vendues aux enchères', known + ' sur ' + rows.length),
-      tile('Sans vente connue, comptées à 1 ₩', fmt(rows.length - known) + ' cartes · ' + (total ? fmt(100 * estTotal / total) : '0') + ' % de la valeur totale'),
+      tile('Déjà vendues aux enchères', fmt(known), 'sur ' + plural(rows.length, 'carte', 'cartes')),
+      tile('Sans vente connue', fmt(rows.length - known),
+        'comptées à 1 ₩ · ' + (total ? fmt(100 * estTotal / total) : '0') + ' % de la valeur totale'),
       proState() === true ? tile('Pas encore analysées', fmt(rows.filter(r => !db.prices[r.cardId]).length)) : null
     ].filter(Boolean) : [
       tile('Cartes', fmt(nCards)),
