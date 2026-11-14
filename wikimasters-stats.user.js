@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.11.0
+// @version      1.11.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -1150,9 +1150,10 @@
     tr.click{cursor:pointer}
     tr.click:hover td{background:#183226}
     .caret{display:inline-block;width:16px;color:#34d399}
-    tr.det>td{background:#0b100e;padding:6px 8px 10px 32px;text-align:left}
-    tr.det table{width:auto}
-    tr.det table td{border-bottom:0;padding:3px 22px 3px 0;text-align:left;color:#cbd5d1}
+    tr.det>td{background:#0b100e;padding:6px 8px 10px 32px;text-align:left;white-space:normal}
+    tr.det table{width:auto;max-width:100%}
+    tr.det table td{border-bottom:0;padding:3px 22px 3px 0;text-align:left;color:#cbd5d1;white-space:normal;vertical-align:top;line-height:1.7}
+    tr.det table td:first-child{white-space:nowrap}
     td a{color:#e5e7eb;text-decoration:none}
     td a:hover{color:#34d399}
     td a.go{color:#34d399;text-decoration:underline;text-underline-offset:2px;white-space:nowrap}
