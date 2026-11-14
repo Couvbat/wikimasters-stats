@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.7.0
+// @version      1.8.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -31,6 +31,7 @@
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
       auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
+      obs: {}, obsSales: {}, obsRar: {},
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: false }
     };
   }
@@ -50,7 +51,9 @@
         base.market = Object.assign(defaults().market, d.market || {});
         base.sell = Object.assign(defaults().sell, d.sell || {});
         if (!Array.isArray(base.pulls)) base.pulls = [];
-        for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen']) if (!isObj(base[k])) base[k] = {};
+        for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar']) {
+          if (!isObj(base[k])) base[k] = {};
+        }
       }
     } catch (e) {}
     return base;
@@ -159,6 +162,10 @@
         const price = typeof a.effective_bid === 'number' ? a.effective_bid : a.base_amount;
         if (typeof price !== 'number') continue;
         const end = Date.parse(a.end_at);
+        // Enchère observée : on note où en est l'offre. Une fois l'enchère finie, la dernière offre vue sert de prix de vente.
+        if (okKey(a.id) && Number.isFinite(end)) {
+          db.obs[a.id] = [a.card_id, price, a.current_bid != null ? 1 : 0, end, now, rarOf(a.snapshot_rarity || (a.card && a.card.rarity))];
+        }
         const item = { i: str(a.id, 80), a: price, b: a.current_bid != null, e: Number.isFinite(end) ? end : 0 };
         // Plusieurs enchères peuvent porter sur la même carte : on les garde toutes, de la moins chère à la plus chère.
         // Les champs a, b, e, i du niveau supérieur reprennent la moins chère.
@@ -177,8 +184,93 @@
       }
     }
     m.at = now;
+    settleObserved();
     saveDb();
     refresh();
+  }
+
+  // ---------- prix observés : un historique construit à partir des enchères que tout compte peut voir ----------
+  // Le site ne montre pas le prix final d'une enchère aux autres joueurs. On retient donc la dernière offre vue
+  // avant la fin. C'est un minimum : l'offre a pu monter après. « g » dit combien de minutes avant la fin on l'a vue.
+  const OBS_NEAR = 30;      // au-delà de 30 min avant la fin, le prix vu est trop incertain pour les niveaux par rareté
+  const MAX_OBS = 6000;     // enchères en cours suivies
+  const MAX_OBS_CARDS = 8000;
+  function addObserved(cardId, sale, rarity) {
+    if (!okKey(cardId) || typeof sale.p !== 'number' || sale.p <= 0) return false;
+    const list = db.obsSales[cardId] || [];
+    if (list.some(x => x.t === sale.t && x.p === sale.p)) return false;
+    list.push({ p: sale.p, t: str(sale.t, 40), g: Math.max(0, Math.round(num(sale.g))) });
+    db.obsSales[cardId] = list.sort(byDateDesc).slice(0, 10);
+    const end = Date.parse(sale.t);
+    if (rarity && rarity !== '?' && sale.g <= OBS_NEAR && Number.isFinite(end)) {
+      const rl = db.obsRar[rarity] || [];
+      rl.push([sale.p, end]);
+      db.obsRar[rarity] = rl.sort((x, y) => y[1] - x[1]).slice(0, 400);
+    }
+    return true;
+  }
+  function settleObserved() {
+    const now = Date.now();
+    let changed = false;
+    for (const id in db.obs) {
+      const o = db.obs[id];
+      if (!Array.isArray(o) || o[3] > now) continue;
+      // Tes propres enchères ont déjà leur vrai prix final dans « Mes ventes ».
+      if (o[2] && !db.auctions[id]) addObserved(o[0], { p: o[1], t: new Date(o[3]).toISOString(), g: (o[3] - o[4]) / 6e4 }, o[5]);
+      delete db.obs[id];
+      changed = true;
+    }
+    const ids = Object.keys(db.obs);
+    if (ids.length > MAX_OBS) {
+      ids.sort((x, y) => db.obs[x][4] - db.obs[y][4]).slice(0, ids.length - MAX_OBS).forEach(id => delete db.obs[id]);
+    }
+    const cards = Object.keys(db.obsSales);
+    if (cards.length > MAX_OBS_CARDS) {
+      cards.sort((x, y) => (db.obsSales[x][0].t < db.obsSales[y][0].t ? -1 : 1))
+        .slice(0, cards.length - MAX_OBS_CARDS).forEach(id => delete db.obsSales[id]);
+    }
+    return changed;
+  }
+  // Ce qu'on peut partager : uniquement des observations d'enchères publiques, jamais l'historique réservé au Pro.
+  function observedExport() {
+    const sales = [];
+    for (const id in db.obsSales) for (const s of db.obsSales[id]) sales.push([id, s.p, s.t, s.g]);
+    sales.sort((x, y) => (x[2] < y[2] ? 1 : -1));
+    return { sales: sales.slice(0, 8000), rar: db.obsRar };
+  }
+  // Fusionne des observations venues d'un fichier (ami ou sauvegarde), champ par champ. Renvoie le nombre de prix ajoutés.
+  function mergeObserved(seen) {
+    if (!isObj(seen)) return 0;
+    let added = 0;
+    for (const s of (Array.isArray(seen.sales) ? seen.sales : []).slice(0, 20000)) {
+      if (!Array.isArray(s) || !okKey(s[0]) || typeof s[1] !== 'number' || typeof s[2] !== 'string' || !Number.isFinite(Date.parse(s[2]))) continue;
+      if (addObserved(s[0], { p: s[1], t: s[2], g: num(s[3]) }, null)) added++;
+    }
+    if (isObj(seen.rar)) for (const r of RARITIES) {
+      const src = Array.isArray(seen.rar[r]) ? seen.rar[r].slice(0, 400) : [];
+      const have = new Set((db.obsRar[r] || []).map(x => x[0] + '|' + x[1]));
+      const list = db.obsRar[r] || [];
+      for (const x of src) {
+        if (!Array.isArray(x) || !(num(x[0]) > 0) || !(num(x[1]) > 0) || have.has(x[0] + '|' + x[1])) continue;
+        list.push([x[0], x[1]]);
+        have.add(x[0] + '|' + x[1]);
+      }
+      if (list.length) db.obsRar[r] = list.sort((x, y) => y[1] - x[1]).slice(0, 400);
+    }
+    const cards = Object.keys(db.obsSales);
+    if (cards.length > MAX_OBS_CARDS) {
+      cards.sort((x, y) => (db.obsSales[x][0].t < db.obsSales[y][0].t ? -1 : 1))
+        .slice(0, cards.length - MAX_OBS_CARDS).forEach(id => delete db.obsSales[id]);
+    }
+    return added;
+  }
+  // Niveau de prix par rareté, d'après les fins d'enchères observées ces 7 derniers jours.
+  function observedByRarity() {
+    const since = Date.now() - 7 * DAY;
+    return RARITIES.map(r => {
+      const v = (db.obsRar[r] || []).filter(x => x[1] > since).map(x => x[0]);
+      return v.length >= 5 ? { r, med: median(v), n: v.length } : null;
+    }).filter(Boolean);
   }
 
   // Alertes du site : « une carte de ta liste de souhaits vient d'être mise en vente ».
@@ -226,7 +318,8 @@
   // true = Pro, false = non Pro, undefined = pas encore vu
   function proState() { return db.userId ? db.pro[db.userId] : undefined; }
   function showPrices() {
-    return proState() === true || Object.keys(db.prices).length > 0 || Object.keys(db.mySales).length > 0;
+    return proState() === true || Object.keys(db.prices).length > 0 || Object.keys(db.mySales).length > 0 ||
+      Object.keys(db.obsSales).length > 0;
   }
 
   // ---------- écoute passive : on lit ce que le site charge déjà ----------
@@ -297,15 +390,21 @@
     const mine = db.mySales[cardId];
     // Sans relevé Pro, tes propres ventes et achats de cette carte servent de prix.
     if ((!sales || !sales.length) && mine && mine.length) { sales = mine; own = true; at = at || db.market.at; }
+    // À défaut, les fins d'enchères observées par le script (ou par un ami qui a partagé les siennes).
+    let obs = false;
+    const seen = db.obsSales[cardId];
+    if ((!sales || !sales.length) && seen && seen.length) { sales = seen; obs = true; at = at || db.market.at; }
     let out = null;
     if (sales && !sales.length) out = { n: 0, at };
     else if (sales) {
       const v = sales.map(s => s.p);
       out = {
         avg: v.reduce((a, b) => a + b, 0) / v.length, med: median(v),
-        last: v[0], lastT: sales[0].t, min: Math.min(...v), max: Math.max(...v), n: v.length, at, own,
+        last: v[0], lastT: sales[0].t, min: Math.min(...v), max: Math.max(...v), n: v.length, at, own, obs,
         rel: reliability(sales), trend: trendOf(sales)
       };
+      // Un prix observé est un minimum, jamais un prix final certain : il ne peut pas être « Fiable ».
+      if (obs && out.rel.level > 1) out.rel.level = 1;
     }
     priceCache.set(cardId, out);
     return out;
@@ -443,20 +542,23 @@
   }
 
   // Lit les premières pages de la page Marché, comme si tu les feuilletais.
-  async function scanMarket(pages, where) {
+  // sort : « recent » pour les dernières annonces, « ending_soon » pour les enchères sur le point de finir,
+  // dont l'offre en cours est presque le prix final.
+  async function scanMarket(pages, where, sort) {
     if (job.running) return;
     startJob('Lecture du marché…', where);
     let seen = 0;
     try {
       for (let page = 1; page <= pages && !job.stop; page++) {
-        const j = await getJSON('/api/marketplace?page=' + page + '&limit=50&sort=recent' + (page === 1 ? '&mine=1' : ''));
+        const j = await getJSON('/api/marketplace?page=' + page + '&limit=50&sort=' + (sort || 'recent') + (page === 1 ? '&mine=1' : ''));
         ingestMarket(j);
         seen += (j.auctions || []).length;
         setStatus('Marché : ' + seen + ' enchères lues…', where);
         if (!j.hasMore) break;
         if (page < pages) await sleep(PRICE_DELAY + Math.random() * 500);
       }
-      endJob(pages === 1 ? 'Ventes en cours à jour.' : 'Marché relevé : ' + seen + ' enchères lues.', where);
+      endJob(pages === 1 ? 'Ventes en cours à jour.'
+        : seen + ' enchères lues. Leur prix sera enregistré quand elles seront finies, d’ici quelques minutes.', where);
     } catch (e) {
       endJob('Lecture du marché impossible (' + e.message + ').', where);
     }
@@ -642,7 +744,8 @@
     const data = {
       wmstats: 1, pseudo, at: Date.now(),
       cards: ids.map(id => [id, mine[id].title, mine[id].rarity, mine[id].count]),
-      wish: Object.entries(db.wish).map(([id, w]) => [id, w[0], w[1]])
+      wish: Object.entries(db.wish).map(([id, w]) => [id, w[0], w[1]]),
+      seen: observedExport()
     };
     download('wikimasters-collection-' + pseudo.replace(/[^\w-]+/g, '_') + '.json', JSON.stringify(data), 'application/json');
     setStatus('Fichier créé : envoie-le à tes amis.', 'frStatus');
@@ -665,13 +768,14 @@
     for (const c of (Array.isArray(j.wish) ? j.wish : []).slice(0, 5000)) {
       if (Array.isArray(c) && okKey(c[0]) && typeof c[1] === 'string') wish[c[0].slice(0, 64)] = [c[1].slice(0, 200), rarOf(c[2])];
     }
-    return { pseudo, at: typeof j.at === 'number' ? j.at : Date.now(), cards, wish };
+    return { pseudo, at: typeof j.at === 'number' ? j.at : Date.now(), cards, wish, seen: isObj(j.seen) ? j.seen : null };
   }
 
   // ---------- sauvegarde : passer ses données d'un navigateur à l'autre ----------
   function exportBackup() {
     const data = {};
     for (const k of ['cards', 'collectionAt', 'prices', 'pulls', 'auctions', 'history', 'wish', 'wishAt', 'friends', 'me', 'sell']) data[k] = db[k];
+    data.seen = observedExport();
     download('wikimasters-sauvegarde-' + dayKey(new Date()) + '.json',
       JSON.stringify({ wmstatsBackup: 1, at: Date.now(), data }), 'application/json');
     setStatus('Sauvegarde créée. Importe ce fichier dans ton autre navigateur.', 'dataStatus');
@@ -747,6 +851,7 @@
       db.collectionAt = num(b.collectionAt);
     }
     if (!db.me && typeof b.me === 'string') db.me = b.me.slice(0, 40);
+    mergeObserved(b.seen);
     saveDb();
     return n;
   }
@@ -771,8 +876,10 @@
       if (!db.friends[f.pseudo] && Object.keys(db.friends).length >= 10) throw new Error('10 amis au maximum, retire-en un');
       db.friends[f.pseudo] = { at: f.at, cards: f.cards, wish: f.wish };
       ui.friend = f.pseudo;
+      const prices = mergeObserved(f.seen);
       saveDb();
-      setStatus('Collection de ' + f.pseudo + ' importée : ' + Object.keys(f.cards).length + ' cartes différentes.', 'frStatus');
+      setStatus('Collection de ' + f.pseudo + ' importée : ' + plural(Object.keys(f.cards).length, 'carte différente', 'cartes différentes') +
+        (prices ? ', et ' + plural(prices, 'prix observé ajouté', 'prix observés ajoutés') : '') + '.', 'frStatus');
     } catch (e) {
       setStatus('Import impossible : ' + e.message + '.', 'frStatus');
     }
@@ -907,7 +1014,8 @@
     if (!p || !p.n) return '—';
     const age = Number.isFinite(p.rel.age) ? 'dernière il y a ' + Math.round(p.rel.age) + ' j' : 'date inconnue';
     const title = p.n + ' vente' + (p.n > 1 ? 's' : '') + ', ' + age + ', écart ×' + fmt(p.rel.spread) +
-      (p.trend ? (p.trend > 0 ? ', prix en hausse' : ', prix en baisse') : '') + (p.own ? ', d’après tes propres ventes et achats' : '');
+      (p.trend ? (p.trend > 0 ? ', prix en hausse' : ', prix en baisse') : '') + (p.own ? ', d’après tes propres ventes et achats' : '') +
+      (p.obs ? ', d’après des fins d’enchères observées (dernière offre vue, donc un minimum)' : '');
     return h('span', { class: 'rel l' + p.rel.level, title }, REL[p.rel.level] + ARROW[p.trend]);
   }
   const rarBadge = r => h('span', { class: 'r r-' + r }, r);
@@ -964,7 +1072,8 @@
       : 'Prix : réservé aux comptes Pro';
     e.pro.textContent = pro === true ? ''
       : pro === false
-        ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Les valeurs viennent seulement de tes propres ventes et achats, lus sur la page Marché.'
+        ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Les valeurs viennent de tes propres ventes et achats, ' +
+          'et des fins d’enchères que le script observe sur le marché ou que tes amis partagent.'
         : 'Statut Pro pas encore détecté : recharge la page (F5).';
   }
 
@@ -989,7 +1098,8 @@
     e.sellInfo = h('div', { class: 'sub', style: 'margin-bottom:10px' });
     e.load = h('button', { class: 'b pri', onclick: loadCollection }, 'Charger ma collection');
     e.fill = h('button', { class: 'b', onclick: fillPrices }, 'Compléter les prix manquants');
-    e.scan = h('button', { class: 'b', onclick: () => scanMarket(MARKET_PAGES) }, 'Relever le marché');
+    e.scan = h('button', { class: 'b', title: 'Lit les 200 enchères qui se terminent, pour enregistrer leur prix',
+      onclick: () => scanMarket(MARKET_PAGES, 'status', 'ending_soon') }, 'Relever les fins d’enchères');
     e.stop = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
     e.mine = h('button', { class: 'b', onclick: () => scanMarket(1, 'sellStatus') }, 'Actualiser mes ventes en cours');
     const checks = RARITIES.map(r => h('label', { class: 'chk' },
@@ -1060,7 +1170,8 @@
         h('button', { class: 'b', onclick: () => { if (ui.friend) { delete db.friends[ui.friend]; ui.friend = ''; saveDb(); refresh(); } } }, 'Retirer cet ami')),
       e.frStatus, e.frBody,
       h('div', { class: 'note' },
-        'Le fichier exporté contient la liste de tes cartes, leur nombre d’exemplaires et ta liste de souhaits, sans aucun prix. ',
+        'Le fichier exporté contient la liste de tes cartes, leur nombre d’exemplaires, ta liste de souhaits et les fins d’enchères que le script a observées. ' +
+        'Il ne contient jamais l’historique des ventes réservé au Pro. ',
         'Il fonctionne avec ou sans compte Pro.'));
 
     e.view_sales = h('div', null,
@@ -1463,14 +1574,18 @@
         n, h('i', null, n > 1 ? ' cartes' : ' carte'),
         withPrices ? [h('i', null, ' · '), fmt(g.reduce((a, x) => a + x.total, 0)), ' ₩'] : null);
     }));
-    const mk = marketByRarity();
+    // De préférence les fins d'enchères observées (prix presque définitifs) ; sinon les offres en cours.
+    const seenRar = observedByRarity();
+    const mk = seenRar.length ? seenRar : marketByRarity();
+    const nSeen = Object.keys(db.obsSales).length;
     e.market.replaceChildren(...(mk.length
-      ? [h('span', { class: 'sub' }, 'Enchères avec offre en ce moment :'),
-        ...mk.map(x => h('span', { class: 'pill', title: x.n + ' enchères avec offre' }, rarBadge(x.r), ' ', h('i', null, 'autour de '), fmt(x.med), ' ₩')),
-        h('span', { class: 'sub' }, '(relevé ' + ago(db.market.at) + ')')]
+      ? [h('span', { class: 'sub' }, seenRar.length ? 'Prix de vente observés sur 7 jours :' : 'Enchères avec offre en ce moment :'),
+        ...mk.map(x => h('span', { class: 'pill', title: x.n + (seenRar.length ? ' fins d’enchères observées' : ' enchères avec offre') },
+          rarBadge(x.r), ' ', h('i', null, 'autour de '), fmt(x.med), ' ₩')),
+        h('span', { class: 'sub' }, '(' + (nSeen ? plural(nSeen, 'carte avec un prix observé', 'cartes avec un prix observé') + ', ' : '') + 'relevé ' + ago(db.market.at) + ')')]
       : [h('span', { class: 'sub' }, db.market.at
         ? 'Marché relevé ' + ago(db.market.at) + ' : pas assez d’enchères avec offre pour donner un niveau de prix.'
-        : 'Marché pas encore relevé : clique sur « Relever le marché » ou ouvre la page Marché du site.')]));
+        : 'Marché pas encore relevé : clique sur « Relever les fins d’enchères » ou ouvre la page Marché du site.')]));
     renderTable();
   }
 
@@ -1729,6 +1844,9 @@
     setStatus('Prix oubliés. La collection est conservée.');
     refresh();
   }
+
+  // Chaque minute, les enchères observées qui viennent de finir deviennent des prix.
+  setInterval(() => { if (!job.running && settleObserved()) { saveDb(); refresh(); } }, 60000);
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount);
   else mount();

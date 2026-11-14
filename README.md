@@ -41,7 +41,7 @@ Le panneau a huit onglets. Dans tous les tableaux, un clic sur un en-tête de co
 
 - **Charger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
 - **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h.
-- **Relever le marché** : lit les 4 premières pages d'enchères en cours. Le script les lit aussi tout seul quand tu ouvres la page Marché du site.
+- **Relever les fins d'enchères** : lit les 200 enchères sur le point de se terminer, pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
 - **Exporter en CSV** : le tableau tel qu'il est filtré et trié, à ouvrir dans Excel ou LibreOffice.
 - Clique sur un en-tête de colonne pour trier.
 
@@ -85,7 +85,7 @@ Une courbe de la valeur totale, du nombre de cartes ou du nombre de cartes déj�
 
 Si vos listes de souhaits sont chargées, l'onglet montre aussi les cartes que tu cherches et qu'il possède, et celles qu'il cherche et que tu possèdes.
 
-Le fichier contient la liste des cartes, leur nombre d'exemplaires et la liste de souhaits, sans aucun prix. Il fonctionne avec ou sans compte Pro.
+Le fichier contient la liste des cartes, leur nombre d'exemplaires, la liste de souhaits et les prix observés. Il ne contient jamais l'historique réservé au Pro, et il fonctionne avec ou sans compte Pro.
 
 ### Sauvegarde
 
@@ -102,9 +102,26 @@ Tes données sont rangées dans le navigateur, donc Chrome et Zen ont chacun les
 - **En vente à** : le prix d'une enchère en cours sur la même carte. Un point signale qu'elle a déjà reçu une offre. Ce prix est indicatif et n'entre pas dans la valeur.
 - **Enchères avec offre en ce moment** : le prix médian, par rareté, des enchères en cours qui ont reçu au moins une offre.
 
+## Prix observés
+
+L'historique des ventes d'une carte est une fonction Pro du site. Pour que tout le monde ait des prix, le script construit son propre historique à partir de ce que n'importe quel compte peut voir : les enchères en cours.
+
+- Chaque enchère vue (en parcourant le marché, avec « Relever les fins d'enchères », ou pendant une recherche) est suivie jusqu'à sa fin.
+- Quand elle se termine, la dernière offre vue devient un « prix observé » pour cette carte. Une enchère finie sans offre ne donne rien.
+- C'est un minimum : l'offre a pu monter après la dernière fois que le script l'a vue. Un prix observé n'est donc jamais noté « Fiable », et son origine est indiquée au survol de la fiabilité.
+- « Relever les fins d'enchères » est le moyen le plus précis, puisqu'il lit les enchères dans leur dernière minute.
+
+Ces prix servent de valeur pour une carte quand il n'y a ni historique Pro ni vente personnelle. Ils donnent aussi un niveau de prix par rareté, affiché en haut de l'onglet Collection.
+
+Les prix observés partent dans le fichier que tu exportes pour tes amis, et ceux de tes amis s'ajoutent aux tiens à l'import : à plusieurs, l'historique se remplit plus vite. L'historique réservé au Pro, lui, n'est jamais partagé.
+
+La couverture reste partielle. Il existe près de trois millions de cartes, et le script ne connaît que les enchères qu'il a vues passer : ne compte pas dessus pour avoir le prix de chaque carte.
+
 ## Compte non Pro
 
 L'historique des ventes de chaque carte est une fonction Pro du site, et le script n'y touche pas sans compte Pro. Il reste :
+
+- les prix observés décrits ci-dessus ;
 
 - le tableau (rareté, ATK, DEF, Q-Score, vues, exemplaires) et l'export CSV ;
 - les stats de boosters, le bilan de tes ventes, la liste de souhaits, l'évolution, la comparaison entre amis et la sauvegarde ;
