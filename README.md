@@ -37,7 +37,7 @@ Le panneau a dix onglets. Dans tous les tableaux, un clic sur un en-tête de col
 
 ### Accueil
 
-L'essentiel en une page, à l'ouverture du panneau : valeur de la collection et variation depuis le dernier relevé, les cartes à vendre en premier avec tes places libres, tes souhaits en vente (bonnes affaires d'abord, puis ceux qui finissent bientôt), ton dernier booster et tes dernières enchères. Chaque bloc a un lien « voir → » vers son onglet.
+L'essentiel en une page, à l'ouverture du panneau. Un bloc « À vérifier » apparaît en tête quand les chiffres risquent d'être faux : collection pas rechargée depuis plus d'un jour, ou cartes L, UR, SR sans prix relevé. Ensuite : valeur de la collection et variation depuis le dernier relevé, les cartes à vendre en premier avec tes places libres, tes souhaits en vente (bonnes affaires d'abord, puis ceux qui finissent bientôt), ton dernier booster et tes dernières enchères. Chaque bloc a un lien « voir → » vers son onglet.
 
 ### Collection
 
@@ -53,7 +53,7 @@ L'essentiel en une page, à l'ouverture du panneau : valeur de la collection et 
 
 La liste des cartes qui méritent une place aux enchères : doublons d'abord, puis les plus chères. Tu règles la valeur minimale, et tu choisis d'inclure ou non tes favoris et les prix douteux. Les cartes déjà en vente sont retirées, et les lignes surlignées tiennent dans tes places de vente libres.
 
-La colonne « Concurrence » montre l'annonce la moins chère d'un autre joueur sur la même carte (bouton « Chercher la concurrence »). Si elle est sous la médiane, le prix conseillé passe juste en dessous d'elle, marqué « ajusté » : inutile de vendre plus cher qu'un concurrent. Tes propres annonces ne comptent pas comme concurrence.
+La colonne « Concurrence » montre l'annonce la moins chère d'un autre joueur sur la même carte (bouton « Chercher la concurrence »). Le prix conseillé reste la médiane des ventes : une mise de départ ou une offre en cours n'est pas un prix final, donc le script ne s'aligne jamais dessus. Une étiquette « concurrent à X ₩ » signale seulement un concurrent qui a déjà reçu une offre sous la médiane. Tes propres annonces ne comptent pas comme concurrence.
 
 Un clic sur le nom d'une carte ouvre, dans un nouvel onglet, la page Collection du site avec le formulaire « Mettre aux enchères » de cette carte déjà ouvert. Le script s'arrête là : la mise de départ, la durée et le bouton « Lancer l'enchère » restent à toi.
 

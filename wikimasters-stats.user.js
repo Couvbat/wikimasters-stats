@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.14.1
+// @version      1.14.2
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -58,6 +58,11 @@
         for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'trades']) {
           if (!isObj(base[k])) base[k] = {};
         }
+        // Nettoyage des doublons laissés par les versions précédentes : une carte rangée sous son propre
+        // identifiant alors qu'elle l'est déjà sous celui de son exemplaire.
+        const byExemplar = new Set();
+        for (const k in base.cards) if (base.cards[k] && k !== base.cards[k].cardId) byExemplar.add(base.cards[k].cardId);
+        for (const k in base.cards) if (base.cards[k] && k === base.cards[k].cardId && byExemplar.has(k)) delete base.cards[k];
       }
     } catch (e) {}
     return base;
@@ -82,6 +87,10 @@
       const c = it && it.card;
       if (!c || !c.id) continue;
       if (it.user_id) db.userId = it.user_id;
+      // Clé = l'exemplaire (it.id). Sans elle, on retombait sur l'identifiant de la carte : la même carte
+      // pouvait alors être rangée deux fois. On n'accepte plus cette clé de secours si l'exemplaire est connu.
+      if (!it.id && Object.values(db.cards).some(x => x.cardId === c.id)) continue;
+      if (it.id && db.cards[c.id] && it.id !== c.id) delete db.cards[c.id];
       db.cards[it.id || c.id] = {
         cardId: c.id,
         title: c.wikipedia_title || '?',
@@ -96,7 +105,7 @@
     db.collectionAt = Date.now();
     saveDb();
     // Un chargement complet donne une photo fiable du jour ; une page isolée, non.
-    if (replace) { priceCache = new Map(); snapshot(buildRows()); }
+    if (replace) { db.collectionFullAt = Date.now(); saveDb(); priceCache = new Map(); snapshot(buildRows()); }
     refresh();
   }
 
@@ -1445,8 +1454,8 @@
       e.sellInfo, e.sellStatus, e.sellTable,
       h('div', { class: 'note' },
         'Les doublons passent en premier, puis les cartes les plus chères. Les cartes déjà mises en vente sont retirées de la liste. ',
-        '« Concurrence » montre l’annonce la moins chère d’un autre joueur sur la même carte. Quand elle est sous la médiane, ' +
-        'le prix conseillé passe juste en dessous d’elle (marqué « ajusté ») : inutile de vendre plus cher qu’un concurrent. ',
+        '« Concurrence » montre l’annonce la moins chère d’un autre joueur sur la même carte. Le prix conseillé reste la médiane des ventes : ' +
+        'une mise de départ n’est pas un prix final. Une étiquette signale seulement un concurrent qui a déjà une offre sous la médiane. ',
         'Les lignes surlignées tiennent dans tes places de vente libres. Le script ne met rien en vente : c’est toi qui le fais sur le site.'));
 
     e.view_pulls = h('div', null, e.pullTiles, e.pullBody,
@@ -2107,7 +2116,23 @@
     cards.push(card('Ma collection', 'trend', h('div', { class: 'tiles', style: 'margin:0' },
       tile('Valeur totale', fmt(total) + ' ₩', delta == null ? 'variation dès demain' : (delta >= 0 ? '+' : '') + fmt(delta) + ' ₩ depuis le ' +
         new Date(days[days.length - 2] + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })),
-      tile('Cartes', fmt(rowsCache.reduce((a, r) => a + r.count, 0)), plural(rowsCache.length, 'différente', 'différentes')))));
+      tile('Cartes', fmt(rowsCache.reduce((a, r) => a + r.count, 0)), plural(new Set(rowsCache.map(r => r.cardId)).size, 'différente', 'différentes')))));
+    // Ce qui rend les chiffres douteux : collection pas rechargée depuis longtemps, ou cartes chères sans prix relevé.
+    const warns = [];
+    const fullAge = db.collectionFullAt ? now - db.collectionFullAt : Infinity;
+    if (fullAge > DAY) {
+      warns.push(h('li', null, h('span', { class: 'grow' }, db.collectionFullAt
+        ? 'Collection rechargée il y a ' + Math.round(fullAge / DAY) + ' j : les cartes vendues ou données depuis y sont encore.'
+        : 'Collection jamais rechargée entièrement avec cette version : les cartes vendues ou données peuvent y être encore.'),
+        h('button', { class: 'more', onclick: () => { setTab('col'); loadCollection(); } }, 'recharger')));
+    }
+    const noPrice = rowsCache.filter(r => ['L', 'UR', 'SR'].includes(r.rarity) && !db.prices[r.cardId]).length;
+    if (noPrice && proState() === true) {
+      warns.push(h('li', null, h('span', { class: 'grow' }, plural(noPrice, 'carte L, UR ou SR sans prix relevé', 'cartes L, UR ou SR sans prix relevé') +
+        ' : elles comptent pour 1 ₩ et n’apparaissent pas dans À vendre.'),
+        h('button', { class: 'more', onclick: () => setTab('col') }, 'compléter')));
+    }
+    if (warns.length) cards.unshift(card('À vérifier', null, h('ul', null, warns)));
     // À vendre
     const m = db.market, used = m.selling ? m.selling.length : null;
     const free = used != null && m.max ? Math.max(0, m.max - used) : null;
@@ -2116,7 +2141,7 @@
       sl.length ? h('ul', null, sl.slice(0, 5).map(r => line(rarBadge(r.rarity),
         h('a', { class: 'grow', href: sellLink(r.cardId), target: '_blank', rel: 'noopener', style: 'color:inherit', title: 'Ouvrir la mise en vente' }, r.title),
         r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null,
-        h('b', null, fmt(Math.round(r.ask && r.ask.a < r.value ? Math.max(DISCARD + 1, Math.floor(r.ask.a) - 1) : r.value)) + ' ₩'))))
+        h('b', null, fmt(Math.round(r.value)) + ' ₩'))))
         : none('Aucune carte à vendre avec les réglages actuels.')));
     // Souhaits : bonnes affaires d'abord, puis enchères qui finissent bientôt
     const wish = Object.keys(db.wish).filter(id => !(db.wishHideOwned && ownedIds().has(id)))
@@ -2168,7 +2193,7 @@
     }
     const list = sellList();
     const top = free == null ? 0 : Math.min(free, list.length);
-    const gain = list.slice(0, top).reduce((a, r) => a + (r.ask && r.ask.a < r.value ? Math.max(DISCARD + 1, Math.floor(r.ask.a) - 1) : Math.round(r.value)), 0);
+    const gain = list.slice(0, top).reduce((a, r) => a + Math.round(r.value), 0);
     e.sellInfo.textContent = (free == null
       ? 'Places de vente inconnues : clique sur « Actualiser mes ventes en cours » ou ouvre la page Marché. '
       : 'Ventes en cours : ' + used + ' / ' + m.max + ', soit ' + plural(free, 'place libre', 'places libres') + '. ') +
@@ -2181,11 +2206,13 @@
     }
     // Le rang et le surlignage suivent l'ordre conseillé, même quand tu tries autrement.
     const rankOf = new Map(list.map((r, i) => [r, i + 1]));
-    // Prix conseillé : la médiane, sauf si un concurrent vend moins cher ; on passe alors juste sous lui.
+    // Prix conseillé : la médiane des ventes, toujours. Une annonce concurrente n'est qu'une indication :
+    // sa mise de départ ou son offre en cours n'est pas son prix final, donc on ne s'aligne jamais dessus.
+    // On signale seulement un concurrent qui a déjà reçu une offre sous la médiane.
     const advise = r => {
       const c = r.ask;
-      if (!c || c.a >= r.value) return { p: Math.round(r.value), adj: false };
-      return { p: Math.max(DISCARD + 1, Math.floor(c.a) - 1), adj: true };
+      const under = c ? c.list.filter(x => x.b && x.a < r.value) : [];
+      return { p: Math.round(r.value), adj: under.length > 0, low: under.length ? Math.min(...under.map(x => x.a)) : null };
     };
     e.sellTable.replaceChildren(sortTable('sell', [
       { t: '#', asc: true, get: r => rankOf.get(r), cell: r => rankOf.get(r) },
@@ -2197,8 +2224,8 @@
       { t: 'Ex.', get: r => r.count, cell: r => r.count },
       { t: 'Prix conseillé', get: r => advise(r).p, cell: r => {
         const a = advise(r);
-        return [h('b', null, fmt(a.p) + ' ₩'), a.adj ? h('span', { class: 'tag warn', title: 'Médiane ' + fmt(Math.round(r.value)) +
-          ' ₩, mais un concurrent vend à ' + fmt(r.ask.a) + ' ₩' }, 'ajusté') : null];
+        return [h('b', null, fmt(a.p) + ' ₩'), a.adj ? h('span', { class: 'tag warn', title: 'Un concurrent a déjà une offre à ' + fmt(a.low) +
+          ' ₩, sous la médiane : ton annonce risque de partir moins cher ou de ne pas partir' }, 'concurrent à ' + fmt(a.low) + ' ₩') : null];
       } },
       { t: 'Médiane', get: r => r.value, cell: r => fmt(Math.round(r.value)) + ' ₩' },
       { t: 'Concurrence', asc: true, get: r => (r.ask ? r.ask.a : null), cell: r => {
