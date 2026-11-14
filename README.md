@@ -35,7 +35,7 @@ Violentmonkey devrait aussi convenir (bouton « + », puis « Nouveau script »)
 
 ## Utiliser
 
-Le panneau a huit onglets.
+Le panneau a huit onglets. Dans tous les tableaux, un clic sur un en-tête de colonne trie selon cette colonne, et un second clic inverse le sens.
 
 ### Collection
 
@@ -58,6 +58,8 @@ Le bilan de tes enchères : ventes réussies et invendus, revenus, achats, solde
 Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». Clique sur « Charger ma liste de souhaits » pour la lire.
 
 Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en entier. Il retient à la place les alertes de mise en vente que le site t'envoie pour ces cartes. « Vérifier les annonces signalées » cherche chacune d'elles sur le marché par son titre, et affiche le prix le plus bas, la fin de l'enchère et si une offre a déjà été faite. C'est une recherche par seconde, 40 au plus par passage, avec un bouton Stop. Les enchères terminées sont retirées.
+
+« Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, qu'il y ait eu une alerte ou non. Elle traite 50 cartes par passage, en commençant par celles jamais cherchées : choisis une rareté pour cibler, et relance pour continuer. Une carte cherchée depuis moins d'une heure est sautée.
 
 L'onglet indique aussi si un ami possède la carte, d'après les fichiers importés dans l'onglet Amis.
 

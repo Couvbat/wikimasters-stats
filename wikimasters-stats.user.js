@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.5.0
+// @version      1.6.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -30,7 +30,7 @@
     return {
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
-      auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {},
+      auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: false }
     };
   }
@@ -50,7 +50,7 @@
         base.market = Object.assign(defaults().market, d.market || {});
         base.sell = Object.assign(defaults().sell, d.sell || {});
         if (!Array.isArray(base.pulls)) base.pulls = [];
-        for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts']) if (!isObj(base[k])) base[k] = {};
+        for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen']) if (!isObj(base[k])) base[k] = {};
       }
     } catch (e) {}
     return base;
@@ -472,31 +472,55 @@
 
   // Pour chaque alerte récente, cherche la carte sur le marché par son titre, comme avec la barre de recherche.
   const ALERT_BATCH = 40;
-  async function checkAlerts() {
-    if (job.running) return;
-    const todo = alertsToCheck().slice(0, ALERT_BATCH);
-    if (!todo.length) return setStatus('Toutes les annonces récentes sont déjà à jour.', 'wishStatus');
-    startJob('Annonces : 0 / ' + todo.length, 'wishStatus');
+  const SEARCH_BATCH = 50;        // cartes cherchées par passage
+  const SEARCH_FRESH = 60 * 6e4;  // une carte cherchée depuis moins d'une heure n'est pas recherchée à nouveau
+  // Cherche une liste de cartes [identifiant, titre] sur le marché, une recherche par seconde.
+  async function marketSearch(todo, label, noneText) {
+    startJob(label + ' : 0 / ' + todo.length, 'wishStatus');
     let i = 0, live = 0;
     try {
-      for (const [, a] of todo) {
+      for (const [cardId, title] of todo) {
         if (job.stop) break;
-        const j = await getJSON('/api/marketplace?page=1&limit=50&sort=recent&q=' + encodeURIComponent(a[1]));
+        const j = await getJSON('/api/marketplace?page=1&limit=50&sort=recent&q=' + encodeURIComponent(title));
         ingestMarket(j);
-        const found = (j.auctions || []).some(x => x && x.card_id === a[0]);
-        if (found) live++;
-        for (const id in db.alerts) if (db.alerts[id][0] === a[0]) db.alerts[id][3] = found ? 1 : 2;
+        const found = (j.auctions || []).some(x => x && x.card_id === cardId);
+        if (found) live++; else delete db.market.asks[cardId];
+        for (const id in db.alerts) if (db.alerts[id][0] === cardId) db.alerts[id][3] = found ? 1 : 2;
+        db.wishSeen[cardId] = Date.now();
         i++;
-        setStatus('Annonces : ' + i + ' / ' + todo.length, 'wishStatus');
+        setStatus(label + ' : ' + i + ' / ' + todo.length + ' · ' + plural(live, 'carte en vente', 'cartes en vente'), 'wishStatus');
         if (i < todo.length) await sleep(PRICE_DELAY + Math.random() * 500);
       }
       saveDb();
-      endJob((job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '. ' : '') + plural(live, 'carte encore en vente', 'cartes encore en vente') +
-        ', ' + plural(i - live, 'enchère terminée', 'enchères terminées') + '.', 'wishStatus');
+      endJob((job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '. ' : '') + plural(live, 'carte en vente', 'cartes en vente') +
+        ' sur ' + i + ', ' + (i - live) + ' ' + noneText + '.', 'wishStatus');
     } catch (e) {
       saveDb();
-      endJob('Vérification interrompue (' + e.message + ') après ' + i + ' / ' + todo.length + '.', 'wishStatus');
+      endJob('Recherche interrompue (' + e.message + ') après ' + i + ' / ' + todo.length + '. Réessaie plus tard.', 'wishStatus');
     }
+  }
+  function checkAlerts() {
+    if (job.running) return;
+    const todo = alertsToCheck().slice(0, ALERT_BATCH).map(([, a]) => [a[0], a[1]]);
+    if (!todo.length) return setStatus('Toutes les annonces récentes sont déjà à jour.', 'wishStatus');
+    return marketSearch(todo, 'Annonces', 'dont l’enchère est terminée');
+  }
+  // Les cartes de la liste (selon le filtre de rareté) pas encore cherchées, ou cherchées il y a le plus longtemps.
+  function wishToSearch() {
+    const now = Date.now();
+    return Object.keys(db.wish)
+      .filter(id => (!ui.wishRarity || db.wish[id][1] === ui.wishRarity) && !(now - (db.wishSeen[id] || 0) < SEARCH_FRESH))
+      .sort((a, b) => (db.wishSeen[a] || 0) - (db.wishSeen[b] || 0) || rarOrder(db.wish[a][1]) - rarOrder(db.wish[b][1]));
+  }
+  function searchWish() {
+    if (job.running) return;
+    const todo = wishToSearch().slice(0, SEARCH_BATCH).map(id => [id, db.wish[id][0]]);
+    if (!todo.length) {
+      return setStatus(Object.keys(db.wish).length
+        ? 'Toutes les cartes de ce filtre ont été cherchées il y a moins d’une heure.'
+        : 'Charge d’abord ta liste de souhaits.', 'wishStatus');
+    }
+    return marketSearch(todo, 'Recherche', 'sans annonce');
   }
 
   // ---------- après un booster : mémoire des tirages et prix des cartes tirées ----------
@@ -745,7 +769,7 @@
   const ui = {
     open: false, tab: 'col', chosen: new Set(['L', 'UR', 'SR']),
     sortKey: 'total', sortDir: -1, text: '', rarity: '', friend: '', frRarity: '',
-    wishRarity: '', wishAvail: false, metric: 0, el: {}
+    wishRarity: '', wishAvail: false, metric: 0, sorts: {}, el: {}
   };
   const SVG = 'http://www.w3.org/2000/svg';
   function s(tag, attrs, ...kids) {
@@ -898,6 +922,10 @@
     const pending = alertsToCheck().length;
     e.wishCheck.disabled = job.running || !pending;
     e.wishCheck.textContent = 'Vérifier les annonces signalées (' + Math.min(pending, ALERT_BATCH) + ')';
+    const toSearch = wishToSearch().length;
+    e.wishSearch.disabled = job.running || !toSearch;
+    e.wishSearch.textContent = 'Chercher mes souhaits sur le marché (' + Math.min(toSearch, SEARCH_BATCH) +
+      (toSearch > SEARCH_BATCH ? ' sur ' + toSearch : '') + ')';
     e.stop2.disabled = !job.running;
     e.fill.disabled = job.running || pro !== true;
     e.stop.disabled = !job.running;
@@ -923,6 +951,7 @@
     e.mine2 = h('button', { class: 'b', onclick: () => scanMarket(1, 'salesStatus') }, 'Actualiser depuis la page Marché');
     e.wishLoad = h('button', { class: 'b pri', onclick: loadWish }, 'Charger ma liste de souhaits');
     e.wishCheck = h('button', { class: 'b', onclick: checkAlerts }, 'Vérifier les annonces signalées');
+    e.wishSearch = h('button', { class: 'b', onclick: searchWish }, 'Chercher mes souhaits sur le marché');
     e.stop2 = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
     e.sub = h('div', { class: 'sub' });
     e.pro = h('div', { class: 'sub', style: 'margin-bottom:10px' });
@@ -1010,8 +1039,9 @@
         'La comparaison à la valeur médiane est indicative : cette médiane inclut ta propre vente.'));
 
     e.view_wish = h('div', null,
-      h('div', { class: 'bar' }, e.wishLoad, e.wishCheck, e.stop2,
-        rarSelect(ev => { ui.wishRarity = ev.target.value; renderWish(); }),
+      h('div', { class: 'bar' }, e.wishLoad, e.wishCheck, e.wishSearch, e.stop2),
+      h('div', { class: 'bar' },
+        rarSelect(ev => { ui.wishRarity = ev.target.value; syncButtons(); renderWish(); }),
         h('label', { class: 'chk' },
           h('input', { type: 'checkbox', onchange: ev => { ui.wishAvail = ev.target.checked; renderWish(); } }),
           'Seulement celles que je peux obtenir maintenant')),
@@ -1020,6 +1050,9 @@
         'Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». ',
         'Le script retient les alertes de mise en vente que le site t’envoie. « Vérifier les annonces signalées » cherche chacune de ces cartes sur le marché ' +
         'pour en lire le prix et la fin de l’enchère, une recherche par seconde, 40 au plus par passage. ',
+        '« Chercher mes souhaits sur le marché » fait la même recherche pour les cartes de ta liste, alerte ou non : 50 par passage, ' +
+        'en commençant par celles jamais cherchées. Choisis une rareté pour cibler, et relance pour continuer. ' +
+        'Une carte cherchée depuis moins d’une heure est sautée. Clique sur un en-tête de colonne pour trier. ',
         '« Chez un ami » vient des fichiers importés dans l’onglet Amis. ',
         'Ta liste part aussi dans le fichier que tu exportes pour tes amis, pour qu’ils voient ce que tu cherches.'));
 
@@ -1101,6 +1134,37 @@
     h('thead', null, h('tr', null, heads.map((t, i) => h('th', { class: (leftCols || []).includes(i) ? 'l' : '' }, t)))),
     h('tbody', null, rows));
   const rarOrder = r => { const i = RARITIES.indexOf(r); return i < 0 ? 99 : i; };
+  // Tableau triable : un clic sur un en-tête trie selon cette colonne, un second clic inverse le sens.
+  // Tant qu'aucun en-tête n'a été cliqué, l'ordre fourni est conservé. Les valeurs absentes vont à la fin.
+  // Une colonne : { t: titre, get: valeur de tri, cell: contenu, left: aligné à gauche, asc: premier clic croissant }
+  function sortTable(key, cols, items, rerender, opts) {
+    cols = cols.filter(Boolean);
+    opts = opts || {};
+    const st = ui.sorts[key];
+    let list = items;
+    if (st && cols[st.i] && cols[st.i].get) {
+      const get = cols[st.i].get;
+      list = [...items].sort((a, b) => {
+        const x = get(a), y = get(b);
+        const nx = x == null || x === '', ny = y == null || y === '';
+        if (nx || ny) return nx && ny ? 0 : nx ? 1 : -1;
+        return (typeof x === 'string' && typeof y === 'string' ? x.localeCompare(y) : x < y ? -1 : x > y ? 1 : 0) * st.dir;
+      });
+    }
+    const head = h('tr', null, cols.map((c, i) => h('th', {
+      class: (c.get ? 's' : '') + (c.left ? ' l' : ''),
+      title: c.get ? 'Cliquer pour trier' : '',
+      onclick: () => {
+        if (!c.get) return;
+        const cur = ui.sorts[key];
+        ui.sorts[key] = cur && cur.i === i ? { i, dir: -cur.dir } : { i, dir: c.asc ? 1 : -1 };
+        rerender();
+      }
+    }, c.t + (st && st.i === i ? (st.dir > 0 ? ' ▲' : ' ▼') : ''))));
+    const shown = opts.limit ? list.slice(0, opts.limit) : list;
+    return h('table', null, h('thead', null, head), h('tbody', null, shown.map(it =>
+      h('tr', { class: opts.rowClass ? opts.rowClass(it) : '' }, cols.map(c => h('td', { class: c.left ? 'l' : '' }, c.cell(it)))))));
+  }
 
   // ----- onglet Mes ventes -----
   function renderSales() {
@@ -1127,11 +1191,17 @@
     const kids = [];
     const rars = RARITIES.concat('?').filter(r => sold.some(a => a.rarity === r) || unsold.some(a => a.rarity === r));
     if (rars.length) {
-      kids.push(h('h2', null, 'Tes ventes par rareté'), simpleTable(['Rareté', 'Vendues', 'Invendues', 'Revenus', 'Prix médian'], rars.map(r => {
-        const sl = sold.filter(a => a.rarity === r), ul = unsold.filter(a => a.rarity === r);
-        return h('tr', null, h('td', null, rarBadge(r)), h('td', null, sl.length), h('td', null, ul.length),
-          h('td', null, fmt(sum(sl)) + ' ₩'), h('td', null, sl.length ? fmt(median(sl.map(a => a.final))) + ' ₩' : '—'));
-      })));
+      const byRar = rars.map(r => {
+        const sl = sold.filter(a => a.rarity === r);
+        return { r, sold: sl.length, unsold: unsold.filter(a => a.rarity === r).length, rev: sum(sl), med: sl.length ? median(sl.map(a => a.final)) : null };
+      });
+      kids.push(h('h2', null, 'Tes ventes par rareté'), sortTable('salesRar', [
+        { t: 'Rareté', asc: true, get: x => rarOrder(x.r), cell: x => rarBadge(x.r) },
+        { t: 'Vendues', get: x => x.sold, cell: x => x.sold },
+        { t: 'Invendues', get: x => x.unsold, cell: x => x.unsold },
+        { t: 'Revenus', get: x => x.rev, cell: x => fmt(x.rev) + ' ₩' },
+        { t: 'Prix médian', get: x => x.med, cell: x => (x.med == null ? '—' : fmt(x.med) + ' ₩') }
+      ], byRar, renderSales));
     }
     const lines = [];
     if (sold.length) {
@@ -1147,17 +1217,17 @@
     }
     if (lines.length) kids.push(h('h2', null, 'Mise de départ et prix obtenu'), lines.map(t => h('p', { class: 'line' }, t)));
     const withPrices = showPrices();
-    kids.push(h('h2', null, 'Dernières enchères'),
-      simpleTable(['Date', 'Carte', 'Rareté', 'Type', 'Mise de départ', 'Résultat', withPrices ? 'Valeur médiane' : null].filter(Boolean),
-        A.slice(0, 40).map(a => {
-          const p = priceOf(a.cardId);
-          return h('tr', null,
-            h('td', null, fmtDate(a.t)), h('td', { class: 'l' }, a.title), h('td', null, rarBadge(a.rarity)),
-            h('td', null, a.kind === 'b' ? 'Achat' : 'Vente'),
-            h('td', null, fmt(a.list) + ' ₩' + (a.base !== a.list ? ' → ' + fmt(a.base) + ' ₩' : '')),
-            h('td', null, a.final == null ? h('span', { class: 'est' }, 'Invendue') : h('b', null, fmt(a.final) + ' ₩')),
-            withPrices ? h('td', null, p && p.n ? fmt(p.med) + ' ₩' : '—') : null);
-        }), [1]));
+    const medOf = a => { const p = priceOf(a.cardId); return p && p.n ? p.med : null; };
+    kids.push(h('h2', null, 'Tes enchères (' + fmt(A.length) + ')'),
+      sortTable('sales', [
+        { t: 'Date', get: a => a.t, cell: a => fmtDate(a.t) },
+        { t: 'Carte', left: true, asc: true, get: a => a.title.toLowerCase(), cell: a => a.title },
+        { t: 'Rareté', asc: true, get: a => rarOrder(a.rarity), cell: a => rarBadge(a.rarity) },
+        { t: 'Type', asc: true, get: a => (a.kind === 'b' ? 'Achat' : 'Vente'), cell: a => (a.kind === 'b' ? 'Achat' : 'Vente') },
+        { t: 'Mise de départ', get: a => a.list, cell: a => fmt(a.list) + ' ₩' + (a.base !== a.list ? ' → ' + fmt(a.base) + ' ₩' : '') },
+        { t: 'Résultat', get: a => a.final, cell: a => (a.final == null ? h('span', { class: 'est' }, 'Invendue') : h('b', null, fmt(a.final) + ' ₩')) },
+        withPrices ? { t: 'Valeur médiane', get: medOf, cell: a => (medOf(a) == null ? '—' : fmt(medOf(a)) + ' ₩') } : null
+      ], A, renderSales, { limit: 200 }));
     e.salesBody.replaceChildren(...kids.flat(2));
   }
 
@@ -1201,18 +1271,23 @@
       e.wishBody.replaceChildren(h('div', { class: 'empty' }, 'Aucune carte avec ces filtres.'));
       return;
     }
-    const LIMIT = 300;
+    const LIMIT = 400;
     e.wishBody.replaceChildren(
-      simpleTable(['Carte', 'Rareté', withPrices ? 'Valeur médiane' : null, 'En vente à', 'Fin de l’enchère', 'Alerte du site', 'Chez un ami'].filter(Boolean),
-        list.slice(0, LIMIT).map(c => h('tr', { class: rank(c) < 3 ? 'top' : '' },
-          h('td', null, c.title), h('td', null, rarBadge(c.rarity)),
-          withPrices ? h('td', null, c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') : null,
-          h('td', null, c.ask
+      sortTable('wish', [
+        { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(), cell: c => c.title },
+        { t: 'Rareté', asc: true, get: c => rarOrder(c.rarity), cell: c => rarBadge(c.rarity) },
+        withPrices ? { t: 'Valeur médiane', get: c => (c.price && c.price.n ? c.price.med : null),
+          cell: c => (c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') } : null,
+        { t: 'En vente à', asc: true, get: c => (c.ask ? c.ask.a : null),
+          cell: c => (c.ask
             ? h('b', { title: c.ask.b ? 'Cette enchère a déjà reçu une offre' : 'Mise de départ, pas encore d’offre' }, fmt(c.ask.a) + ' ₩' + (c.ask.b ? ' •' : ''))
-            : c.alert ? h('span', { class: 'est' }, 'à vérifier') : '—'),
-          h('td', null, c.ask && c.ask.e > now ? 'dans ' + left(c.ask.e - now) : '—'),
-          h('td', null, c.alert ? ago(c.alert[2]) : '—'),
-          h('td', null, c.friends.length ? c.friends.join(', ') : '—')))),
+            : c.alert ? h('span', { class: 'est' }, 'à vérifier') : '—') },
+        { t: 'Fin de l’enchère', asc: true, get: c => (c.ask && c.ask.e > now ? c.ask.e : null),
+          cell: c => (c.ask && c.ask.e > now ? 'dans ' + left(c.ask.e - now) : '—') },
+        { t: 'Alerte du site', get: c => (c.alert ? c.alert[2] : null), cell: c => (c.alert ? ago(c.alert[2]) : '—') },
+        { t: 'Cherchée', get: c => db.wishSeen[c.id] || null, cell: c => (db.wishSeen[c.id] ? ago(db.wishSeen[c.id]) : '—') },
+        { t: 'Chez un ami', asc: true, get: c => c.friends.join(', '), cell: c => (c.friends.length ? c.friends.join(', ') : '—') }
+      ], list, renderWish, { limit: LIMIT, rowClass: c => (rank(c) < 3 ? 'top' : '') }),
       ...(list.length > LIMIT ? [h('div', { class: 'sub' }, '… et ' + fmt(list.length - LIMIT) + ' autres. Filtre par rareté pour les voir.')] : []));
   }
 
@@ -1276,13 +1351,18 @@
         tile('Depuis le ' + dayLabel(pts[0].d), (delta > 0 ? '+' : '') + fmt(delta) + unit, first ? (delta > 0 ? '+' : '') + fmt(100 * delta / first) + ' %' : null)),
         h('div', { class: 'chart' }, svg, tip));
     }
-    kids.push(simpleTable(['Jour', 'Valeur totale', 'Variation', 'Cartes', 'Cartes différentes', 'Déjà vendues aux enchères'],
-      days.slice(-30).reverse().map(d => {
-        const v = db.history[d], prev = db.history[days[days.indexOf(d) - 1]];
-        const dv = prev ? v[0] - prev[0] : null;
-        return h('tr', null, h('td', null, new Date(d + 'T12:00:00').toLocaleDateString('fr-FR')), h('td', null, fmt(v[0]) + ' ₩'),
-          h('td', null, dv == null ? '—' : (dv > 0 ? '+' : '') + fmt(dv) + ' ₩'), h('td', null, fmt(v[1])), h('td', null, fmt(v[2])), h('td', null, fmt(v[3])));
-      })));
+    const dayRows = days.map((d, i) => {
+      const v = db.history[d], prev = i ? db.history[days[i - 1]] : null;
+      return { d, v, dv: prev ? v[0] - prev[0] : null };
+    }).reverse();
+    kids.push(sortTable('trend', [
+      { t: 'Jour', get: x => x.d, cell: x => new Date(x.d + 'T12:00:00').toLocaleDateString('fr-FR') },
+      { t: 'Valeur totale', get: x => x.v[0], cell: x => fmt(x.v[0]) + ' ₩' },
+      { t: 'Variation', get: x => x.dv, cell: x => (x.dv == null ? '—' : (x.dv > 0 ? '+' : '') + fmt(x.dv) + ' ₩') },
+      { t: 'Cartes', get: x => x.v[1], cell: x => fmt(x.v[1]) },
+      { t: 'Cartes différentes', get: x => x.v[2], cell: x => fmt(x.v[2]) },
+      { t: 'Déjà vendues aux enchères', get: x => x.v[3], cell: x => fmt(x.v[3]) }
+    ], dayRows, renderTrend, { limit: 60 }));
     e.trendBody.replaceChildren(...kids);
   }
   const tile = (label, val, sub) => h('div', { class: 'tile' }, h('span', null, label), h('b', null, val), sub ? h('small', null, sub) : null);
@@ -1399,19 +1479,20 @@
       e.sellTable.replaceChildren(h('div', { class: 'empty' }, 'Aucune carte ne passe ce seuil avec les réglages actuels.'));
       return;
     }
-    const head = h('tr', null, ['#', 'Carte', 'Rareté', 'Ex.', 'Prix conseillé', 'Fiabilité', 'Dernière vente', 'Fourchette', 'Ventes']
-      .map((t, i) => h('th', { class: i === 1 ? 'l' : '' }, t)));
-    const body = list.map((r, i) => h('tr', { class: i < top ? 'top' : '' },
-      h('td', null, i + 1),
-      h('td', { class: 'l' }, r.title, r.shiny ? ' ✨' : '', r.starred ? ' ★' : '', r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null),
-      h('td', null, rarBadge(r.rarity)),
-      h('td', null, r.count),
-      h('td', null, h('b', null, fmt(Math.round(r.value)) + ' ₩')),
-      h('td', null, relCell(r.price)),
-      h('td', null, fmtDate(r.price.lastT)),
-      h('td', null, fmt(r.price.min) + ' à ' + fmt(r.price.max)),
-      h('td', null, r.price.n)));
-    e.sellTable.replaceChildren(h('table', null, h('thead', null, head), h('tbody', null, body)));
+    // Le rang et le surlignage suivent l'ordre conseillé, même quand tu tries autrement.
+    const rankOf = new Map(list.map((r, i) => [r, i + 1]));
+    e.sellTable.replaceChildren(sortTable('sell', [
+      { t: '#', asc: true, get: r => rankOf.get(r), cell: r => rankOf.get(r) },
+      { t: 'Carte', left: true, asc: true, get: r => r.title.toLowerCase(),
+        cell: r => [r.title, r.shiny ? ' ✨' : '', r.starred ? ' ★' : '', r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null] },
+      { t: 'Rareté', asc: true, get: r => rarOrder(r.rarity), cell: r => rarBadge(r.rarity) },
+      { t: 'Ex.', get: r => r.count, cell: r => r.count },
+      { t: 'Prix conseillé', get: r => r.value, cell: r => h('b', null, fmt(Math.round(r.value)) + ' ₩') },
+      { t: 'Fiabilité', get: r => r.price.rel.level, cell: r => relCell(r.price) },
+      { t: 'Dernière vente', get: r => r.price.lastT, cell: r => fmtDate(r.price.lastT) },
+      { t: 'Fourchette', get: r => r.price.max, cell: r => fmt(r.price.min) + ' à ' + fmt(r.price.max) },
+      { t: 'Ventes', get: r => r.price.n, cell: r => r.price.n }
+    ], list, renderSell, { rowClass: r => (rankOf.get(r) <= top ? 'top' : '') }));
   }
 
   // ----- onglet Boosters -----
@@ -1443,29 +1524,35 @@
       withPrices ? tile('Valeur moyenne par booster', fmt(total / P.length) + ' ₩') : null,
       withPrices ? tile('Meilleur booster', fmt(best) + ' ₩') : null
     ].filter(Boolean));
-    const rarRows = RARITIES.concat('?').filter(r => byRar[r]).map(r => h('tr', null,
-      h('td', null, rarBadge(r)), h('td', null, fmt(byRar[r])), h('td', null, fmt(100 * byRar[r] / nCards) + ' %'),
-      h('td', null, '1 carte sur ' + fmt(nCards / byRar[r]))));
     const kids = [
       h('h2', null, 'Ce que tu tires'),
-      h('table', null, h('thead', null, h('tr', null, ['Rareté', 'Cartes', 'Part', 'Fréquence'].map(t => h('th', null, t)))), h('tbody', null, rarRows))
+      sortTable('pullRar', [
+        { t: 'Rareté', asc: true, get: r => rarOrder(r), cell: r => rarBadge(r) },
+        { t: 'Cartes', get: r => byRar[r], cell: r => fmt(byRar[r]) },
+        { t: 'Part', get: r => byRar[r], cell: r => fmt(100 * byRar[r] / nCards) + ' %' },
+        { t: 'Fréquence', asc: true, get: r => nCards / byRar[r], cell: r => '1 carte sur ' + fmt(nCards / byRar[r]) }
+      ], RARITIES.concat('?').filter(r => byRar[r]), renderPulls)
     ];
     if (withPrices) {
-      const bestCards = all.filter(c => c.v > DISCARD).sort((a, b) => b.v - a.v).slice(0, 10);
+      const bestCards = all.filter(c => c.v > DISCARD).sort((a, b) => b.v - a.v).slice(0, 50);
       if (bestCards.length) {
         kids.push(h('h2', null, 'Tes meilleurs tirages'),
-          h('table', null, h('thead', null, h('tr', null, ['Carte', 'Rareté', 'Valeur', 'Tirée le'].map(t => h('th', null, t)))),
-            h('tbody', null, bestCards.map(c => h('tr', null,
-              h('td', null, c.title), h('td', null, rarBadge(c.r)), h('td', null, fmt(c.v) + ' ₩'), h('td', null, fmtDate(c.t)))))));
+          sortTable('pullBest', [
+            { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(), cell: c => c.title },
+            { t: 'Rareté', asc: true, get: c => rarOrder(c.r), cell: c => rarBadge(c.r) },
+            { t: 'Valeur', get: c => c.v, cell: c => fmt(c.v) + ' ₩' },
+            { t: 'Tirée le', get: c => c.t, cell: c => fmtDate(c.t) }
+          ], bestCards, renderPulls, { limit: 20 }));
       }
     }
-    const lastPulls = P.slice(-10).reverse();
+    const pullValue = pl => pl.c.reduce((a, [id]) => a + valueOf(id), 0);
     kids.push(h('h2', null, 'Derniers boosters'),
-      h('table', null, h('thead', null, h('tr', null, ['Ouvert', 'Cartes', withPrices ? 'Valeur' : null].filter(Boolean).map((t, i) => h('th', { class: i === 1 ? 'l' : '' }, t)))),
-        h('tbody', null, lastPulls.map(pl => h('tr', null,
-          h('td', null, new Date(pl.t).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })),
-          h('td', { class: 'l' }, pl.c.map(([, title, r], i) => [i ? ' · ' : '', rarBadge(r), ' ', title])),
-          withPrices ? h('td', null, fmt(pl.c.reduce((a, [id]) => a + valueOf(id), 0)) + ' ₩') : null)))));
+      sortTable('pullLast', [
+        { t: 'Ouvert', get: pl => pl.t,
+          cell: pl => new Date(pl.t).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) },
+        { t: 'Cartes', left: true, cell: pl => pl.c.map(([, title, r], i) => [i ? ' · ' : '', rarBadge(r), ' ', title]) },
+        withPrices ? { t: 'Valeur', get: pullValue, cell: pl => fmt(pullValue(pl)) + ' ₩' } : null
+      ], P.slice(-50).reverse(), renderPulls, { limit: 20 }));
     e.pullBody.replaceChildren(...kids);
   }
 
@@ -1506,17 +1593,16 @@
     }
     theirs.sort(sortFn); ours.sort(sortFn);
     const LIMIT = 300;
+    const knownValue = c => { const p = priceOf(c.id); return p && p.n ? Math.max(p.med, DISCARD) : null; };
     const list = (title, items) => {
-      const heads = ['Carte', 'Rareté', 'Ex.', withPrices ? 'Valeur' : null].filter(Boolean);
       return [h('h2', null, title + ' (' + fmt(items.length) + ')'),
-        items.length ? h('table', null, h('thead', null, h('tr', null, heads.map(t => h('th', null, t)))),
-          h('tbody', null, items.slice(0, LIMIT).map(c => {
-            const p = priceOf(c.id);
-            return h('tr', null,
-              h('td', null, c.title, c.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null),
-              h('td', null, rarBadge(c.rarity)), h('td', null, c.count),
-              withPrices ? h('td', null, p && p.n ? fmt(Math.max(p.med, DISCARD)) + ' ₩' : '—') : null);
-          }))) : h('div', { class: 'sub' }, 'Aucune.'),
+        items.length ? sortTable('fr:' + title, [
+          { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(),
+            cell: c => [c.title, c.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null] },
+          { t: 'Rareté', asc: true, get: c => rarOrder(c.rarity), cell: c => rarBadge(c.rarity) },
+          { t: 'Ex.', get: c => c.count, cell: c => c.count },
+          withPrices ? { t: 'Valeur', get: knownValue, cell: c => (knownValue(c) == null ? '—' : fmt(knownValue(c)) + ' ₩') } : null
+        ], items, renderFriends, { limit: LIMIT }) : h('div', { class: 'sub' }, 'Aucune.'),
         items.length > LIMIT ? h('div', { class: 'sub' }, '… et ' + fmt(items.length - LIMIT) + ' autres. Filtre par rareté pour les voir.') : null];
     };
     const dupT = theirs.filter(c => c.count > 1).length, dupO = ours.filter(c => c.count > 1).length;
