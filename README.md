@@ -63,6 +63,8 @@ Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en
 
 Chaque carte a une ligne. Quand elle est mise en vente plusieurs fois, la ligne porte une étiquette « 3 annonces », affiche le prix le plus bas (« dès 30 ₩ ») et la première fin d'enchère. Un clic sur la ligne la déplie pour montrer chaque annonce avec son prix, sa fin et son lien ; un second clic la replie. Le bouton « Tout déplier » ouvre toutes les cartes d'un coup. Dans l'onglet Collection, la colonne « En vente à » affiche la moins chère suivie du nombre d'annonces entre parenthèses.
 
+La case « Cacher les cartes que je possède déjà » retire de la liste les souhaits déjà présents dans ta collection, et les exclut aussi de la recherche sur le marché. Elle s'appuie sur la collection chargée dans l'onglet Collection, et reste cochée d'une visite à l'autre. Sans elle, ces cartes portent une étiquette « possédée ».
+
 Le prix d'une annonce est un lien : un clic ouvre cette enchère sur le site, dans un nouvel onglet. Une alerte pas encore vérifiée a aussi son lien.
 
 L'onglet indique aussi si un ami possède la carte, d'après les fichiers importés dans l'onglet Amis.

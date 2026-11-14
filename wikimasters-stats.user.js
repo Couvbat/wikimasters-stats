@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.8.0
+// @version      1.8.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -624,10 +624,18 @@
     return marketSearch(todo, 'Annonces', 'dont l’enchère est terminée');
   }
   // Les cartes de la liste (selon le filtre de rareté) pas encore cherchées, ou cherchées il y a le plus longtemps.
+  function ownedIds() {
+    const s = new Set();
+    for (const c of Object.values(db.cards)) s.add(c.cardId);
+    return s;
+  }
   function wishToSearch() {
     const now = Date.now();
+    // Si les cartes déjà possédées sont cachées, inutile de les chercher sur le marché.
+    const owned = db.wishHideOwned ? ownedIds() : null;
     return Object.keys(db.wish)
-      .filter(id => (!ui.wishRarity || db.wish[id][1] === ui.wishRarity) && !(now - (db.wishSeen[id] || 0) < SEARCH_FRESH))
+      .filter(id => (!ui.wishRarity || db.wish[id][1] === ui.wishRarity) && !(now - (db.wishSeen[id] || 0) < SEARCH_FRESH) &&
+        !(owned && owned.has(id)))
       .sort((a, b) => (db.wishSeen[a] || 0) - (db.wishSeen[b] || 0) || rarOrder(db.wish[a][1]) - rarOrder(db.wish[b][1]));
   }
   function searchWish() {
@@ -1187,6 +1195,10 @@
         h('label', { class: 'chk' },
           h('input', { type: 'checkbox', onchange: ev => { ui.wishAvail = ev.target.checked; renderWish(); } }),
           'Seulement celles que je peux obtenir maintenant'),
+        h('label', { class: 'chk', title: 'D’après ta collection chargée dans l’onglet Collection' },
+          h('input', { type: 'checkbox', checked: !!db.wishHideOwned,
+            onchange: ev => { db.wishHideOwned = ev.target.checked; saveDb(); syncButtons(); renderWish(); } }),
+          'Cacher les cartes que je possède déjà'),
         e.wishFold),
       e.wishStatus, e.wishTiles, e.wishBody,
       h('div', { class: 'note' },
@@ -1399,16 +1411,19 @@
     }
     const withPrices = showPrices();
     const now = Date.now();
+    const owned = ownedIds();
     const all = ids.map(id => ({
-      id, title: known[id][0], rarity: known[id][1], ask: askOf(id), alert: alertOf(id), price: priceOf(id),
+      id, title: known[id][0], rarity: known[id][1], ask: askOf(id), alert: alertOf(id), price: priceOf(id), owned: owned.has(id),
       friends: Object.keys(db.friends).filter(n => db.friends[n].cards && db.friends[n].cards[id])
     }));
+    const nOwned = all.filter(c => c.owned).length;
     // Rang d'intérêt : en vente avec prix connu, puis signalée mais pas vérifiée, puis chez un ami, puis le reste.
     const rank = c => (c.ask ? 0 : c.alert ? 1 : c.friends.length ? 2 : 3);
     const onSale = all.filter(c => c.ask).length, atFriends = all.filter(c => c.friends.length).length;
     const toCheck = all.filter(c => !c.ask && c.alert).length;
     e.wishTiles.replaceChildren(
-      tile('Cartes souhaitées', fmt(Object.keys(db.wish).length), db.wishAt ? 'liste lue ' + ago(db.wishAt) : 'liste pas encore chargée'),
+      tile('Cartes souhaitées', fmt(Object.keys(db.wish).length), (db.wishAt ? 'liste lue ' + ago(db.wishAt) : 'liste pas encore chargée') +
+        (nOwned ? ' · ' + nOwned + ' déjà dans ta collection' + (db.wishHideOwned ? ', cachées' : '') : '')),
       tile('En vente, prix connu', fmt(onSale), onSale
         ? plural(all.reduce((n, c) => n + (c.ask ? c.ask.list.length : 0), 0), 'annonce', 'annonces') + ' · relevé ' + ago(db.market.at)
         : db.market.at ? 'dernier relevé ' + ago(db.market.at) : 'marché pas encore relevé'),
@@ -1416,7 +1431,7 @@
       tile('Chez un ami', fmt(atFriends), plural(Object.keys(db.friends).length, 'ami importé', 'amis importés')));
     const left = ms => { const m = Math.round(ms / 6e4); return m < 60 ? m + ' min' : Math.round(m / 60) + ' h'; };
     const list = all
-      .filter(c => (!ui.wishRarity || c.rarity === ui.wishRarity) && (!ui.wishAvail || rank(c) < 3))
+      .filter(c => (!ui.wishRarity || c.rarity === ui.wishRarity) && (!ui.wishAvail || rank(c) < 3) && !(db.wishHideOwned && c.owned))
       .sort((a, b) => rank(a) - rank(b) || (a.ask && b.ask ? a.ask.a - b.ask.a : 0) ||
         rarOrder(a.rarity) - rarOrder(b.rarity) || a.title.localeCompare(b.title));
     if (!list.length) {
@@ -1445,7 +1460,8 @@
       sortTable('wish', [
         { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(),
           cell: c => [multi(c) ? h('span', { class: 'caret' }, isOpen(c) ? '▾' : '▸') : h('span', { class: 'caret' }), c.title,
-            multi(c) ? h('span', { class: 'tag' }, c.ask.list.length + ' annonces') : null] },
+            multi(c) ? h('span', { class: 'tag' }, c.ask.list.length + ' annonces') : null,
+            c.owned ? h('span', { class: 'tag', title: 'Cette carte est déjà dans ta collection' }, 'possédée') : null] },
         { t: 'Rareté', asc: true, get: c => rarOrder(c.rarity), cell: c => rarBadge(c.rarity) },
         withPrices ? { t: 'Valeur médiane', get: c => (c.price && c.price.n ? c.price.med : null),
           cell: c => (c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') } : null,
