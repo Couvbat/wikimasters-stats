@@ -35,7 +35,7 @@ Violentmonkey devrait aussi convenir (bouton « + », puis « Nouveau script »)
 
 ## Utiliser
 
-Le panneau a quatre onglets.
+Le panneau a huit onglets.
 
 ### Collection
 
@@ -49,11 +49,23 @@ Le panneau a quatre onglets.
 
 La liste des cartes qui méritent une place aux enchères : doublons d'abord, puis les plus chères. Tu règles la valeur minimale, et tu choisis d'inclure ou non tes favoris et les prix douteux. Les cartes déjà en vente sont retirées, et les lignes surlignées tiennent dans tes places de vente libres. Le script ne met rien en vente : c'est toi qui le fais sur le site.
 
+### Mes ventes
+
+Le bilan de tes enchères : ventes réussies et invendus, revenus, achats, solde, détail par rareté, et comparaison entre mise de départ et prix obtenu. Le site ne donne que tes enchères les plus récentes ; le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s'allonge avec le temps.
+
+### Souhaits
+
+Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». Clique sur « Charger ma liste de souhaits », et l'onglet indique pour chaque carte si elle est en vente en ce moment (d'après le dernier relevé du marché) et si un ami l'a (d'après les fichiers importés dans l'onglet Amis).
+
 ### Boosters
 
 Chaque paquet que tu ouvres toi-même est mémorisé : nombre de boosters, part de chaque rareté, valeur moyenne par booster, meilleurs tirages. Seuls les boosters ouverts depuis l'installation de la version 1.3 sont comptés.
 
 Avec un compte Pro, un petit panneau affiche aussi, juste après l'ouverture, le prix de chaque carte tirée et un conseil. Une case dans l'onglet Collection permet de le désactiver.
+
+### Évolution
+
+Une courbe de la valeur totale, du nombre de cartes ou du nombre de cartes déjà vendues, avec un point par jour où ta collection a été chargée ou consultée. Elle apparaît à partir du deuxième jour.
 
 ### Amis
 
@@ -61,7 +73,13 @@ Avec un compte Pro, un petit panneau affiche aussi, juste après l'ouverture, le
 2. Envoie le fichier à un ami, et demande-lui le sien.
 3. Importe son fichier : tu vois ce qu'il a et que tu n'as pas, ce que tu as et qu'il n'a pas, avec les doublons en tête.
 
-Le fichier contient la liste des cartes et leur nombre d'exemplaires, sans aucun prix. Il fonctionne avec ou sans compte Pro.
+Si vos listes de souhaits sont chargées, l'onglet montre aussi les cartes que tu cherches et qu'il possède, et celles qu'il cherche et que tu possèdes.
+
+Le fichier contient la liste des cartes, leur nombre d'exemplaires et la liste de souhaits, sans aucun prix. Il fonctionne avec ou sans compte Pro.
+
+### Sauvegarde
+
+Tes données sont rangées dans le navigateur, donc Chrome et Zen ont chacun les leurs. « Exporter toutes mes données » crée un fichier à importer dans l'autre navigateur. L'import fusionne : il ajoute ce qui manque et ne remplace un prix ou une collection que par plus récent. Garde ce fichier pour toi, il contient des prix issus de ton compte.
 
 ## Comment lire les chiffres
 
@@ -79,7 +97,7 @@ Le fichier contient la liste des cartes et leur nombre d'exemplaires, sans aucun
 L'historique des ventes de chaque carte est une fonction Pro du site, et le script n'y touche pas sans compte Pro. Il reste :
 
 - le tableau (rareté, ATK, DEF, Q-Score, vues, exemplaires) et l'export CSV ;
-- les stats de boosters et la comparaison entre amis ;
+- les stats de boosters, le bilan de tes ventes, la liste de souhaits, l'évolution, la comparaison entre amis et la sauvegarde ;
 - le niveau de prix par rareté, d'après les enchères en cours ;
 - une valeur pour les cartes que tu as toi-même vendues ou achetées, lue dans ton historique sur la page Marché.
 

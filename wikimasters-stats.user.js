@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.3.2
-// @description  Valeur de ta collection WikiMasters, cartes à vendre, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
+// @version      1.4.0
+// @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
 // @run-at       document-start
@@ -30,9 +30,16 @@
     return {
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
+      auctions: {}, history: {}, wish: {}, wishAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: false }
     };
   }
+  const MAX_AUCTIONS = 3000; // enchères personnelles gardées en mémoire
+  const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+  const okKey = k => typeof k === 'string' && k.length > 0 && k.length <= 80 && !BAD_KEYS.has(k);
+  const str = (v, n) => String(v == null ? '' : v).slice(0, n);
+  const num = v => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  const safeUrl = u => (typeof u === 'string' && /^https?:\/\//.test(u) ? u.slice(0, 500) : '');
   let db = loadDb();
   function loadDb() {
     const base = defaults();
@@ -43,10 +50,15 @@
         base.market = Object.assign(defaults().market, d.market || {});
         base.sell = Object.assign(defaults().sell, d.sell || {});
         if (!Array.isArray(base.pulls)) base.pulls = [];
+        for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales']) if (!isObj(base[k])) base[k] = {};
       }
     } catch (e) {}
     return base;
   }
+  // Un autre onglet du site a enregistré des données : on les reprend pour ne pas les écraser.
+  window.addEventListener('storage', ev => {
+    if (ev.key === KEY && !job.running) { db = loadDb(); refresh(); }
+  });
   function saveDb() {
     try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {
       // Plus de place : on sacrifie le relevé du marché, qui se refait en un clic.
@@ -68,7 +80,7 @@
         title: c.wikipedia_title || '?',
         rarity: rarOf(c.rarity),
         atk: c.atk, def: c.def, q: c.q_score, views: c.pageviews,
-        cat: c.category || '', url: c.wikipedia_url || '',
+        cat: c.category || '', url: safeUrl(c.wikipedia_url),
         count: it.count || 1, shiny: !!it.is_shiny, starred: !!it.starred,
         tags: (it.tags || []).map(t => (typeof t === 'string' ? t : (t && t.name) || '')).filter(Boolean),
         obtained: it.obtained_at || ''
@@ -76,7 +88,44 @@
     }
     db.collectionAt = Date.now();
     saveDb();
+    // Un chargement complet donne une photo fiable du jour ; une page isolée, non.
+    if (replace) { priceCache = new Map(); snapshot(buildRows()); }
     refresh();
+  }
+
+  // Liste de souhaits : les cartes pour lesquelles tu as demandé une alerte sur la page « Toutes les cartes ».
+  function ingestWish(j, replace) {
+    if (!j || !Array.isArray(j.cards)) return;
+    if (replace) db.wish = {};
+    for (const c of j.cards) if (c && okKey(c.id)) db.wish[c.id] = [str(c.wikipedia_title || '?', 200), rarOf(c.rarity)];
+    db.wishAt = Date.now();
+    saveDb();
+    refresh();
+  }
+
+  // Tes enchères passées, accumulées au fil des passages : le site ne renvoie que les plus récentes.
+  // Chaque entrée : [type, carte, titre, rareté, mise de départ d'origine, mise finale, prix final ou null, date]
+  // type : s = vendue, u = invendue, b = achetée
+  function recordAuction(a, kind) {
+    if (!a || !okKey(a.id) || !okKey(a.card_id)) return;
+    const c = a.card || {};
+    db.auctions[a.id] = [kind, a.card_id, str(c.wikipedia_title || '?', 200), rarOf(a.snapshot_rarity || c.rarity),
+      num(a.listing_base_amount != null ? a.listing_base_amount : a.base_amount), num(a.base_amount),
+      typeof a.final_price === 'number' ? a.final_price : null, str(a.settled_at || a.end_at, 40)];
+  }
+  function tidyAuctions() {
+    const ids = Object.keys(db.auctions);
+    if (ids.length > MAX_AUCTIONS) {
+      ids.sort((x, y) => (db.auctions[x][7] < db.auctions[y][7] ? -1 : 1))
+        .slice(0, ids.length - MAX_AUCTIONS).forEach(id => delete db.auctions[id]);
+    }
+    const mine = {};
+    for (const a of Object.values(db.auctions)) {
+      if (a[6] == null || !okKey(a[1])) continue;
+      (mine[a[1]] = mine[a[1]] || []).push({ p: a[6], t: a[7] });
+    }
+    for (const id in mine) mine[id] = mine[id].sort(byDateDesc).slice(0, 10);
+    db.mySales = mine;
   }
 
   function ingestSales(cardId, j) {
@@ -99,13 +148,9 @@
     if (typeof j.maxConcurrentAuctions === 'number') m.max = j.maxConcurrentAuctions;
     if (Array.isArray(j.selling)) m.selling = j.selling.map(a => a && a.card_id).filter(Boolean);
     if (Array.isArray(j.history) || Array.isArray(j.won)) {
-      const mine = {};
-      for (const a of [].concat(j.history || [], j.won || [])) {
-        if (!a || typeof a.card_id !== 'string' || BAD_KEYS.has(a.card_id) || typeof a.final_price !== 'number') continue;
-        (mine[a.card_id] = mine[a.card_id] || []).push({ p: a.final_price, t: a.settled_at || a.end_at || '' });
-      }
-      for (const id in mine) mine[id] = mine[id].sort(byDateDesc).slice(0, 10);
-      db.mySales = mine;
+      for (const a of j.history || []) recordAuction(a, a && typeof a.final_price === 'number' ? 's' : 'u');
+      for (const a of j.won || []) if (a && typeof a.final_price === 'number') recordAuction(a, 'b');
+      tidyAuctions();
     }
     if (Array.isArray(j.auctions)) {
       for (const id in m.asks) if (now - m.asks[id].t > 2 * DAY) delete m.asks[id];
@@ -165,6 +210,8 @@
           p.then(r => r.ok && r.clone().json().then(j => ingestCollection(j.collection, false))).catch(() => {});
         } else if (url.pathname === '/api/marketplace') {
           p.then(r => r.ok && r.clone().json().then(ingestMarket)).catch(() => {});
+        } else if (url.pathname === '/api/cards' && url.searchParams.get('wishlist') === '1') {
+          p.then(r => r.ok && r.clone().json().then(j => ingestWish(j, false))).catch(() => {});
         }
       }
     } catch (e) {}
@@ -246,6 +293,22 @@
       r.total = r.value * r.count;
     }
     return rows;
+  }
+  // Une photo par jour de la collection, pour l'onglet Évolution : [valeur, cartes, cartes différentes, cartes déjà vendues]
+  function dayKey(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+  function snapshot(rows) {
+    if (!rows.length || Date.now() - db.collectionAt > DAY) return;
+    const entry = [Math.round(rows.reduce((a, r) => a + r.total, 0)), rows.reduce((a, r) => a + r.count, 0),
+      rows.length, rows.filter(r => r.price && r.price.n > 0).length];
+    const day = dayKey(new Date());
+    const cur = db.history[day];
+    if (cur && cur.join() === entry.join()) return;
+    db.history[day] = entry;
+    const days = Object.keys(db.history).sort();
+    days.slice(0, Math.max(0, days.length - 400)).forEach(d => delete db.history[d]);
+    saveDb();
   }
   function missingIds() {
     const now = Date.now();
@@ -331,6 +394,28 @@
       endJob(pages === 1 ? 'Ventes en cours à jour.' : 'Marché relevé : ' + seen + ' enchères lues.', where);
     } catch (e) {
       endJob('Lecture du marché impossible (' + e.message + ').', where);
+    }
+  }
+
+  // Lit ta liste de souhaits page par page, comme la page « Toutes les cartes » avec son filtre.
+  async function loadWish() {
+    if (job.running) return;
+    startJob('Lecture de la liste de souhaits…', 'wishStatus');
+    try {
+      const all = [];
+      for (let page = 0; page < 100 && !job.stop; page++) {
+        const j = await getJSON('/api/cards?page=' + page + '&sort=rarity&wishlist=1');
+        const cards = j.cards || [];
+        all.push(...cards);
+        setStatus('Liste de souhaits : ' + all.length + ' cartes…', 'wishStatus');
+        if (cards.length < PAGE_SIZE || (typeof j.total === 'number' && all.length >= j.total)) break;
+        await sleep(PRICE_DELAY + Math.random() * 500);
+      }
+      if (job.stop) return endJob('Arrêté, liste inchangée.', 'wishStatus');
+      ingestWish({ cards: all }, true);
+      endJob('Liste de souhaits chargée : ' + all.length + ' cartes.', 'wishStatus');
+    } catch (e) {
+      endJob('Lecture impossible (' + e.message + ').', 'wishStatus');
     }
   }
 
@@ -434,7 +519,11 @@
     const ids = Object.keys(mine);
     if (!ids.length) return setStatus('Charge d’abord ta collection dans l’onglet Collection.', 'frStatus');
     // Volontairement sans les prix : seulement ce que chacun voit de sa propre collection.
-    const data = { wmstats: 1, pseudo, at: Date.now(), cards: ids.map(id => [id, mine[id].title, mine[id].rarity, mine[id].count]) };
+    const data = {
+      wmstats: 1, pseudo, at: Date.now(),
+      cards: ids.map(id => [id, mine[id].title, mine[id].rarity, mine[id].count]),
+      wish: Object.entries(db.wish).map(([id, w]) => [id, w[0], w[1]])
+    };
     download('wikimasters-collection-' + pseudo.replace(/[^\w-]+/g, '_') + '.json', JSON.stringify(data), 'application/json');
     setStatus('Fichier créé : envoie-le à tes amis.', 'frStatus');
   }
@@ -452,7 +541,107 @@
       const n = Math.max(1, Math.min(999, Math.floor(Number(c[3]) || 1)));
       cards[id] = [c[1].slice(0, 200), rarOf(c[2]), (cards[id] ? cards[id][2] : 0) + n];
     }
-    return { pseudo, at: typeof j.at === 'number' ? j.at : Date.now(), cards };
+    const wish = {};
+    for (const c of (Array.isArray(j.wish) ? j.wish : []).slice(0, 5000)) {
+      if (Array.isArray(c) && okKey(c[0]) && typeof c[1] === 'string') wish[c[0].slice(0, 64)] = [c[1].slice(0, 200), rarOf(c[2])];
+    }
+    return { pseudo, at: typeof j.at === 'number' ? j.at : Date.now(), cards, wish };
+  }
+
+  // ---------- sauvegarde : passer ses données d'un navigateur à l'autre ----------
+  function exportBackup() {
+    const data = {};
+    for (const k of ['cards', 'collectionAt', 'prices', 'pulls', 'auctions', 'history', 'wish', 'wishAt', 'friends', 'me', 'sell']) data[k] = db[k];
+    download('wikimasters-sauvegarde-' + dayKey(new Date()) + '.json',
+      JSON.stringify({ wmstatsBackup: 1, at: Date.now(), data }), 'application/json');
+    setStatus('Sauvegarde créée. Importe ce fichier dans ton autre navigateur.', 'dataStatus');
+  }
+  const cleanSales = a => (Array.isArray(a) ? a : []).filter(s => s && typeof s.p === 'number')
+    .slice(0, 10).map(s => ({ p: s.p, t: str(s.t, 40) }));
+  const cleanPairs = (o, max) => {
+    const out = {};
+    if (isObj(o)) for (const id of Object.keys(o).slice(0, max)) {
+      const w = o[id];
+      if (okKey(id) && Array.isArray(w)) out[id] = [str(w[0], 200), rarOf(w[1])];
+    }
+    return out;
+  };
+  // Fusion prudente : on ne remplace que par plus récent, et on ne garde que des champs connus et bornés.
+  function mergeBackup(text) {
+    const j = JSON.parse(text);
+    if (!isObj(j) || j.wmstatsBackup !== 1 || !isObj(j.data)) throw new Error('ce n’est pas une sauvegarde du script');
+    const b = j.data, n = { prix: 0, boosters: 0, enchères: 0, jours: 0 };
+    if (isObj(b.prices)) for (const id in b.prices) {
+      const p = b.prices[id], cur = db.prices[id];
+      if (!okKey(id) || !isObj(p)) continue;
+      if (!cur || num(p.at) > cur.at) { db.prices[id] = { at: num(p.at), sales: cleanSales(p.sales) }; n.prix++; }
+    }
+    if (Array.isArray(b.pulls)) {
+      const seen = new Set(db.pulls.map(p => p.t));
+      for (const p of b.pulls.slice(-MAX_PULLS)) {
+        if (!isObj(p) || !num(p.t) || seen.has(p.t) || !Array.isArray(p.c)) continue;
+        const c = p.c.filter(x => Array.isArray(x) && okKey(x[0])).slice(0, 20).map(x => [x[0], str(x[1], 200), rarOf(x[2])]);
+        if (c.length) { db.pulls.push({ t: p.t, k: str(p.k, 20), c }); n.boosters++; }
+      }
+      db.pulls.sort((x, y) => x.t - y.t);
+      if (db.pulls.length > MAX_PULLS) db.pulls.splice(0, db.pulls.length - MAX_PULLS);
+    }
+    if (isObj(b.auctions)) for (const id in b.auctions) {
+      const a = b.auctions[id];
+      if (!okKey(id) || db.auctions[id] || !Array.isArray(a) || !['s', 'u', 'b'].includes(a[0]) || !okKey(a[1])) continue;
+      db.auctions[id] = [a[0], a[1], str(a[2], 200), rarOf(a[3]), num(a[4]), num(a[5]), typeof a[6] === 'number' ? a[6] : null, str(a[7], 40)];
+      n.enchères++;
+    }
+    tidyAuctions();
+    if (isObj(b.history)) for (const day in b.history) {
+      const v = b.history[day];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || db.history[day] || !Array.isArray(v)) continue;
+      db.history[day] = [num(v[0]), num(v[1]), num(v[2]), num(v[3])];
+      n.jours++;
+    }
+    if (isObj(b.friends)) for (const name of Object.keys(b.friends).slice(0, 10)) {
+      const f = b.friends[name], cur = db.friends[name];
+      if (!okKey(name) || !isObj(f) || (cur && cur.at >= num(f.at))) continue;
+      if (!cur && Object.keys(db.friends).length >= 10) continue;
+      const cards = {};
+      if (isObj(f.cards)) for (const id of Object.keys(f.cards).slice(0, 20000)) {
+        const c = f.cards[id];
+        if (okKey(id) && Array.isArray(c)) cards[id] = [str(c[0], 200), rarOf(c[1]), Math.max(1, Math.min(999, Math.floor(num(c[2])) || 1))];
+      }
+      db.friends[name] = { at: num(f.at), cards, wish: cleanPairs(f.wish, 5000) };
+    }
+    if (num(b.wishAt) > db.wishAt) { db.wish = cleanPairs(b.wish, 5000); db.wishAt = num(b.wishAt); }
+    if (num(b.collectionAt) > db.collectionAt && isObj(b.cards)) {
+      const cards = {};
+      for (const id of Object.keys(b.cards).slice(0, 20000)) {
+        const c = b.cards[id];
+        if (!okKey(id) || !isObj(c) || !okKey(c.cardId)) continue;
+        cards[id] = {
+          cardId: c.cardId, title: str(c.title || '?', 200), rarity: rarOf(c.rarity),
+          atk: num(c.atk), def: num(c.def), q: num(c.q), views: num(c.views), cat: str(c.cat, 100), url: safeUrl(c.url),
+          count: Math.max(1, Math.floor(num(c.count)) || 1), shiny: !!c.shiny, starred: !!c.starred,
+          tags: (Array.isArray(c.tags) ? c.tags : []).slice(0, 30).map(t => str(t, 60)), obtained: str(c.obtained, 40)
+        };
+      }
+      db.cards = cards;
+      db.collectionAt = num(b.collectionAt);
+    }
+    if (!db.me && typeof b.me === 'string') db.me = b.me.slice(0, 40);
+    saveDb();
+    return n;
+  }
+  async function importBackup(file) {
+    if (!file) return;
+    try {
+      if (file.size > 2e7) throw new Error('fichier trop gros');
+      const n = mergeBackup(await file.text());
+      setStatus('Sauvegarde fusionnée. Ajoutés : ' + n.prix + ' prix, ' + plural(n.boosters, 'booster', 'boosters') + ', ' +
+        plural(n.enchères, 'enchère', 'enchères') + ', ' + plural(n.jours, 'jour d’historique', 'jours d’historique') +
+        '. Rien de plus récent n’a été écrasé.', 'dataStatus');
+    } catch (e) {
+      setStatus('Import impossible : ' + e.message + '.', 'dataStatus');
+    }
+    refresh();
   }
   async function importFriend(file) {
     if (!file) return;
@@ -460,7 +649,7 @@
       if (file.size > 5e6) throw new Error('fichier trop gros');
       const f = parseFriend(await file.text());
       if (!db.friends[f.pseudo] && Object.keys(db.friends).length >= 10) throw new Error('10 amis au maximum, retire-en un');
-      db.friends[f.pseudo] = { at: f.at, cards: f.cards };
+      db.friends[f.pseudo] = { at: f.at, cards: f.cards, wish: f.wish };
       ui.friend = f.pseudo;
       saveDb();
       setStatus('Collection de ' + f.pseudo + ' importée : ' + Object.keys(f.cards).length + ' cartes différentes.', 'frStatus');
@@ -471,11 +660,20 @@
   }
 
   // ---------- interface ----------
-  const TABS = [['col', 'Collection'], ['sell', 'À vendre'], ['pulls', 'Boosters'], ['friends', 'Amis']];
+  const TABS = [['col', 'Collection'], ['sell', 'À vendre'], ['sales', 'Mes ventes'], ['wish', 'Souhaits'],
+    ['pulls', 'Boosters'], ['trend', 'Évolution'], ['friends', 'Amis'], ['data', 'Sauvegarde']];
   const ui = {
     open: false, tab: 'col', chosen: new Set(['L', 'UR', 'SR']),
-    sortKey: 'total', sortDir: -1, text: '', rarity: '', friend: '', frRarity: '', el: {}
+    sortKey: 'total', sortDir: -1, text: '', rarity: '', friend: '', frRarity: '',
+    wishRarity: '', wishAvail: false, metric: 0, el: {}
   };
+  const SVG = 'http://www.w3.org/2000/svg';
+  function s(tag, attrs, ...kids) {
+    const e = document.createElementNS(SVG, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    for (const k of kids.flat(3)) if (k != null && k !== false) e.append(k.nodeType ? k : String(k));
+    return e;
+  }
   const nf = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 });
   const fmt = v => (v == null || Number.isNaN(v) ? '—' : nf.format(v));
   const fmtDate = t => (t ? new Date(t).toLocaleDateString('fr-FR') : '—');
@@ -567,6 +765,12 @@
     .pull .t span{color:#8b9a94;font-size:12px}
     .empty{padding:30px;text-align:center;color:#8b9a94}
     .note{color:#8b9a94;font-size:12px;margin-top:10px}
+    p.line{margin:4px 0;color:#cbd5d1}
+    .chart{position:relative;background:#151c19;border:1px solid #26302c;border-radius:10px;padding:10px 6px 4px;margin-bottom:12px}
+    .chart svg{display:block;width:100%;height:auto}
+    .chart text{font-size:11px;fill:#8b9a94;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+    .tip{position:absolute;top:6px;transform:translateX(-50%);background:#1c2622;border:1px solid #33413b;border-radius:6px;
+      padding:4px 8px;font-size:12px;color:#e5e7eb;white-space:nowrap;pointer-events:none;display:none}
   `;
 
   const REL = ['Douteux', 'Moyen', 'Fiable'];
@@ -610,7 +814,7 @@
     const e = ui.el;
     if (!e.load) return;
     const pro = proState();
-    e.load.disabled = e.scan.disabled = e.mine.disabled = job.running;
+    e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = job.running;
     e.fill.disabled = job.running || pro !== true;
     e.stop.disabled = !job.running;
     e.fill.textContent = pro === true
@@ -628,10 +832,12 @@
     const root = host.attachShadow({ mode: 'open' });
     const e = ui.el;
     e.host = host;
-    for (const k of ['status', 'sellStatus', 'frStatus']) e[k] = h('div', { class: 'status' });
-    for (const k of ['tiles', 'pullTiles']) e[k] = h('div', { class: 'tiles' });
+    for (const k of ['status', 'sellStatus', 'frStatus', 'salesStatus', 'wishStatus', 'dataStatus']) e[k] = h('div', { class: 'status' });
+    for (const k of ['tiles', 'pullTiles', 'salesTiles', 'wishTiles']) e[k] = h('div', { class: 'tiles' });
     for (const k of ['rar', 'market']) e[k] = h('div', { class: 'rar' });
-    for (const k of ['table', 'sellTable', 'pullBody', 'frBody']) e[k] = h('div', { class: 'scroll' });
+    for (const k of ['table', 'sellTable', 'pullBody', 'frBody', 'salesBody', 'wishBody', 'trendBody']) e[k] = h('div', { class: 'scroll' });
+    e.mine2 = h('button', { class: 'b', onclick: () => scanMarket(1, 'salesStatus') }, 'Actualiser depuis la page Marché');
+    e.wishLoad = h('button', { class: 'b pri', onclick: loadWish }, 'Charger ma liste de souhaits');
     e.sub = h('div', { class: 'sub' });
     e.pro = h('div', { class: 'sub', style: 'margin-bottom:10px' });
     e.sellInfo = h('div', { class: 'sub', style: 'margin-bottom:10px' });
@@ -708,8 +914,50 @@
         h('button', { class: 'b', onclick: () => { if (ui.friend) { delete db.friends[ui.friend]; ui.friend = ''; saveDb(); refresh(); } } }, 'Retirer cet ami')),
       e.frStatus, e.frBody,
       h('div', { class: 'note' },
-        'Le fichier exporté contient la liste de tes cartes et leur nombre d’exemplaires, sans aucun prix. ',
+        'Le fichier exporté contient la liste de tes cartes, leur nombre d’exemplaires et ta liste de souhaits, sans aucun prix. ',
         'Il fonctionne avec ou sans compte Pro.'));
+
+    e.view_sales = h('div', null,
+      h('div', { class: 'bar' }, e.mine2), e.salesStatus, e.salesTiles, e.salesBody,
+      h('div', { class: 'note' },
+        'Le site ne donne que tes enchères les plus récentes. Le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s’allonge avec le temps. ',
+        'La comparaison à la valeur médiane est indicative : cette médiane inclut ta propre vente.'));
+
+    e.view_wish = h('div', null,
+      h('div', { class: 'bar' }, e.wishLoad,
+        rarSelect(ev => { ui.wishRarity = ev.target.value; renderWish(); }),
+        h('label', { class: 'chk' },
+          h('input', { type: 'checkbox', onchange: ev => { ui.wishAvail = ev.target.checked; renderWish(); } }),
+          'Seulement celles que je peux obtenir maintenant')),
+      e.wishStatus, e.wishTiles, e.wishBody,
+      h('div', { class: 'note' },
+        'Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». ',
+        '« En vente à » vient du dernier relevé du marché ; « Chez un ami » vient des fichiers importés dans l’onglet Amis. ',
+        'Ta liste part aussi dans le fichier que tu exportes pour tes amis, pour qu’ils voient ce que tu cherches.'));
+
+    e.view_trend = h('div', null,
+      h('div', { class: 'bar' },
+        h('span', null, 'Afficher :'),
+        h('select', { onchange: ev => { ui.metric = Number(ev.target.value); renderTrend(); } },
+          h('option', { value: 0 }, 'Valeur totale'), h('option', { value: 1 }, 'Nombre de cartes'),
+          h('option', { value: 3 }, 'Cartes déjà vendues aux enchères'))),
+      e.trendBody,
+      h('div', { class: 'note' },
+        'Une photo est prise chaque jour où ta collection est chargée ou consultée sur le site. Les jours sans visite n’ont pas de point.'));
+
+    e.view_data = h('div', null,
+      h('p', { class: 'line' }, 'Tes données sont rangées dans ce navigateur. Chrome et Zen ont donc chacun les leurs.'),
+      h('div', { class: 'bar', style: 'margin-top:12px' },
+        h('button', { class: 'b pri', onclick: exportBackup }, 'Exporter toutes mes données')),
+      h('div', { class: 'bar' },
+        h('span', null, 'Importer une sauvegarde :'),
+        h('input', { type: 'file', accept: '.json,application/json',
+          onchange: ev => { importBackup(ev.target.files[0]); ev.target.value = ''; } })),
+      e.dataStatus,
+      h('div', { class: 'note' },
+        'La sauvegarde contient ta collection, les prix relevés, tes boosters, tes enchères, l’évolution, ta liste de souhaits et les fichiers de tes amis. ',
+        'L’import fusionne : il ajoute ce qui manque et ne remplace un prix ou une collection que par plus récent. ',
+        'Garde ce fichier pour toi : il contient des prix issus de ton compte.'));
 
     const views = TABS.map(([k]) => e['view_' + k]);
     e.back = h('div', { class: 'back', onclick: ev => { if (ev.target === e.back) toggle(false); } },
@@ -753,11 +1001,185 @@
     renderPull();
     if (!ui.open) return;
     rowsCache = buildRows();
+    snapshot(rowsCache);
     ui.el.sub.textContent = db.collectionAt
       ? 'Collection vue le ' + new Date(db.collectionAt).toLocaleString('fr-FR')
       : 'Collection pas encore chargée';
     syncButtons();
-    ({ col: renderCol, sell: renderSell, pulls: renderPulls, friends: renderFriends })[ui.tab]();
+    ({ col: renderCol, sell: renderSell, sales: renderSales, wish: renderWish, pulls: renderPulls,
+      trend: renderTrend, friends: renderFriends, data: () => {} })[ui.tab]();
+  }
+  const simpleTable = (heads, rows, leftCols) => h('table', null,
+    h('thead', null, h('tr', null, heads.map((t, i) => h('th', { class: (leftCols || []).includes(i) ? 'l' : '' }, t)))),
+    h('tbody', null, rows));
+  const rarOrder = r => { const i = RARITIES.indexOf(r); return i < 0 ? 99 : i; };
+
+  // ----- onglet Mes ventes -----
+  function renderSales() {
+    const e = ui.el;
+    const A = Object.values(db.auctions)
+      .map(a => ({ kind: a[0], cardId: a[1], title: a[2], rarity: a[3], list: a[4], base: a[5], final: a[6], t: a[7] }))
+      .sort(byDateDesc);
+    if (!A.length) {
+      e.salesTiles.replaceChildren();
+      e.salesBody.replaceChildren(h('div', { class: 'empty' },
+        'Aucune enchère en mémoire. Clique sur « Actualiser depuis la page Marché », ou ouvre simplement la page Marché du site.'));
+      return;
+    }
+    const sold = A.filter(a => a.kind === 's'), unsold = A.filter(a => a.kind === 'u'), bought = A.filter(a => a.kind === 'b');
+    const listed = sold.length + unsold.length;
+    const sum = l => l.reduce((x, a) => x + a.final, 0);
+    const revenue = sum(sold), spent = sum(bought);
+    e.salesTiles.replaceChildren(
+      tile('Ventes réussies', fmt(sold.length), listed
+        ? 'sur ' + plural(listed, 'mise en vente', 'mises en vente') + ' · ' + fmt(100 * unsold.length / listed) + ' % d’invendus' : null),
+      tile('Revenus', fmt(revenue) + ' ₩', sold.length ? 'prix médian ' + fmt(median(sold.map(a => a.final))) + ' ₩' : null),
+      tile('Achats', fmt(bought.length), bought.length ? fmt(spent) + ' ₩ dépensés' : null),
+      tile('Solde', (revenue > spent ? '+' : '') + fmt(revenue - spent) + ' ₩', 'revenus moins achats'));
+    const kids = [];
+    const rars = RARITIES.concat('?').filter(r => sold.some(a => a.rarity === r) || unsold.some(a => a.rarity === r));
+    if (rars.length) {
+      kids.push(h('h2', null, 'Tes ventes par rareté'), simpleTable(['Rareté', 'Vendues', 'Invendues', 'Revenus', 'Prix médian'], rars.map(r => {
+        const sl = sold.filter(a => a.rarity === r), ul = unsold.filter(a => a.rarity === r);
+        return h('tr', null, h('td', null, rarBadge(r)), h('td', null, sl.length), h('td', null, ul.length),
+          h('td', null, fmt(sum(sl)) + ' ₩'), h('td', null, sl.length ? fmt(median(sl.map(a => a.final))) + ' ₩' : '—'));
+      })));
+    }
+    const lines = [];
+    if (sold.length) {
+      lines.push('Cartes vendues : mise de départ médiane ' + fmt(median(sold.map(a => a.list))) + ' ₩, prix final médian ' +
+        fmt(median(sold.map(a => a.final))) + ' ₩. ' + plural(sold.filter(a => a.final > a.base).length, 'vente a', 'ventes ont') +
+        ' dépassé la mise de départ.');
+    }
+    if (unsold.length) lines.push('Cartes invendues : mise de départ médiane ' + fmt(median(unsold.map(a => a.list))) + ' ₩.');
+    const ratios = sold.map(a => { const p = priceOf(a.cardId); return p && p.n && p.med ? a.final / p.med : null; }).filter(x => x != null);
+    if (ratios.length >= 3) {
+      lines.push('Tes ventes se sont conclues, en médiane, à ' + fmt(100 * median(ratios)) + ' % de la valeur médiane actuelle de la carte (sur ' +
+        ratios.length + ' ventes).');
+    }
+    if (lines.length) kids.push(h('h2', null, 'Mise de départ et prix obtenu'), lines.map(t => h('p', { class: 'line' }, t)));
+    const withPrices = showPrices();
+    kids.push(h('h2', null, 'Dernières enchères'),
+      simpleTable(['Date', 'Carte', 'Rareté', 'Type', 'Mise de départ', 'Résultat', withPrices ? 'Valeur médiane' : null].filter(Boolean),
+        A.slice(0, 40).map(a => {
+          const p = priceOf(a.cardId);
+          return h('tr', null,
+            h('td', null, fmtDate(a.t)), h('td', { class: 'l' }, a.title), h('td', null, rarBadge(a.rarity)),
+            h('td', null, a.kind === 'b' ? 'Achat' : 'Vente'),
+            h('td', null, fmt(a.list) + ' ₩' + (a.base !== a.list ? ' → ' + fmt(a.base) + ' ₩' : '')),
+            h('td', null, a.final == null ? h('span', { class: 'est' }, 'Invendue') : h('b', null, fmt(a.final) + ' ₩')),
+            withPrices ? h('td', null, p && p.n ? fmt(p.med) + ' ₩' : '—') : null);
+        }), [1]));
+    e.salesBody.replaceChildren(...kids.flat(2));
+  }
+
+  // ----- onglet Souhaits -----
+  function renderWish() {
+    const e = ui.el;
+    const ids = Object.keys(db.wish);
+    if (!ids.length) {
+      e.wishTiles.replaceChildren();
+      e.wishBody.replaceChildren(h('div', { class: 'empty' },
+        'Liste de souhaits pas encore lue. Clique sur « Charger ma liste de souhaits ».'));
+      return;
+    }
+    const withPrices = showPrices();
+    const all = ids.map(id => ({
+      id, title: db.wish[id][0], rarity: db.wish[id][1], ask: askOf(id), price: priceOf(id),
+      friends: Object.keys(db.friends).filter(n => db.friends[n].cards && db.friends[n].cards[id])
+    }));
+    const onSale = all.filter(c => c.ask).length, atFriends = all.filter(c => c.friends.length).length;
+    e.wishTiles.replaceChildren(
+      tile('Cartes souhaitées', fmt(all.length), 'liste lue ' + ago(db.wishAt)),
+      tile('En vente en ce moment', fmt(onSale), db.market.at ? 'marché relevé ' + ago(db.market.at) : 'marché pas encore relevé'),
+      tile('Chez un ami', fmt(atFriends), plural(Object.keys(db.friends).length, 'ami importé', 'amis importés')));
+    const list = all
+      .filter(c => (!ui.wishRarity || c.rarity === ui.wishRarity) && (!ui.wishAvail || c.ask || c.friends.length))
+      .sort((a, b) => (!!(b.ask || b.friends.length)) - (!!(a.ask || a.friends.length)) ||
+        rarOrder(a.rarity) - rarOrder(b.rarity) || a.title.localeCompare(b.title));
+    if (!list.length) {
+      e.wishBody.replaceChildren(h('div', { class: 'empty' }, 'Aucune carte avec ces filtres.'));
+      return;
+    }
+    const LIMIT = 300;
+    e.wishBody.replaceChildren(
+      simpleTable(['Carte', 'Rareté', withPrices ? 'Valeur médiane' : null, 'En vente à', 'Chez un ami'].filter(Boolean),
+        list.slice(0, LIMIT).map(c => h('tr', { class: c.ask || c.friends.length ? 'top' : '' },
+          h('td', null, c.title), h('td', null, rarBadge(c.rarity)),
+          withPrices ? h('td', null, c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') : null,
+          h('td', null, c.ask ? fmt(c.ask.a) + ' ₩' + (c.ask.b ? ' •' : '') : '—'),
+          h('td', null, c.friends.length ? c.friends.join(', ') : '—')))),
+      ...(list.length > LIMIT ? [h('div', { class: 'sub' }, '… et ' + fmt(list.length - LIMIT) + ' autres. Filtre par rareté pour les voir.')] : []));
+  }
+
+  // ----- onglet Évolution -----
+  const METRICS = { 0: ['Valeur totale', ' ₩'], 1: ['Nombre de cartes', ''], 3: ['Cartes déjà vendues aux enchères', ''] };
+  function renderTrend() {
+    const e = ui.el;
+    const days = Object.keys(db.history).sort();
+    if (!days.length) {
+      e.trendBody.replaceChildren(h('div', { class: 'empty' }, 'Pas encore de relevé. Charge ta collection dans l’onglet Collection.'));
+      return;
+    }
+    const [label, unit] = METRICS[ui.metric] || METRICS[0];
+    const pts = days.map(d => ({ d, t: Date.parse(d + 'T12:00:00'), v: db.history[d][ui.metric] || 0 }));
+    const dayLabel = d => new Date(d + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+    const kids = [];
+    if (pts.length < 2) {
+      kids.push(h('div', { class: 'tiles' }, tile(label, fmt(pts[0].v) + unit, 'relevé du ' + dayLabel(pts[0].d))),
+        h('div', { class: 'sub', style: 'margin-bottom:12px' }, 'La courbe apparaîtra à partir du deuxième jour de relevé.'));
+    } else {
+      const W = 820, H = 240, L = 62, R = 18, T = 30, B = 26;
+      const vmin = Math.min(...pts.map(p => p.v)), vmax = Math.max(...pts.map(p => p.v));
+      const pad = (vmax - vmin) * 0.1 || Math.max(1, vmax * 0.05);
+      const y0 = Math.max(0, vmin - pad), y1 = vmax + pad;
+      const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+      const X = t => L + (t - t0) / (t1 - t0) * (W - L - R);
+      const Y = v => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
+      const path = pts.map((p, i) => (i ? 'L' : 'M') + X(p.t).toFixed(1) + ' ' + Y(p.v).toFixed(1)).join(' ');
+      const cross = s('line', { y1: T, y2: H - B, stroke: '#8b9a94', 'stroke-width': 1, 'stroke-dasharray': '3 3', visibility: 'hidden' });
+      const focus = s('circle', { r: 5, fill: '#34d399', stroke: '#151c19', 'stroke-width': 2, visibility: 'hidden' });
+      const tip = h('div', { class: 'tip' });
+      const svg = s('svg', { viewBox: '0 0 ' + W + ' ' + H, role: 'img', 'aria-label': label + ' au fil des jours' },
+        [y0, (y0 + y1) / 2, y1].map(v => [
+          s('line', { x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: '#26302c', 'stroke-width': 1 }),
+          s('text', { x: L - 8, y: Y(v) + 4, 'text-anchor': 'end' }, fmt(Math.round(v)))]),
+        s('text', { x: L, y: H - 6, 'text-anchor': 'start' }, dayLabel(pts[0].d)),
+        s('text', { x: W - R, y: H - 6, 'text-anchor': 'end' }, dayLabel(pts[pts.length - 1].d)),
+        s('path', { d: path + ' L' + X(t1).toFixed(1) + ' ' + (H - B) + ' L' + X(t0).toFixed(1) + ' ' + (H - B) + ' Z', fill: '#34d399', 'fill-opacity': 0.1 }),
+        s('path', { d: path, fill: 'none', stroke: '#34d399', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }),
+        pts.length <= 45 ? pts.map(p => s('circle', { cx: X(p.t), cy: Y(p.v), r: 4, fill: '#34d399', stroke: '#151c19', 'stroke-width': 2 })) : null,
+        cross, focus);
+      const show = ev => {
+        const box = svg.getBoundingClientRect();
+        const x = (ev.clientX - box.left) / box.width * W;
+        let best = pts[0];
+        for (const p of pts) if (Math.abs(X(p.t) - x) < Math.abs(X(best.t) - x)) best = p;
+        const px = X(best.t);
+        cross.setAttribute('x1', px); cross.setAttribute('x2', px); cross.setAttribute('visibility', 'visible');
+        focus.setAttribute('cx', px); focus.setAttribute('cy', Y(best.v)); focus.setAttribute('visibility', 'visible');
+        tip.textContent = dayLabel(best.d) + ' : ' + fmt(best.v) + unit;
+        tip.style.left = Math.min(92, Math.max(8, px / W * 100)) + '%';
+        tip.style.display = 'block';
+      };
+      svg.addEventListener('mousemove', show);
+      svg.addEventListener('mouseleave', () => {
+        cross.setAttribute('visibility', 'hidden'); focus.setAttribute('visibility', 'hidden'); tip.style.display = 'none';
+      });
+      const first = pts[0].v, last = pts[pts.length - 1].v, delta = last - first;
+      kids.push(h('div', { class: 'tiles' },
+        tile(label, fmt(last) + unit, 'au ' + dayLabel(pts[pts.length - 1].d)),
+        tile('Depuis le ' + dayLabel(pts[0].d), (delta > 0 ? '+' : '') + fmt(delta) + unit, first ? (delta > 0 ? '+' : '') + fmt(100 * delta / first) + ' %' : null)),
+        h('div', { class: 'chart' }, svg, tip));
+    }
+    kids.push(simpleTable(['Jour', 'Valeur totale', 'Variation', 'Cartes', 'Cartes différentes', 'Déjà vendues aux enchères'],
+      days.slice(-30).reverse().map(d => {
+        const v = db.history[d], prev = db.history[days[days.indexOf(d) - 1]];
+        const dv = prev ? v[0] - prev[0] : null;
+        return h('tr', null, h('td', null, new Date(d + 'T12:00:00').toLocaleDateString('fr-FR')), h('td', null, fmt(v[0]) + ' ₩'),
+          h('td', null, dv == null ? '—' : (dv > 0 ? '+' : '') + fmt(dv) + ' ₩'), h('td', null, fmt(v[1])), h('td', null, fmt(v[2])), h('td', null, fmt(v[3])));
+      })));
+    e.trendBody.replaceChildren(...kids);
   }
   const tile = (label, val, sub) => h('div', { class: 'tile' }, h('span', null, label), h('b', null, val), sub ? h('small', null, sub) : null);
   const plural = (n, one, many) => fmt(n) + ' ' + (n > 1 ? many : one);
@@ -994,12 +1416,30 @@
         items.length > LIMIT ? h('div', { class: 'sub' }, '… et ' + fmt(items.length - LIMIT) + ' autres. Filtre par rareté pour les voir.') : null];
     };
     const dupT = theirs.filter(c => c.count > 1).length, dupO = ours.filter(c => c.count > 1).length;
+    // Croisement avec les listes de souhaits : ce que tu cherches et qu'il a, ce qu'il cherche et que tu as.
+    const iWant = [], theyWant = [];
+    for (const id in db.wish) {
+      if (!f.cards[id]) continue;
+      const c = { id, title: f.cards[id][0], rarity: f.cards[id][1], count: f.cards[id][2] };
+      if (keep(c)) iWant.push(c);
+    }
+    for (const id in (f.wish || {})) {
+      if (!mine[id]) continue;
+      const c = { id, title: mine[id].title, rarity: mine[id].rarity, count: mine[id].count };
+      if (keep(c)) theyWant.push(c);
+    }
+    iWant.sort(sortFn); theyWant.sort(sortFn);
+    const hasWish = Object.keys(db.wish).length > 0, friendHasWish = Object.keys(f.wish || {}).length > 0;
     e.frBody.replaceChildren(...[
       h('div', { class: 'tiles' },
         tile('En commun', fmt(common)),
         tile('Ses doublons qui te manquent', fmt(dupT)),
-        tile('Tes doublons qui lui manquent', fmt(dupO))),
+        tile('Tes doublons qui lui manquent', fmt(dupO)),
+        tile('Tes souhaits dans sa collection', hasWish ? fmt(iWant.length) : '—', hasWish ? null : 'charge ta liste dans l’onglet Souhaits'),
+        tile('Ses souhaits dans ta collection', friendHasWish ? fmt(theyWant.length) : '—', friendHasWish ? null : 'son fichier ne contient pas de liste')),
       h('div', { class: 'sub' }, 'Collection de ' + ui.friend + ' exportée le ' + fmtDate(f.at) + '. Les doublons sont en tête : ce sont les échanges les plus faciles.'),
+      hasWish ? list('Sur ta liste de souhaits, chez ' + ui.friend, iWant) : null,
+      friendHasWish ? list(ui.friend + ' les cherche, et tu les as', theyWant) : null,
       list('Chez ' + ui.friend + ', pas chez toi', theirs),
       list('Chez toi, pas chez ' + ui.friend, ours)
     ].flat(2).filter(Boolean));
