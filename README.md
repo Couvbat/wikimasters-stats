@@ -35,7 +35,11 @@ Violentmonkey devrait aussi convenir (bouton « + », puis « Nouveau script »)
 
 ## Utiliser
 
-Le panneau a neuf onglets. Dans tous les tableaux, un clic sur un en-tête de colonne trie selon cette colonne, et un second clic inverse le sens.
+Le panneau a dix onglets. Dans tous les tableaux, un clic sur un en-tête de colonne trie selon cette colonne, et un second clic inverse le sens.
+
+### Accueil
+
+L'essentiel en une page, à l'ouverture du panneau : valeur de la collection et variation depuis le dernier relevé, les cartes à vendre en premier avec tes places libres, tes souhaits en vente (bonnes affaires d'abord, puis ceux qui finissent bientôt), ton dernier booster et tes dernières enchères. Chaque bloc a un lien « voir → » vers son onglet.
 
 ### Collection
 
@@ -50,6 +54,8 @@ Le panneau a neuf onglets. Dans tous les tableaux, un clic sur un en-tête de co
 ### À vendre
 
 La liste des cartes qui méritent une place aux enchères : doublons d'abord, puis les plus chères. Tu règles la valeur minimale, et tu choisis d'inclure ou non tes favoris et les prix douteux. Les cartes déjà en vente sont retirées, et les lignes surlignées tiennent dans tes places de vente libres.
+
+La colonne « Concurrence » montre l'annonce la moins chère d'un autre joueur sur la même carte (bouton « Chercher la concurrence »). Si elle est sous la médiane, le prix conseillé passe juste en dessous d'elle, marqué « ajusté » : inutile de vendre plus cher qu'un concurrent. Tes propres annonces ne comptent pas comme concurrence.
 
 Un clic sur le nom d'une carte ouvre, dans un nouvel onglet, la page Collection du site avec le formulaire « Mettre aux enchères » de cette carte déjà ouvert. Le script s'arrête là : la mise de départ, la durée et le bouton « Lancer l'enchère » restent à toi.
 
@@ -72,6 +78,10 @@ Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demand
 Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en entier. Il retient à la place les alertes de mise en vente que le site t'envoie pour ces cartes. « Vérifier les annonces signalées » cherche chacune d'elles sur le marché par son titre, et affiche le prix le plus bas, la fin de l'enchère et si une offre a déjà été faite. C'est une recherche par seconde, avec un bouton Stop. Les enchères terminées sont retirées.
 
 « Rafraîchir les annonces » relit le prix et la fin des annonces déjà listées, sans attendre : utile avant d'enchérir, puisque les offres montent.
+
+**Bonnes affaires** : une annonce au moins 30 % sous la valeur médiane de la carte (sur 3 ventes ou plus) porte une étiquette verte « bonne affaire −40 % » et remonte en tête. Une case filtre sur elles seules. Pour qu'elles soient repérées, il faut la valeur médiane : « Relever les prix des souhaits en vente » (compte Pro) la relève pour les seuls souhaits actuellement en vente.
+
+Les alertes de plus de 12 h sont ignorées : une enchère dure 12 h au plus, elles concernent donc forcément une vente terminée.
 
 « Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, qu'il y ait eu une alerte ou non. Elle traite toute la liste d'un coup, en commençant par celles jamais cherchées. Choisis une rareté pour cibler. Une carte cherchée depuis moins d'une heure est sautée.
 
