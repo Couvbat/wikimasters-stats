@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.14.2
+// @version      1.14.3
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -1450,10 +1450,12 @@
           onchange: ev => { db.sell.min = Math.max(2, Math.floor(Number(ev.target.value) || 2)); ev.target.value = db.sell.min; saveDb(); refresh(); } }),
         sellOpt('favs', 'Inclure mes favoris ★'),
         sellOpt('doubt', 'Inclure les prix douteux'),
+        sellOpt('dupFirst', 'Doublons d’abord'),
         e.mine, e.sellComp),
       e.sellInfo, e.sellStatus, e.sellTable,
       h('div', { class: 'note' },
-        'Les doublons passent en premier, puis les cartes les plus chères. Les cartes déjà mises en vente sont retirées de la liste. ',
+        'Les cartes les plus chères passent en premier ; coche « Doublons d’abord » pour vendre en priorité ce que tu as en plusieurs exemplaires. ' +
+        'Les cartes déjà mises en vente sont retirées de la liste. ',
         '« Concurrence » montre l’annonce la moins chère d’un autre joueur sur la même carte. Le prix conseillé reste la médiane des ventes : ' +
         'une mise de départ n’est pas un prix final. Une étiquette signale seulement un concurrent qui a déjà une offre sous la médiane. ',
         'Les lignes surlignées tiennent dans tes places de vente libres. Le script ne met rien en vente : c’est toi qui le fais sur le site.'));
@@ -2178,7 +2180,7 @@
     return rowsCache
       .filter(r => r.price && r.price.n > 0 && r.value >= s.min && (s.favs || !r.starred) &&
         (s.doubt || r.price.rel.level > 0) && !selling.has(r.cardId))
-      .sort((a, b) => (b.count > 1) - (a.count > 1) || b.value - a.value);
+      .sort((a, b) => (s.dupFirst ? (b.count > 1) - (a.count > 1) : 0) || b.value - a.value);
   }
   function renderSell() {
     const e = ui.el, m = db.market;
