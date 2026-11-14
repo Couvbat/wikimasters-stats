@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.8.1
+// @version      1.8.2
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -1442,11 +1442,23 @@
     // Une ligne par carte. Quand elle a plusieurs annonces, un clic sur la ligne les déplie juste dessous.
     const multi = c => !!c.ask && c.ask.list.length > 1;
     const isOpen = c => multi(c) && (ui.wishAll ? !ui.wishOpen.has(c.id) : ui.wishOpen.has(c.id));
-    const soonest = c => {
+    // La ligne d'une carte décrit toujours UNE annonce, prix et fin ensemble. Laquelle dépend du tri en cours :
+    // la moins chère par défaut, la plus chère si on trie par prix décroissant,
+    // celle qui finit le plus tôt ou le plus tard si on trie par fin d'enchère.
+    const iPrice = withPrices ? 3 : 2, iEnd = iPrice + 1;
+    const st = ui.sorts.wish;
+    const mode = st && st.i === iEnd ? (st.dir > 0 ? 'soon' : 'late') : st && st.i === iPrice && st.dir < 0 ? 'max' : 'min';
+    const feat = c => {
       if (!c.ask) return null;
-      const ends = c.ask.list.map(x => x.e).filter(x => x > now);
-      return ends.length ? Math.min(...ends) : null;
+      const l = c.ask.list;
+      if (mode === 'max') return l[l.length - 1];
+      if (mode === 'soon' || mode === 'late') {
+        const live = l.filter(x => x.e > now);
+        if (live.length) return live.reduce((a, b) => ((mode === 'soon' ? b.e < a.e : b.e > a.e) ? b : a));
+      }
+      return l[0];
     };
+    const WHICH = { min: 'la moins chère', max: 'la plus chère', soon: 'celle qui finit le plus tôt', late: 'celle qui finit le plus tard' };
     const anyMulti = list.some(multi);
     e.wishFold.style.display = anyMulti ? '' : 'none';
     e.wishFold.textContent = ui.wishAll ? 'Tout replier' : 'Tout déplier';
@@ -1465,14 +1477,20 @@
         { t: 'Rareté', asc: true, get: c => rarOrder(c.rarity), cell: c => rarBadge(c.rarity) },
         withPrices ? { t: 'Valeur médiane', get: c => (c.price && c.price.n ? c.price.med : null),
           cell: c => (c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') } : null,
-        { t: 'En vente à', asc: true, get: c => (c.ask ? c.ask.a : null),
-          cell: c => (c.ask
-            ? auctionLink(c.ask.i, h('b', null, (multi(c) ? 'dès ' : '') + fmt(c.ask.a) + ' ₩' + (c.ask.b ? ' •' : '')),
-              (multi(c) ? 'La moins chère des ' + c.ask.list.length + ' annonces · ' : '') +
-              (c.ask.b ? 'une offre a déjà été faite' : 'mise de départ, pas encore d’offre'))
-            : c.alert ? auctionLink(c.alert[4], h('span', { class: 'est' }, 'à vérifier'), 'Prix pas encore lu') : '—') },
-        { t: 'Fin de l’enchère', asc: true, get: soonest,
-          cell: c => (soonest(c) ? (multi(c) ? 'première dans ' : 'dans ') + left(soonest(c) - now) : '—') },
+        { t: 'En vente à', asc: true, get: c => (c.ask ? feat(c).a : null),
+          cell: c => {
+            if (!c.ask) return c.alert ? auctionLink(c.alert[4], h('span', { class: 'est' }, 'à vérifier'), 'Prix pas encore lu') : '—';
+            const f = feat(c);
+            const lead = !multi(c) ? '' : mode === 'min' ? 'dès ' : mode === 'max' ? 'jusqu’à ' : '';
+            return auctionLink(f.i, h('b', null, lead + fmt(f.a) + ' ₩' + (f.b ? ' •' : '')),
+              (multi(c) ? 'Sur ' + c.ask.list.length + ' annonces, ' + WHICH[mode] + ' · ' : '') +
+              (f.b ? 'une offre a déjà été faite' : 'mise de départ, pas encore d’offre'));
+          } },
+        { t: 'Fin de l’enchère', asc: true, get: c => (c.ask && feat(c).e > now ? feat(c).e : null),
+          cell: c => {
+            const f = c.ask ? feat(c) : null;
+            return f && f.e > now ? h('span', { title: multi(c) ? 'Fin de l’annonce affichée sur cette ligne : ' + WHICH[mode] : '' }, 'dans ' + left(f.e - now)) : '—';
+          } },
         { t: 'Alerte du site', get: c => (c.alert ? c.alert[2] : null), cell: c => (c.alert ? ago(c.alert[2]) : '—') },
         { t: 'Cherchée', get: c => db.wishSeen[c.id] || null, cell: c => (db.wishSeen[c.id] ? ago(db.wishSeen[c.id]) : '—') },
         { t: 'Chez un ami', asc: true, get: c => c.friends.join(', '), cell: c => (c.friends.length ? c.friends.join(', ') : '—') }
