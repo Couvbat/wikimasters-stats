@@ -44,7 +44,8 @@ Violentmonkey devrait aussi convenir (bouton « + », puis « Nouveau script »)
 ## Comment lire les chiffres
 
 - **Valeur** : médiane des 10 dernières ventes de la carte.
-- **~ en italique** : carte sans prix relevé, estimée à la médiane des cartes de même rareté dont le prix est connu.
+- **En italique** : carte sans vente connue, comptée à 1 wikibidou. C'est ce que rapporte la défausse, donc le minimum qu'une carte puisse valoir.
+- **Dont sans vente connue** : la part de la valeur totale qui vient de ces cartes comptées à 1.
 - **Conseil** : « Vendre » si la valeur dépasse 1 wikibidou (ce que rapporte la défausse), sinon « Défausser ».
 
 ## Compte non Pro

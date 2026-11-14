@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.1.0
+// @version      1.2.0
 // @description  Tableau de valeur de ta collection WikiMasters. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -129,15 +129,13 @@
   }
   function buildRows() {
     const rows = Object.entries(db.cards).map(([id, c]) => ({ id, ...c, price: priceOf(c.cardId) }));
-    const med = {};
-    for (const r of new Set(rows.map(x => x.rarity))) {
-      med[r] = median(rows.filter(x => x.rarity === r && x.price && x.price.n).map(x => x.price.med));
-    }
     for (const r of rows) {
       const known = r.price && r.price.n > 0;
-      r.value = known ? r.price.med : med[r.rarity];
-      r.est = !known && r.value != null;
-      r.total = (r.value || 0) * r.count;
+      // Sans vente connue, on ne suppose rien : la carte vaut ce que rapporte la défausse.
+      // C'est aussi le plancher de toute carte.
+      r.value = known ? Math.max(r.price.med, DISCARD) : DISCARD;
+      r.est = !known;
+      r.total = r.value * r.count;
     }
     return rows;
   }
@@ -358,7 +356,7 @@
     .note{color:#8b9a94;font-size:12px;margin-top:10px}
   `;
 
-  const estCell = (r, v) => (r.value == null ? '—' : h('span', { class: r.est ? 'est' : '' }, (r.est ? '~' : '') + fmt(v)));
+  const estCell = (r, v) => h('span', { class: r.est ? 'est' : '' }, fmt(v));
   const pr = (r, k) => (r.price ? r.price[k] : undefined);
   const COLS = [
     { k: 'title', t: 'Carte', get: r => r.title.toLowerCase(),
@@ -376,7 +374,7 @@
     { k: 'min', t: 'Min', price: true, get: r => pr(r, 'min'), cell: r => fmt(pr(r, 'min')) },
     { k: 'max', t: 'Max', price: true, get: r => pr(r, 'max'), cell: r => fmt(pr(r, 'max')) },
     { k: 'n', t: 'Ventes', price: true, get: r => pr(r, 'n'), cell: r => (r.price ? r.price.n : '—') },
-    { k: 'total', t: 'Total', price: true, get: r => (r.value == null ? null : r.total), cell: r => estCell(r, r.total) },
+    { k: 'total', t: 'Total', price: true, get: r => r.total, cell: r => estCell(r, r.total) },
     { k: 'adv', t: 'Conseil', price: true, get: r => (pr(r, 'n') ? r.price.med : null),
       cell: r => { const a = advice(r.price); return r.price ? h('span', { class: 'adv ' + a.cls }, a.text) : '—'; } },
     { k: 'at', t: 'Prix du', price: true, get: r => pr(r, 'at'), cell: r => (r.price ? fmtDate(r.price.at) : '—') }
@@ -442,7 +440,7 @@
           e.status, e.table,
           h('div', { class: 'note' },
             'Valeur = médiane des 10 dernières ventes (moins sensible qu’une moyenne aux enchères qui s’emballent). ',
-            'Conseil = vendre si cette valeur dépasse le wikibidou que rapporte la défausse. En italique avec « ~ » : estimation (médiane des cartes de même rareté dont le prix est connu). ',
+            'Conseil = vendre si cette valeur dépasse le wikibidou que rapporte la défausse. En italique : carte sans vente connue, comptée à 1 wikibidou, ce que rapporte la défausse. ',
             'Les prix se remplissent aussi tout seuls quand tu ouvres l’onglet Marché d’une carte.'))));
     e.pullList = h('div');
     e.pull = h('div', { class: 'pull' },
@@ -480,7 +478,7 @@
     e.tiles.replaceChildren(...(withPrices ? [
       tile('Cartes', fmt(nCards)),
       tile('Valeur totale', fmt(total) + ' ₩'),
-      tile('Dont estimée', total ? fmt(100 * estTotal / total) + ' %' : '—'),
+      tile('Dont sans vente connue', total ? fmt(100 * estTotal / total) + ' %' : '—'),
       tile('Prix connus', known + ' / ' + rows.length)
     ] : [
       tile('Cartes', fmt(nCards)),
@@ -544,7 +542,7 @@
       return /[";\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
     const head = ['Carte', 'Rareté', 'Exemplaires', 'Shiny', 'ATK', 'DEF', 'Q-Score', 'Vues 30j', 'Catégorie', 'Étiquettes',
-      'Valeur (médiane)', 'Estimée', 'Moyenne', 'Dernière vente', 'Min', 'Max', 'Nb ventes', 'Valeur totale', 'Conseil',
+      'Valeur', 'Sans vente connue', 'Moyenne', 'Dernière vente', 'Min', 'Max', 'Nb ventes', 'Valeur totale', 'Conseil',
       'Prix relevé le', 'Obtenue le', 'Wikipédia'];
     const lines = visibleRows().map(r => {
       const p = r.price || {};
