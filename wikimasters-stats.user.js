@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.6.0
+// @version      1.6.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -199,8 +199,10 @@
   function alertOf(cardId) {
     let best = null;
     const now = Date.now();
-    for (const a of Object.values(db.alerts)) {
-      if (a[0] === cardId && a[3] !== 2 && now - a[2] < DAY && (!best || a[2] > best[2])) best = a;
+    for (const id in db.alerts) {
+      const a = db.alerts[id];
+      // On ajoute l'identifiant de l'enchère en 5e position, pour pouvoir y mener par un lien.
+      if (a[0] === cardId && a[3] !== 2 && now - a[2] < DAY && (!best || a[2] > best[2])) best = [a[0], a[1], a[2], a[3], id];
     }
     return best;
   }
@@ -848,6 +850,8 @@
     tr.top td{background:#12241c}
     td a{color:#e5e7eb;text-decoration:none}
     td a:hover{color:#34d399}
+    td a.go{color:#34d399;text-decoration:underline;text-underline-offset:2px;white-space:nowrap}
+    td a.go:hover{color:#6ee7b7}
     .est{color:#8b9a94;font-style:italic}
     .r{display:inline-block;min-width:26px;text-align:center;border-radius:5px;padding:1px 5px;font-weight:700;font-size:11px;background:#33413b}
     .r-L{background:#fde047;color:#111}.r-UR{background:#fb923c;color:#111}.r-SR{background:#f472b6;color:#111}
@@ -887,6 +891,11 @@
     return h('span', { class: 'rel l' + p.rel.level, title }, REL[p.rel.level] + ARROW[p.trend]);
   }
   const rarBadge = r => h('span', { class: 'r r-' + r }, r);
+  // Lien vers la page d'une enchère sur le site, ouverte dans un nouvel onglet pour garder la liste sous les yeux.
+  // Sans identifiant d'enchère connu, on rend le contenu tel quel.
+  const auctionLink = (id, kids, title) => (okKey(id)
+    ? h('a', { class: 'go', href: '/marketplace/' + encodeURIComponent(id), target: '_blank', rel: 'noopener', title: (title ? title + ' · ' : '') + 'Ouvrir l’annonce' }, kids, ' ↗')
+    : h('span', { title: title || '' }, kids));
   const estCell = (r, v) => h('span', { class: r.est ? 'est' : '' }, fmt(v));
   const pr = (r, k) => (r.price ? r.price[k] : undefined);
   const COLS = [
@@ -909,8 +918,8 @@
     { k: 'adv', t: 'Conseil', price: true, get: r => (pr(r, 'n') ? r.price.med : null),
       cell: r => { const a = advice(r.price); return r.price ? h('span', { class: 'adv ' + a.cls }, a.text) : '—'; } },
     { k: 'ask', t: 'En vente à', ask: true, get: r => (r.ask ? r.ask.a : null),
-      cell: r => (r.ask ? h('span', { title: r.ask.b ? 'Une enchère en cours a déjà reçu une offre' : 'Mise de départ d’une enchère en cours, sans offre' },
-        fmt(r.ask.a) + (r.ask.b ? ' •' : '')) : '—') }
+      cell: r => (r.ask ? auctionLink(r.ask.i, fmt(r.ask.a) + (r.ask.b ? ' •' : ''),
+        r.ask.b ? 'Une enchère en cours a déjà reçu une offre' : 'Mise de départ d’une enchère en cours, sans offre') : '—') }
   ];
 
   function setStatus(msg, where) { const el = ui.el[where || 'status']; if (el) el.textContent = msg || ''; }
@@ -1280,8 +1289,9 @@
           cell: c => (c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') } : null,
         { t: 'En vente à', asc: true, get: c => (c.ask ? c.ask.a : null),
           cell: c => (c.ask
-            ? h('b', { title: c.ask.b ? 'Cette enchère a déjà reçu une offre' : 'Mise de départ, pas encore d’offre' }, fmt(c.ask.a) + ' ₩' + (c.ask.b ? ' •' : ''))
-            : c.alert ? h('span', { class: 'est' }, 'à vérifier') : '—') },
+            ? auctionLink(c.ask.i, h('b', null, fmt(c.ask.a) + ' ₩' + (c.ask.b ? ' •' : '')),
+              c.ask.b ? 'Cette enchère a déjà reçu une offre' : 'Mise de départ, pas encore d’offre')
+            : c.alert ? auctionLink(c.alert[4], h('span', { class: 'est' }, 'à vérifier'), 'Prix pas encore lu') : '—') },
         { t: 'Fin de l’enchère', asc: true, get: c => (c.ask && c.ask.e > now ? c.ask.e : null),
           cell: c => (c.ask && c.ask.e > now ? 'dans ' + left(c.ask.e - now) : '—') },
         { t: 'Alerte du site', get: c => (c.alert ? c.alert[2] : null), cell: c => (c.alert ? ago(c.alert[2]) : '—') },
