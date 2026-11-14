@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.14.4
+// @version      1.15.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -1229,6 +1229,35 @@
     input[type=number]{width:90px}
     input[type=file]{color:#8b9a94;font-size:12px}
     .status{color:#fbbf24;min-height:18px;margin-bottom:8px}
+    .status:empty{min-height:0;margin:0}
+    .tipbox{position:fixed;z-index:2147483647;display:none;max-width:340px;background:#1c2622;color:#e5e7eb;border:1px solid #3d4d46;
+      border-radius:8px;padding:8px 10px;font-size:12.5px;line-height:1.45;box-shadow:0 6px 20px #000c;pointer-events:none;
+      font-family:system-ui,-apple-system,"Segoe UI",sans-serif;white-space:normal;text-transform:none;letter-spacing:0;font-weight:400}
+    .q{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;margin-left:5px;border-radius:50%;
+      border:1px solid #4b5a54;color:#8b9a94;font-size:10px;font-weight:700;cursor:help;vertical-align:middle;text-transform:none;letter-spacing:0}
+    .q:hover{border-color:#34d399;color:#34d399}
+    [data-tip]{cursor:help}
+    button[data-tip],label[data-tip],select[data-tip],input[data-tip]{cursor:pointer}
+    .tools{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px;align-items:stretch}
+    .grp{background:#121816;border:1px solid #232c28;border-radius:10px;padding:8px 10px 10px}
+    .grp-t{color:#8b9a94;font-size:11px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;display:flex;align-items:center}
+    .grp-b{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .run{display:flex;gap:10px;align-items:center;margin-bottom:10px;min-height:0}
+    .run .status{margin:0;flex:1}
+    details.fold{margin:4px 0 12px;border:1px solid #232c28;border-radius:10px;background:#121816}
+    details.fold>summary{cursor:pointer;padding:8px 12px;color:#8b9a94;font-size:12.5px;user-select:none;list-style:none}
+    details.fold>summary::before{content:"▸ ";color:#34d399}
+    details.fold[open]>summary::before{content:"▾ "}
+    details.fold>summary::-webkit-details-marker{display:none}
+    .fold-b{padding:0 12px 10px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+    .fold-b .note{margin:0;flex-basis:100%}
+    .filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px}
+    .home{grid-template-columns:repeat(auto-fill,minmax(360px,1fr))!important;align-items:start}
+    .card li .grow.wrap{white-space:normal}
+    .card h2 span{display:inline-flex;align-items:center}
+    .warncard{border-color:#7c5a12;background:#1c180e}
+    .barwrap{display:block;height:10px;background:#1c2622;border-radius:5px;overflow:hidden}
+    .hbar{display:block;height:100%;border-radius:5px}
     .rar{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;align-items:center}
     .pill{background:#151c19;border:1px solid #26302c;border-radius:999px;padding:4px 10px;font-variant-numeric:tabular-nums}
     .pill i{font-style:normal;color:#8b9a94}
@@ -1308,6 +1337,9 @@
   const auctionLink = (id, kids, title) => (okKey(id)
     ? h('a', { class: 'go', href: '/marketplace/' + encodeURIComponent(id), target: '_blank', rel: 'noopener', title: (title ? title + ' · ' : '') + 'Ouvrir l’annonce' }, kids, ' ↗')
     : h('span', { title: title || '' }, kids));
+  const TIP_VALUE = 'Médiane des 10 dernières ventes de la carte. En italique : aucune vente connue, la carte compte pour 1 ₩ (ce que rapporte la défausse).';
+  const TIP_REL = 'Fiable : au moins 5 ventes, la dernière de moins de 30 jours. Moyen : au moins 2 ventes de moins de 90 jours. Douteux sinon. ' +
+    'Des prix très dispersés font descendre d’un cran. La flèche dit si les ventes récentes montent ou baissent ; survole le mot pour le détail.';
   const estCell = (r, v) => h('span', { class: r.est ? 'est' : '' }, fmt(v));
   const pr = (r, k) => (r.price ? r.price[k] : undefined);
   const COLS = [
@@ -1318,18 +1350,18 @@
     { k: 'count', t: 'Ex.', get: r => r.count, cell: r => r.count },
     { k: 'atk', t: 'ATK', get: r => r.atk, cell: r => fmt(r.atk) },
     { k: 'def', t: 'DEF', get: r => r.def, cell: r => fmt(r.def) },
-    { k: 'q', t: 'Q-Score', get: r => r.q, cell: r => fmt(r.q) },
-    { k: 'views', t: 'Vues 30j', get: r => r.views, cell: r => fmt(r.views) },
-    { k: 'value', t: 'Valeur', price: true, get: r => r.value, cell: r => estCell(r, r.value) },
-    { k: 'rel', t: 'Fiabilité', price: true, get: r => (pr(r, 'n') ? r.price.rel.level : null), cell: r => relCell(r.price) },
+    { k: 'q', t: 'Q-Score', tip: 'Indice de qualité de l’article Wikipédia, donné par le site.', get: r => r.q, cell: r => fmt(r.q) },
+    { k: 'views', t: 'Vues 30j', tip: 'Vues de l’article Wikipédia sur 30 jours. Plus il est lu, plus la carte est rare.', get: r => r.views, cell: r => fmt(r.views) },
+    { k: 'value', t: 'Valeur', tip: TIP_VALUE, price: true, get: r => r.value, cell: r => estCell(r, r.value) },
+    { k: 'rel', t: 'Fiabilité', tip: TIP_REL, price: true, get: r => (pr(r, 'n') ? r.price.rel.level : null), cell: r => relCell(r.price) },
     { k: 'last', t: 'Dernière', price: true, get: r => pr(r, 'last'), cell: r => fmt(pr(r, 'last')) },
     { k: 'min', t: 'Min', price: true, get: r => pr(r, 'min'), cell: r => fmt(pr(r, 'min')) },
     { k: 'max', t: 'Max', price: true, get: r => pr(r, 'max'), cell: r => fmt(pr(r, 'max')) },
     { k: 'n', t: 'Ventes', price: true, get: r => pr(r, 'n'), cell: r => (r.price ? r.price.n : '—') },
     { k: 'total', t: 'Total', price: true, get: r => r.total, cell: r => estCell(r, r.total) },
-    { k: 'adv', t: 'Conseil', price: true, get: r => (pr(r, 'n') ? r.price.med : null),
+    { k: 'adv', t: 'Conseil', tip: 'Vendre si la valeur dépasse 1 ₩ (ce que rapporte la défausse), sinon défausser.', price: true, get: r => (pr(r, 'n') ? r.price.med : null),
       cell: r => { const a = advice(r.price); return r.price ? h('span', { class: 'adv ' + a.cls }, a.text) : '—'; } },
-    { k: 'ask', t: 'En vente à', ask: true, get: r => (r.ask ? r.ask.a : null),
+    { k: 'ask', t: 'En vente à', tip: 'Annonce la moins chère d’un autre joueur sur cette carte, en ce moment. Un point = une offre a déjà été faite ; entre parenthèses, le nombre d’annonces. Rempli par « Trouver les annonces ».', ask: true, get: r => (r.ask ? r.ask.a : null),
       cell: r => (r.ask ? auctionLink(r.ask.i, fmt(r.ask.a) + (r.ask.b ? ' •' : '') + (r.ask.list.length > 1 ? ' (' + r.ask.list.length + ')' : ''),
         (r.ask.list.length > 1 ? r.ask.list.length + ' annonces, de ' + fmt(r.ask.a) + ' à ' + fmt(r.ask.list[r.ask.list.length - 1].a) + ' ₩ ; la moins chère : ' : '') +
         (r.ask.b ? 'une offre a déjà été faite' : 'mise de départ, sans offre')) : '—') }
@@ -1343,33 +1375,33 @@
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
     const wp = wishPricesToFetch().length;
     e.wishPrices.disabled = job.running || pro !== true || !wp;
-    e.wishPrices.textContent = 'Relever les prix des souhaits en vente (' + wp + ')';
+    e.wishPrices.textContent = 'Relever les valeurs (' + wp + ')';
     const sc = db.collectionAt ? sellCompToSearch().length : 0;
     e.sellComp.disabled = job.running || !sc;
-    e.sellComp.textContent = 'Chercher la concurrence (' + sc + ')';
+    e.sellComp.textContent = 'Trouver la concurrence (' + sc + ')';
     const pending = alertsToCheck().length;
     e.wishCheck.disabled = job.running || !pending;
-    e.wishCheck.textContent = 'Vérifier les annonces signalées (' + Math.min(pending, ALERT_BATCH) + ')';
+    e.wishCheck.textContent = 'Vérifier les alertes (' + pending + ')';
     const live = wishLive().length;
     const cLive = colLive().length, cSearch = colToSearch().length;
     e.colRefresh.disabled = job.running || !cLive;
-    e.colRefresh.textContent = 'Rafraîchir les annonces (' + Math.min(cLive, SEARCH_BATCH) + (cLive > SEARCH_BATCH ? ' sur ' + cLive : '') + ')';
+    e.colRefresh.textContent = 'Rafraîchir les annonces (' + cLive + ')';
     e.colSearch.disabled = job.running || !cSearch;
-    e.colSearch.textContent = 'Chercher mes cartes sur le marché (' + Math.min(cSearch, SEARCH_BATCH) + (cSearch > SEARCH_BATCH ? ' sur ' + cSearch : '') + ')';
+    e.colSearch.textContent = 'Trouver les annonces (' + cSearch + ')';
     e.wishRefresh.disabled = job.running || !live;
-    e.wishRefresh.textContent = 'Rafraîchir les annonces (' + Math.min(live, SEARCH_BATCH) + (live > SEARCH_BATCH ? ' sur ' + live : '') + ')';
+    e.wishRefresh.textContent = 'Rafraîchir les annonces (' + live + ')';
     e.stop3.disabled = !job.running;
     if (job.running) e.tradeFill.disabled = true;
     const toSearch = wishToSearch().length;
     e.wishSearch.disabled = job.running || !toSearch;
-    e.wishSearch.textContent = 'Chercher mes souhaits sur le marché (' + Math.min(toSearch, SEARCH_BATCH) +
-      (toSearch > SEARCH_BATCH ? ' sur ' + toSearch : '') + ')';
+    e.wishSearch.textContent = 'Trouver les annonces (' + toSearch + ')';
     e.stop2.disabled = !job.running;
+    e.stop4.disabled = !job.running;
+    // Le bouton Stop n'apparaît que pendant un traitement.
+    for (const s of [e.stop, e.stop2, e.stop3, e.stop4]) if (s) s.style.display = job.running ? '' : 'none';
     e.fill.disabled = job.running || pro !== true;
     e.stop.disabled = !job.running;
-    e.fill.textContent = pro === true
-      ? 'Compléter les prix manquants (' + missingIds().length + ')'
-      : 'Prix : réservé aux comptes Pro';
+    e.fill.textContent = pro === true ? 'Relever les prix (' + missingIds().length + ')' : 'Relever les prix (Pro)';
     e.pro.textContent = pro === true ? ''
       : pro === false
         ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Les valeurs viennent de tes propres ventes et achats, ' +
@@ -1387,179 +1419,217 @@
     for (const k of ['tiles', 'pullTiles', 'salesTiles', 'wishTiles']) e[k] = h('div', { class: 'tiles' });
     for (const k of ['rar', 'market']) e[k] = h('div', { class: 'rar' });
     for (const k of ['table', 'sellTable', 'pullBody', 'frBody', 'salesBody', 'wishBody', 'trendBody']) e[k] = h('div', { class: 'scroll' });
-    e.mine2 = h('button', { class: 'b', onclick: () => scanMarket(1, 'salesStatus') }, 'Actualiser depuis la page Marché');
-    e.wishLoad = h('button', { class: 'b pri', onclick: loadWish }, 'Charger ma liste de souhaits');
-    e.wishCheck = h('button', { class: 'b', onclick: checkAlerts }, 'Vérifier les annonces signalées');
-    e.colRefresh = h('button', { class: 'b', title: 'Relit le prix et la fin des annonces de la colonne « En vente à »', onclick: refreshCol }, 'Rafraîchir les annonces');
-    e.colSearch = h('button', { class: 'b', title: 'Cherche sur le marché toutes les cartes des raretés cochées, une par seconde', onclick: searchCol }, 'Chercher mes cartes sur le marché');
-    e.wishSearch = h('button', { class: 'b', onclick: searchWish }, 'Chercher mes souhaits sur le marché');
-    e.wishPrices = h('button', { class: 'b', title: 'Relève la valeur médiane des souhaits en vente, pour repérer les bonnes affaires',
-      onclick: () => fetchPricesFor(wishPricesToFetch(), 'wishStatus', 'souhait en vente', 'souhaits en vente') }, 'Relever les prix des souhaits en vente');
-    e.sellComp = h('button', { class: 'b', title: 'Cherche sur le marché les annonces concurrentes des cartes de cette liste',
-      onclick: () => { if (job.running) return; const t = sellCompToSearch(); if (!t.length) return setStatus('Concurrence déjà relevée il y a moins d’une heure.', 'sellStatus');
-        marketSearch(t, 'Concurrence', 'sans concurrent', 'sellStatus'); } }, 'Chercher la concurrence');
-    e.wishRefresh = h('button', { class: 'b', title: 'Relit le prix et la fin des annonces déjà listées', onclick: refreshWish }, 'Rafraîchir les annonces');
-    e.wishFold = h('button', { class: 'b', onclick: () => { ui.wishAll = !ui.wishAll; ui.wishOpen.clear(); renderWish(); } }, 'Tout déplier');
-    e.stop2 = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
+    // ----- boutons : un libellé court, et une bulle qui dit exactement ce que fait chacun -----
+    const btn = (label, tip, onclick, cls) => h('button', { class: 'b' + (cls ? ' ' + cls : ''), 'data-tip': tip, onclick }, label);
+    const stopBtn = () => btn('Stop', 'Arrête le traitement en cours. Ce qui a déjà été relevé est gardé.', () => { job.stop = true; });
+    const chk = (label, tip, checked, onchange) => h('label', { class: 'chk', 'data-tip': tip },
+      h('input', { type: 'checkbox', checked: !!checked, onchange }), label);
+
+    e.load = btn('Recharger ma collection',
+      'Relit toute ta collection sur le site (une dizaine de requêtes). Retire aussi les cartes vendues, données ou défaussées depuis la dernière fois.',
+      loadCollection, 'pri');
+    e.fill = btn('Relever les prix',
+      'Compte Pro. Lit l’historique des 10 dernières ventes de chaque carte des raretés cochées qui n’a pas de prix récent (moins de 24 h). ' +
+      'C’est ce qui remplit la colonne « Valeur ». Une carte par seconde.', fillPrices);
+    e.colSearch = btn('Trouver les annonces',
+      'Cherche sur le marché qui vend en ce moment tes cartes des raretés cochées, et à quel prix. Remplit la colonne « En vente à ». ' +
+      'Saute les cartes cherchées il y a moins d’une heure. Le plus complet, mais le plus long.', searchCol);
+    e.colRefresh = btn('Rafraîchir les annonces',
+      'Ne relit que les cartes qui ont déjà une annonce connue, pour mettre à jour leur prix et leur fin. Plus rapide que « Trouver les annonces ».', refreshCol);
+    e.scan = btn('Relever les fins d’enchères',
+      'Lit les 500 enchères du marché qui se terminent bientôt, toutes cartes confondues (pas seulement les tiennes). ' +
+      'À leur fin, leur dernière offre devient un « prix observé » : utile sans compte Pro, et pour le niveau de prix par rareté.',
+      () => scanMarket(MARKET_PAGES, 'status', 'ending_soon'));
+    e.stop = stopBtn();
+
+    e.mine = btn('Mes places de vente',
+      'Relit tes ventes en cours sur le marché : combien de places il te reste, et quelles cartes sont déjà en vente (elles sont retirées de la liste).',
+      () => scanMarket(1, 'sellStatus'));
+    e.sellComp = btn('Trouver la concurrence',
+      'Cherche sur le marché les annonces d’autres joueurs pour les cartes de cette liste. Remplit la colonne « Concurrence ». ' +
+      'Saute les cartes cherchées il y a moins d’une heure.',
+      () => { if (job.running) return; const t = sellCompToSearch(); if (!t.length) return setStatus('Concurrence déjà relevée il y a moins d’une heure.', 'sellStatus');
+        marketSearch(t, 'Concurrence', 'sans concurrent', 'sellStatus'); });
+    e.stop4 = stopBtn();
+
+    e.mine2 = btn('Recharger mes enchères',
+      'Relit tes enchères récentes sur la page Marché (ventes, invendus, achats). Le site n’en donne que les plus récentes : le script les accumule à chaque passage.',
+      () => scanMarket(1, 'salesStatus'));
+
+    e.wishLoad = btn('Recharger ma liste',
+      'Relit ta liste de souhaits sur le site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ».', loadWish, 'pri');
+    e.wishSearch = btn('Trouver les annonces',
+      'Cherche sur le marché TOUTES les cartes de ta liste, une par seconde, en commençant par celles jamais cherchées. ' +
+      'Le plus complet, mais le plus long. Saute les cartes cherchées il y a moins d’une heure.', searchWish);
+    e.wishCheck = btn('Vérifier les alertes',
+      'Ne cherche que les cartes dont le site t’a signalé la mise en vente ces 12 dernières heures. Rapide, et suffisant au quotidien.', checkAlerts);
+    e.wishRefresh = btn('Rafraîchir les annonces',
+      'Relit seulement les annonces déjà trouvées, pour voir si le prix a monté ou si l’enchère est finie. À faire juste avant d’enchérir.', refreshWish);
+    e.wishPrices = btn('Relever les valeurs',
+      'Compte Pro. Lit la valeur médiane des souhaits actuellement en vente : c’est elle qui permet de repérer les bonnes affaires.',
+      () => fetchPricesFor(wishPricesToFetch(), 'wishStatus', 'souhait en vente', 'souhaits en vente'));
+    e.wishFold = btn('Tout déplier', 'Ouvre ou ferme le détail de toutes les cartes qui ont plusieurs annonces.',
+      () => { ui.wishAll = !ui.wishAll; ui.wishOpen.clear(); renderWish(); });
+    e.stop2 = stopBtn();
+
+    e.tradeLoad = btn('Recharger mes échanges', 'Relit tes échanges sur la page Échanges du site (une seule requête).', loadTrades, 'pri');
+    e.tradeFill = btn('Relever les prix',
+      'Compte Pro. Lit la valeur des cartes passées dans tes échanges. Celles que tu as données ne sont plus dans ta collection : ' +
+      'l’onglet Collection ne relève jamais leur prix.', fillTradePrices);
+    e.stop3 = stopBtn();
+
     e.sub = h('div', { class: 'sub' });
     e.pro = h('div', { class: 'sub', style: 'margin-bottom:10px' });
     e.sellInfo = h('div', { class: 'sub', style: 'margin-bottom:10px' });
-    e.load = h('button', { class: 'b pri', onclick: loadCollection }, 'Charger ma collection');
-    e.fill = h('button', { class: 'b', onclick: fillPrices }, 'Compléter les prix manquants');
-    e.scan = h('button', { class: 'b', title: 'Lit les 500 enchères qui se terminent, pour enregistrer leur prix',
-      onclick: () => scanMarket(MARKET_PAGES, 'status', 'ending_soon') }, 'Relever les fins d’enchères');
-    e.stop = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
-    e.mine = h('button', { class: 'b', onclick: () => scanMarket(1, 'sellStatus') }, 'Actualiser mes ventes en cours');
     const checks = RARITIES.map(r => h('label', { class: 'chk' },
       h('input', {
         type: 'checkbox', checked: ui.chosen.has(r),
         onchange: ev => { ev.target.checked ? ui.chosen.add(r) : ui.chosen.delete(r); syncButtons(); }
       }), r));
-    const rarSelect = onchange => h('select', { onchange },
+    const rarSelect = onchange => h('select', { onchange, 'data-tip': 'N’affiche que les cartes de cette rareté.' },
       h('option', { value: '' }, 'Toutes les raretés'), RARITIES.map(r => h('option', { value: r }, r)));
-    const sellOpt = (key, label) => h('label', { class: 'chk' },
-      h('input', { type: 'checkbox', checked: !!db.sell[key], onchange: ev => { db.sell[key] = ev.target.checked; saveDb(); refresh(); } }), label);
+    const sellOpt = (key, label, tip) => chk(label, tip, db.sell[key], ev => { db.sell[key] = ev.target.checked; saveDb(); refresh(); });
 
+    // ----- Collection -----
     e.view_col = h('div', null,
-      e.tiles, e.rar, e.market,
-      h('div', { class: 'bar' }, e.load, e.fill, e.scan, e.stop, h('span', { class: 'sub' }, 'Raretés :'), checks),
-      h('div', { class: 'bar' }, h('span', { class: 'sub' }, 'Annonces sur mes cartes :'), e.colRefresh, e.colSearch),
-      h('div', { class: 'bar' }, h('label', { class: 'chk' },
-        h('input', { type: 'checkbox', checked: db.autoPull !== false,
-          onchange: ev => { db.autoPull = ev.target.checked; saveDb(); } }),
-        'Afficher les prix des cartes tirées après chaque booster que j’ouvre')),
-      e.pro,
-      h('div', { class: 'bar' },
-        h('input', { type: 'text', placeholder: 'Filtrer par titre, catégorie, étiquette…',
+      e.tiles, e.rar, e.market, e.pro,
+      h('div', { class: 'tools' },
+        group('Ma collection', null, e.load, e.fill),
+        group('Annonces du marché sur mes cartes', null, e.colSearch, e.colRefresh),
+        group('Prix observés', 'Pour tous, avec ou sans compte Pro : le script note la dernière offre des enchères qu’il voit se terminer.', e.scan),
+        group('Raretés concernées', '« Relever les prix » et « Trouver les annonces » ne traitent que les raretés cochées ici.', checks)),
+      h('div', { class: 'run' }, e.status, e.stop),
+      h('div', { class: 'filters' },
+        h('input', { type: 'text', placeholder: 'Filtrer par titre, catégorie, étiquette…', 'data-tip': 'Ne garde que les cartes dont le titre, la catégorie ou une étiquette contient ce texte.',
           oninput: ev => { ui.text = ev.target.value.toLowerCase(); renderTable(); } }),
-        rarSelect(ev => { ui.rarity = ev.target.value; renderTable(); }),
-        h('button', { class: 'b', onclick: exportCsv }, 'Exporter en CSV'),
-        h('button', { class: 'b', onclick: clearPrices }, 'Oublier les prix')),
-      e.status, e.table,
-      h('div', { class: 'note' },
+        rarSelect(ev => { ui.rarity = ev.target.value; renderTable(); })),
+      fold('Options et export',
+        chk('Afficher les prix des cartes tirées après chaque booster',
+          'Après chaque paquet que tu ouvres toi-même, un petit panneau donne la valeur de chaque carte tirée (compte Pro).',
+          db.autoPull !== false, ev => { db.autoPull = ev.target.checked; saveDb(); }),
+        btn('Exporter en CSV', 'Télécharge le tableau tel qu’il est filtré et trié, à ouvrir dans Excel ou LibreOffice.', exportCsv),
+        btn('Oublier les prix', 'Efface tous les prix relevés (pas ta collection). Utile seulement pour tout relever de zéro.', clearPrices)),
+      e.table,
+      fold('Comment lire ce tableau ?', h('div', { class: 'note' },
         'Valeur = médiane des 10 dernières ventes (moins sensible qu’une moyenne aux enchères qui s’emballent). ',
         'En italique : carte sans vente connue, comptée à 1 wikibidou, ce que rapporte la défausse. ',
         'Fiabilité = assez de ventes, assez récentes, pas trop dispersées ; survole-la pour le détail. ',
-        'Les prix se remplissent aussi tout seuls quand tu ouvres l’onglet Marché d’une carte.'));
+        'Les prix se remplissent aussi tout seuls quand tu ouvres l’onglet Marché d’une carte sur le site.')));
 
     e.homeBody = h('div', { class: 'home' });
-    e.view_home = h('div', null, e.homeBody);
+    e.homeTiles = h('div', { class: 'tiles' });
+    e.view_home = h('div', null, e.homeTiles, e.homeBody);
 
+    // ----- À vendre -----
     e.view_sell = h('div', null,
-      h('div', { class: 'bar' },
-        h('span', null, 'Valeur minimale pour vendre :'),
-        h('input', { type: 'number', min: 2, step: 1, value: db.sell.min,
-          onchange: ev => { db.sell.min = Math.max(2, Math.floor(Number(ev.target.value) || 2)); ev.target.value = db.sell.min; saveDb(); refresh(); } }),
-        sellOpt('favs', 'Inclure mes favoris ★'),
-        sellOpt('doubt', 'Inclure les prix douteux'),
-        sellOpt('dupFirst', 'Doublons d’abord'),
-        e.mine, e.sellComp),
-      e.sellInfo, e.sellStatus, e.sellTable,
-      h('div', { class: 'note' },
-        'Les cartes les plus chères passent en premier ; coche « Doublons d’abord » pour vendre en priorité ce que tu as en plusieurs exemplaires. ' +
-        'Les cartes déjà mises en vente sont retirées de la liste. ',
+      h('div', { class: 'tools' },
+        group('Réglages de la liste', null,
+          h('label', { class: 'chk', 'data-tip': 'Une carte n’est proposée que si sa valeur atteint ce montant.' }, 'Valeur minimale',
+            h('input', { type: 'number', min: 2, step: 1, value: db.sell.min, style: 'margin-left:6px',
+              onchange: ev => { db.sell.min = Math.max(2, Math.floor(Number(ev.target.value) || 2)); ev.target.value = db.sell.min; saveDb(); refresh(); } }), ' ₩'),
+          sellOpt('favs', 'Mes favoris ★', 'Inclut les cartes que tu as mises en favori sur le site. Décochée, elles sont protégées de la liste.'),
+          sellOpt('doubt', 'Prix douteux', 'Inclut les cartes dont le prix est peu sûr : moins de 2 ventes, ventes de plus de 90 jours, ou prix très dispersés.'),
+          sellOpt('dupFirst', 'Doublons d’abord', 'Fait passer devant les cartes que tu as en plusieurs exemplaires. Décochée, les plus chères passent d’abord.')),
+        group('Mettre à jour', null, e.mine, e.sellComp)),
+      e.sellInfo,
+      h('div', { class: 'run' }, e.sellStatus, e.stop4),
+      e.sellTable,
+      fold('Comment lire cette liste ?', h('div', { class: 'note' },
+        'Les cartes déjà mises en vente sont retirées. Les lignes surlignées tiennent dans tes places de vente libres. ',
         '« Concurrence » montre l’annonce la moins chère d’un autre joueur sur la même carte. Le prix conseillé reste la médiane des ventes : ' +
         'une mise de départ n’est pas un prix final. Une étiquette signale seulement un concurrent qui a déjà une offre sous la médiane. ',
-        'Les lignes surlignées tiennent dans tes places de vente libres. Le script ne met rien en vente : c’est toi qui le fais sur le site.'));
+        'Un clic sur le nom d’une carte ouvre son formulaire de mise en vente sur le site. Le script ne met rien en vente : c’est toi qui valides.')));
 
+    // ----- Boosters -----
     e.view_pulls = h('div', null, e.pullTiles, e.pullBody,
-      h('div', { class: 'bar', style: 'margin-top:12px' },
-        h('button', { class: 'b', onclick: () => { db.pulls = []; saveDb(); refresh(); } }, 'Effacer l’historique des boosters')),
-      h('div', { class: 'note' },
-        'Seuls les boosters ouverts depuis l’installation de cette version sont comptés. ',
-        'La valeur utilise les prix connus aujourd’hui ; une carte sans vente connue compte pour 1.'));
+      fold('Options',
+        btn('Effacer l’historique des boosters', 'Oublie tous les boosters enregistrés. Irréversible, sauf si tu as une sauvegarde.',
+          () => { db.pulls = []; saveDb(); refresh(); }),
+        h('div', { class: 'note' },
+          'Seuls les boosters ouverts depuis l’installation de la version 1.3 sont comptés. ',
+          'La valeur utilise les prix connus aujourd’hui ; une carte sans vente connue compte pour 1.')));
 
-    e.frSelect = h('select', { onchange: ev => { ui.friend = ev.target.value; renderFriends(); } });
+    // ----- Amis -----
+    e.frSelect = h('select', { onchange: ev => { ui.friend = ev.target.value; renderFriends(); }, 'data-tip': 'L’ami dont tu veux comparer la collection avec la tienne.' });
     e.view_friends = h('div', null,
-      h('div', { class: 'bar' },
-        h('span', null, 'Mon pseudo :'),
-        h('input', { type: 'text', value: db.me || '', style: 'min-width:140px', placeholder: 'ton pseudo',
-          oninput: ev => { db.me = ev.target.value.slice(0, 40); saveDb(); } }),
-        h('button', { class: 'b pri', onclick: exportMine }, 'Exporter ma collection pour mes amis')),
-      h('div', { class: 'bar' },
-        h('span', null, 'Importer le fichier d’un ami :'),
-        h('input', { type: 'file', accept: '.json,application/json',
-          onchange: ev => { importFriend(ev.target.files[0]); ev.target.value = ''; } })),
-      h('div', { class: 'bar' },
-        h('span', null, 'Comparer avec :'), e.frSelect,
-        rarSelect(ev => { ui.frRarity = ev.target.value; renderFriends(); }),
-        h('button', { class: 'b', onclick: () => { if (ui.friend) { delete db.friends[ui.friend]; ui.friend = ''; saveDb(); refresh(); } } }, 'Retirer cet ami')),
-      e.frStatus, e.frBody,
-      h('div', { class: 'note' },
-        'Le fichier exporté contient la liste de tes cartes, leur nombre d’exemplaires, ta liste de souhaits et les fins d’enchères que le script a observées. ' +
-        'Il ne contient jamais l’historique des ventes réservé au Pro. ',
-        'Il fonctionne avec ou sans compte Pro.'));
+      h('div', { class: 'tools' },
+        group('Partager ma collection', 'Le fichier contient tes cartes, leur nombre d’exemplaires, ta liste de souhaits et les prix observés. Jamais l’historique réservé au Pro.',
+          h('input', { type: 'text', value: db.me || '', style: 'min-width:140px', placeholder: 'ton pseudo', 'data-tip': 'Le nom sous lequel tes amis verront ta collection.',
+            oninput: ev => { db.me = ev.target.value.slice(0, 40); saveDb(); } }),
+          btn('Exporter pour mes amis', 'Télécharge un fichier à envoyer à tes amis.', exportMine, 'pri')),
+        group('Ajouter un ami', null,
+          h('input', { type: 'file', accept: '.json,application/json', 'data-tip': 'Choisis le fichier que ton ami t’a envoyé.',
+            onchange: ev => { importFriend(ev.target.files[0]); ev.target.value = ''; } })),
+        group('Comparer', null, e.frSelect,
+          rarSelect(ev => { ui.frRarity = ev.target.value; renderFriends(); }),
+          btn('Retirer cet ami', 'Oublie le fichier de cet ami.', () => { if (ui.friend) { delete db.friends[ui.friend]; ui.friend = ''; saveDb(); refresh(); } }))),
+      e.frStatus, e.frBody);
 
+    // ----- Mes ventes -----
     e.view_sales = h('div', null,
-      h('div', { class: 'bar' }, e.mine2), e.salesStatus, e.salesTiles, e.salesBody,
-      h('div', { class: 'note' },
+      h('div', { class: 'tools' }, group('Mettre à jour', null, e.mine2)),
+      e.salesStatus, e.salesTiles, e.salesBody,
+      fold('Comment lire ce bilan ?', h('div', { class: 'note' },
         'Le site ne donne que tes enchères les plus récentes. Le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s’allonge avec le temps. ',
-        'La comparaison à la valeur médiane est indicative : cette médiane inclut ta propre vente.'));
+        'La comparaison à la valeur médiane est indicative : cette médiane inclut ta propre vente.')));
 
+    // ----- Échanges -----
     e.tradeStatus = h('div', { class: 'status' });
     e.tradeTiles = h('div', { class: 'tiles' });
     e.tradeBody = h('div', { class: 'scroll' });
-    e.tradeLoad = h('button', { class: 'b pri', onclick: loadTrades }, 'Actualiser mes échanges');
-    e.tradeFill = h('button', { class: 'b', onclick: fillTradePrices }, 'Relever les prix des cartes échangées');
-    e.stop3 = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
     e.view_trades = h('div', null,
-      h('div', { class: 'bar' }, e.tradeLoad, e.tradeFill, e.stop3), e.tradeStatus, e.tradeTiles, e.tradeBody,
-      h('div', { class: 'note' },
-        'Les échanges sont lus sur la page Échanges du site, à chaque visite ou avec le bouton, et gardés en mémoire. ',
+      h('div', { class: 'tools' }, group('Mettre à jour', null, e.tradeLoad, e.tradeFill)),
+      h('div', { class: 'run' }, e.tradeStatus, e.stop3),
+      e.tradeTiles, e.tradeBody,
+      fold('Comment lire ce bilan ?', h('div', { class: 'note' },
         'Les valeurs sont celles d’aujourd’hui, pas celles du jour de l’échange. Une carte sans prix connu n’est pas comptée : ' +
-        'elle apparaît comme « + 1 ? » et rend le bilan incomplet. Les cartes que tu as données ne sont plus dans ta collection, ' +
-        'donc leur prix se relève ici, avec « Relever les prix des cartes échangées » (compte Pro). ',
-        'Clique sur un échange pour voir les cartes.'));
+        'elle apparaît comme « + 1 ? » et rend le bilan incomplet. Clique sur un échange pour voir les cartes.')));
 
+    // ----- Souhaits -----
     e.view_wish = h('div', null,
-      h('div', { class: 'bar' }, e.wishLoad, e.wishRefresh, e.wishCheck, e.wishSearch, e.wishPrices, e.stop2),
-      h('div', { class: 'bar' },
+      h('div', { class: 'tools' },
+        group('Ma liste', null, e.wishLoad),
+        group('Trouver les annonces', 'Trois façons de chercher les annonces de tes souhaits, de la plus complète à la plus rapide. Survole chaque bouton.',
+          e.wishSearch, e.wishCheck, e.wishRefresh),
+        group('Bonnes affaires', 'Une bonne affaire est une annonce au moins 30 % sous la valeur médiane de la carte. Il faut donc connaître cette valeur.',
+          e.wishPrices)),
+      h('div', { class: 'run' }, e.wishStatus, e.stop2),
+      h('div', { class: 'filters' },
         rarSelect(ev => { ui.wishRarity = ev.target.value; syncButtons(); renderWish(); }),
-        h('label', { class: 'chk' },
-          h('input', { type: 'checkbox', onchange: ev => { ui.wishAvail = ev.target.checked; renderWish(); } }),
-          'Seulement celles que je peux obtenir maintenant'),
-        h('label', { class: 'chk' },
-          h('input', { type: 'checkbox', onchange: ev => { ui.wishDeals = ev.target.checked; renderWish(); } }),
-          'Seulement les bonnes affaires'),
-        h('label', { class: 'chk', title: 'D’après ta collection chargée dans l’onglet Collection' },
-          h('input', { type: 'checkbox', checked: !!db.wishHideOwned,
-            onchange: ev => { db.wishHideOwned = ev.target.checked; saveDb(); syncButtons(); renderWish(); } }),
-          'Cacher les cartes que je possède déjà'),
+        chk('Disponibles maintenant', 'Ne garde que les cartes en vente, signalées par le site, ou possédées par un ami.', false,
+          ev => { ui.wishAvail = ev.target.checked; renderWish(); }),
+        chk('Bonnes affaires seulement', 'Ne garde que les annonces au moins 30 % sous la valeur médiane.', false,
+          ev => { ui.wishDeals = ev.target.checked; renderWish(); }),
+        chk('Cacher mes cartes', 'Cache les souhaits que tu possèdes déjà, d’après ta collection chargée. Ils sont aussi exclus des recherches.',
+          db.wishHideOwned, ev => { db.wishHideOwned = ev.target.checked; saveDb(); syncButtons(); renderWish(); }),
         e.wishFold),
-      e.wishStatus, e.wishTiles, e.wishBody,
-      h('div', { class: 'note' },
-        'Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». ',
-        'Le script retient les alertes de mise en vente que le site t’envoie. « Vérifier les annonces signalées » cherche chacune de ces cartes sur le marché ' +
-        'pour en lire le prix et la fin de l’enchère, une recherche par seconde. ',
-        '« Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, alerte ou non, ' +
-        'en commençant par celles jamais cherchées. Si le site demande de ralentir, le script fait une pause puis reprend seul. ' +
-        'Une carte cherchée depuis moins d’une heure est sautée. Clique sur un en-tête de colonne pour trier. ',
-        '« Chez un ami » vient des fichiers importés dans l’onglet Amis. ',
-        'Ta liste part aussi dans le fichier que tu exportes pour tes amis, pour qu’ils voient ce que tu cherches.'));
+      e.wishTiles, e.wishBody,
+      fold('Comment ça marche ?', h('div', { class: 'note' },
+        'Ta liste de souhaits est celle du site. Le script retient aussi les alertes de mise en vente que le site t’envoie. ',
+        'Une carte cherchée depuis moins d’une heure est sautée. Si le site demande de ralentir, le script fait une pause puis reprend seul. ',
+        'Clique sur une ligne qui a plusieurs annonces pour les voir toutes. « Chez un ami » vient des fichiers importés dans l’onglet Amis.')));
 
+    // ----- Évolution -----
     e.view_trend = h('div', null,
-      h('div', { class: 'bar' },
-        h('span', null, 'Afficher :'),
-        h('select', { onchange: ev => { ui.metric = Number(ev.target.value); renderTrend(); } },
+      h('div', { class: 'filters' },
+        h('select', { onchange: ev => { ui.metric = Number(ev.target.value); renderTrend(); }, 'data-tip': 'Ce que montre la courbe.' },
           h('option', { value: 0 }, 'Valeur totale'), h('option', { value: 1 }, 'Nombre de cartes'),
           h('option', { value: 3 }, 'Cartes déjà vendues aux enchères'))),
       e.trendBody,
       h('div', { class: 'note' },
         'Une photo est prise chaque jour où ta collection est chargée ou consultée sur le site. Les jours sans visite n’ont pas de point.'));
 
+    // ----- Sauvegarde -----
     e.view_data = h('div', null,
       h('p', { class: 'line' }, 'Tes données sont rangées dans ce navigateur. Chrome et Zen ont donc chacun les leurs.'),
-      h('div', { class: 'bar', style: 'margin-top:12px' },
-        h('button', { class: 'b pri', onclick: exportBackup }, 'Exporter toutes mes données')),
-      h('div', { class: 'bar' },
-        h('span', null, 'Importer une sauvegarde :'),
-        h('input', { type: 'file', accept: '.json,application/json',
-          onchange: ev => { importBackup(ev.target.files[0]); ev.target.value = ''; } })),
+      h('div', { class: 'tools' },
+        group('Exporter', null, btn('Exporter toutes mes données',
+          'Télécharge un fichier avec ta collection, les prix, tes boosters, tes enchères, l’évolution, tes souhaits et les fichiers de tes amis.', exportBackup, 'pri')),
+        group('Importer', 'L’import fusionne : il ajoute ce qui manque et ne remplace un prix ou une collection que par plus récent.',
+          h('input', { type: 'file', accept: '.json,application/json', 'data-tip': 'Choisis un fichier de sauvegarde exporté depuis un autre navigateur.',
+            onchange: ev => { importBackup(ev.target.files[0]); ev.target.value = ''; } }))),
       e.dataStatus,
-      h('div', { class: 'note' },
-        'La sauvegarde contient ta collection, les prix relevés, tes boosters, tes enchères, l’évolution, ta liste de souhaits et les fichiers de tes amis. ',
-        'L’import fusionne : il ajoute ce qui manque et ne remplace un prix ou une collection que par plus récent. ',
-        'Garde ce fichier pour toi : il contient des prix issus de ton compte.'));
+      h('div', { class: 'note' }, 'Garde ce fichier pour toi : il contient des prix issus de ton compte.'));
 
     const views = TABS.map(([k]) => e['view_' + k]);
     e.back = h('div', { class: 'back', onclick: ev => { if (ev.target === e.back) toggle(false); } },
@@ -1575,8 +1645,29 @@
       h('header', null, h('h1', null, 'Dernier booster'),
         h('button', { class: 'x', title: 'Fermer', onclick: () => { pull.open = false; renderPull(); } }, '×')),
       e.pullList);
+    // Bulle d'aide : une seule, flottante, placée sous l'élément survolé qui porte data-tip.
+    // Elle est en position fixe, donc jamais coupée par un tableau qui défile.
+    e.tip = h('div', { class: 'tipbox' });
+    let tipFor = null;
+    const showTip = el => {
+      tipFor = el;
+      e.tip.textContent = el.getAttribute('data-tip');
+      e.tip.style.display = 'block';
+      const r = el.getBoundingClientRect(), w = e.tip.offsetWidth, hgt = e.tip.offsetHeight;
+      let x = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
+      let y = r.bottom + 6;
+      if (y + hgt > window.innerHeight - 8) y = Math.max(8, r.top - hgt - 6);
+      e.tip.style.left = x + 'px';
+      e.tip.style.top = y + 'px';
+    };
+    root.addEventListener('mouseover', ev => {
+      const el = ev.composedPath().find(n => n && n.getAttribute && n.getAttribute('data-tip'));
+      if (el && el !== tipFor) showTip(el);
+      else if (!el && tipFor) { tipFor = null; e.tip.style.display = 'none'; }
+    });
+    root.addEventListener('mouseleave', () => { tipFor = null; e.tip.style.display = 'none'; }, true);
     root.append(h('style', null, CSS),
-      h('button', { class: 'fab', onclick: () => toggle() }, '📊 Stats'), e.pull, e.back);
+      h('button', { class: 'fab', onclick: () => toggle() }, '📊 Stats'), e.pull, e.back, e.tip);
     document.documentElement.append(host);
     document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && ui.open) toggle(false); });
     setTab(ui.tab);
@@ -1618,6 +1709,16 @@
   // Tableau triable : un clic sur un en-tête trie selon cette colonne, un second clic inverse le sens.
   // Tant qu'aucun en-tête n'a été cliqué, l'ordre fourni est conservé. Les valeurs absentes vont à la fin.
   // Une colonne : { t: titre, get: valeur de tri, cell: contenu, left: aligné à gauche, asc: premier clic croissant }
+  // Petit « ? » qui affiche une explication au survol.
+  function help(text) { return h('span', { class: 'q', 'data-tip': text }, '?'); }
+  // Bloc de boutons avec un titre : regroupe ce qui sert à la même chose.
+  function group(title, tipText, ...kids) {
+    return h('div', { class: 'grp' }, h('div', { class: 'grp-t' }, title, tipText ? help(tipText) : null), h('div', { class: 'grp-b' }, kids));
+  }
+  // Section repliable, fermée par défaut.
+  function fold(title, ...kids) {
+    return h('details', { class: 'fold' }, h('summary', null, title), h('div', { class: 'fold-b' }, kids));
+  }
   function sortTable(key, cols, items, rerender, opts) {
     cols = cols.filter(Boolean);
     opts = opts || {};
@@ -1634,14 +1735,13 @@
     }
     const head = h('tr', null, cols.map((c, i) => h('th', {
       class: (c.get ? 's' : '') + (c.left ? ' l' : ''),
-      title: c.get ? 'Cliquer pour trier' : '',
       onclick: () => {
         if (!c.get) return;
         const cur = ui.sorts[key];
         ui.sorts[key] = cur && cur.i === i ? { i, dir: -cur.dir } : { i, dir: c.asc ? 1 : -1 };
         rerender();
       }
-    }, c.t + (st && st.i === i ? (st.dir > 0 ? ' ▲' : ' ▼') : ''))));
+    }, c.t + (st && st.i === i ? (st.dir > 0 ? ' ▲' : ' ▼') : ''), c.tip ? help(c.tip) : null)));
     const shown = opts.limit ? list.slice(0, opts.limit) : list;
     // opts.onRow rend la ligne cliquable (sauf sur ses liens) ; opts.after peut glisser une ligne de détail juste dessous.
     return h('table', null, h('thead', null, head), h('tbody', null, shown.map(it => {
@@ -1738,9 +1838,7 @@
       .sort(byDateDesc);
     const toPrice = tradeCardsToPrice().length;
     e.tradeFill.disabled = job.running || proState() !== true || !toPrice;
-    e.tradeFill.textContent = proState() === true
-      ? 'Relever les prix des cartes échangées (' + Math.min(toPrice, TRADE_BATCH) + (toPrice > TRADE_BATCH ? ' sur ' + toPrice : '') + ')'
-      : 'Prix des cartes échangées : réservé aux comptes Pro';
+    e.tradeFill.textContent = proState() === true ? 'Relever les prix (' + toPrice + ')' : 'Relever les prix (Pro)';
     e.stop3.disabled = !job.running;
     if (!T.length) {
       e.tradeTiles.replaceChildren();
@@ -1914,9 +2012,9 @@
               fmt(c.price.med) + ' ₩, ' + c.price.n + ' ventes)' }, 'bonne affaire −' + dealPct(c.ask, c.price) + ' %') : null,
             c.owned ? h('span', { class: 'tag', title: 'Cette carte est déjà dans ta collection' }, 'possédée') : null] },
         { t: 'Rareté', asc: true, get: c => rarOrder(c.rarity), cell: c => rarBadge(c.rarity) },
-        withPrices ? { t: 'Valeur médiane', get: c => (c.price && c.price.n ? c.price.med : null),
+        withPrices ? { t: 'Valeur médiane', tip: 'Médiane des dernières ventes de la carte : sert à juger si une annonce est une bonne affaire.', get: c => (c.price && c.price.n ? c.price.med : null),
           cell: c => (c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') } : null,
-        { t: 'En vente à', asc: true, get: c => (c.ask ? feat(c).a : null),
+        { t: 'En vente à', tip: 'Prix de l’annonce affichée sur la ligne. Un point = une offre a déjà été faite. Le lien ouvre l’annonce. « à vérifier » : signalée par le site, prix pas encore lu.', asc: true, get: c => (c.ask ? feat(c).a : null),
           cell: c => {
             if (!c.ask) return c.alert ? auctionLink(c.alert[4], h('span', { class: 'est' }, 'à vérifier'), 'Prix pas encore lu') : '—';
             const f = feat(c);
@@ -1925,13 +2023,13 @@
               (multi(c) ? 'Sur ' + c.ask.list.length + ' annonces, ' + WHICH[mode] + ' · ' : '') +
               (f.b ? 'une offre a déjà été faite' : 'mise de départ, pas encore d’offre'));
           } },
-        { t: 'Fin de l’enchère', asc: true, get: c => (c.ask && feat(c).e > now ? feat(c).e : null),
+        { t: 'Fin de l’enchère', tip: 'Temps restant avant la fin de l’enchère affichée sur la ligne.', asc: true, get: c => (c.ask && feat(c).e > now ? feat(c).e : null),
           cell: c => {
             const f = c.ask ? feat(c) : null;
             return f && f.e > now ? h('span', { title: multi(c) ? 'Fin de l’annonce affichée sur cette ligne : ' + WHICH[mode] : '' }, 'dans ' + left(f.e - now)) : '—';
           } },
-        { t: 'Alerte du site', get: c => (c.alert ? c.alert[2] : null), cell: c => (c.alert ? ago(c.alert[2]) : '—') },
-        { t: 'Cherchée', get: c => db.wishSeen[c.id] || null, cell: c => (db.wishSeen[c.id] ? ago(db.wishSeen[c.id]) : '—') },
+        { t: 'Alerte du site', tip: 'Depuis quand le site t’a signalé la mise en vente de cette carte.', get: c => (c.alert ? c.alert[2] : null), cell: c => (c.alert ? ago(c.alert[2]) : '—') },
+        { t: 'Cherchée', tip: 'Quand le script a cherché cette carte sur le marché pour la dernière fois.', get: c => db.wishSeen[c.id] || null, cell: c => (db.wishSeen[c.id] ? ago(db.wishSeen[c.id]) : '—') },
         { t: 'Chez un ami', asc: true, get: c => c.friends.join(', '), cell: c => (c.friends.length ? c.friends.join(', ') : '—') }
       ], list, renderWish, {
         limit: LIMIT, rowClass: c => (rank(c) < 3 ? 'top' : ''), canClick: multi, after: detail,
@@ -2014,7 +2112,8 @@
     ], dayRows, renderTrend, { limit: 60 }));
     e.trendBody.replaceChildren(...kids);
   }
-  const tile = (label, val, sub) => h('div', { class: 'tile' }, h('span', null, label), h('b', null, val), sub ? h('small', null, sub) : null);
+  const tile = (label, val, sub, tip) => h('div', { class: 'tile' },
+    h('span', null, label, tip ? help(tip) : null), h('b', null, val), sub ? h('small', null, sub) : null);
   const plural = (n, one, many) => fmt(n) + ' ' + (n > 1 ? many : one);
 
   // ----- onglet Collection -----
@@ -2030,10 +2129,13 @@
     e.tiles.replaceChildren(...(withPrices ? [
       tile('Cartes', fmt(nCards)),
       tile('Valeur totale', fmt(total) + ' ₩'),
-      tile('Déjà vendues aux enchères', fmt(known), 'sur ' + plural(rows.length, 'carte', 'cartes')),
+      tile('Déjà vendues aux enchères', fmt(known), 'sur ' + plural(rows.length, 'carte', 'cartes'),
+        'Cartes pour lesquelles au moins une vente aux enchères est connue : leur valeur est la médiane de ces ventes.'),
       tile('Sans vente connue', fmt(rows.length - known),
-        'comptées à 1 ₩ · ' + (total ? fmt(100 * estTotal / total) : '0') + ' % de la valeur totale'),
-      proState() === true ? tile('Pas encore analysées', fmt(rows.filter(r => !db.prices[r.cardId]).length)) : null
+        'comptées à 1 ₩ · ' + (total ? fmt(100 * estTotal / total) : '0') + ' % de la valeur totale',
+        'Cartes qui n’ont jamais été vendues aux enchères à notre connaissance. Elles comptent pour 1 ₩, ce que rapporte la défausse.'),
+      proState() === true ? tile('Pas encore analysées', fmt(rows.filter(r => !db.prices[r.cardId]).length), null,
+        'Cartes dont le script n’a jamais demandé l’historique des ventes. « Relever les prix » s’en occupe.') : null
     ].filter(Boolean) : [
       tile('Cartes', fmt(nCards)),
       tile('Cartes différentes', fmt(rows.length)),
@@ -2094,7 +2196,7 @@
         else { ui.sortKey = c.k; ui.sortDir = c.k === 'title' || c.k === 'rarity' ? 1 : -1; }
         renderTable();
       }
-    }, c.t + (ui.sortKey === c.k ? (ui.sortDir > 0 ? ' ▲' : ' ▼') : ''))));
+    }, c.t + (ui.sortKey === c.k ? (ui.sortDir > 0 ? ' ▲' : ' ▼') : ''), c.tip ? help(c.tip) : null)));
     const body = rows.map(r => h('tr', null, cols.map(c => h('td', null, c.cell(r)))));
     e.table.replaceChildren(h('table', null, h('thead', null, head), h('tbody', null, body)));
   }
@@ -2102,76 +2204,130 @@
   // ----- onglet Accueil : l'essentiel de chaque onglet, en une page -----
   function renderHome() {
     const e = ui.el, now = Date.now();
-    const card = (title, tab, kids) => h('div', { class: 'card' },
-      h('h2', null, title, tab ? h('button', { class: 'more', onclick: () => setTab(tab) }, 'voir →') : null), kids);
+    const card = (title, tab, kids, tipText, cls) => h('div', { class: 'card' + (cls ? ' ' + cls : '') },
+      h('h2', null, h('span', null, title, tipText ? help(tipText) : null),
+        tab ? h('button', { class: 'more', onclick: () => setTab(tab) }, 'voir →') : null), kids);
     const line = (...kids) => h('li', null, ...kids);
     const none = text => h('div', { class: 'sub' }, text);
     const left = ms => { const m = Math.round(ms / 6e4); return m < 60 ? m + ' min' : Math.round(m / 60) + ' h'; };
-    const cards = [];
     if (!rowsCache.length) {
-      e.homeBody.replaceChildren(card('Bienvenue', 'col', none('Collection pas encore chargée : ouvre l’onglet Collection et clique sur « Charger ma collection ».')));
+      e.homeTiles.replaceChildren();
+      e.homeBody.replaceChildren(card('Bienvenue', 'col', none('Collection pas encore chargée : ouvre l’onglet Collection et clique sur « Recharger ma collection ».')));
       return;
     }
-    // Collection et évolution
+    const withPrices = showPrices();
+    // ----- chiffres clés -----
     const total = rowsCache.reduce((a, r) => a + r.total, 0);
     const days = Object.keys(db.history).sort();
-    const prev = days.length > 1 ? db.history[days[days.length - 2]] : null;
-    const delta = prev ? Math.round(total) - prev[0] : null;
-    cards.push(card('Ma collection', 'trend', h('div', { class: 'tiles', style: 'margin:0' },
-      tile('Valeur totale', fmt(total) + ' ₩', delta == null ? 'variation dès demain' : (delta >= 0 ? '+' : '') + fmt(delta) + ' ₩ depuis le ' +
-        new Date(days[days.length - 2] + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })),
-      tile('Cartes', fmt(rowsCache.reduce((a, r) => a + r.count, 0)), plural(new Set(rowsCache.map(r => r.cardId)).size, 'différente', 'différentes')))));
-    // Ce qui rend les chiffres douteux : collection pas rechargée depuis longtemps, ou cartes chères sans prix relevé.
+    const prevDay = days.filter(d => d < dayKey(new Date())).pop();
+    const delta = prevDay ? Math.round(total) - db.history[prevDay][0] : null;
+    const m = db.market, used = m.selling ? m.selling.length : null;
+    const free = used != null && m.max ? Math.max(0, m.max - used) : null;
+    const sl = withPrices ? sellList() : [];
+    const owned = db.wishHideOwned ? ownedIds() : null;
+    const wish = Object.keys(db.wish).filter(id => !(owned && owned.has(id)))
+      .map(id => ({ id, title: db.wish[id][0], rarity: db.wish[id][1], ask: askOf(id), price: priceOf(id) })).filter(c => c.ask);
+    const deals = wish.filter(isDeal).sort((a, b) => dealPct(b.ask, b.price) - dealPct(a.ask, a.price));
+    const A = Object.values(db.auctions);
+    const sold = A.filter(a => a[0] === 's');
+    const weekAgo = new Date(now - 7 * DAY).toISOString();
+    const soldWeek = sold.filter(a => a[7] > weekAgo);
+    e.homeTiles.replaceChildren(
+      tile('Valeur de la collection', fmt(total) + ' ₩', delta == null ? 'variation visible dès demain' :
+        (delta >= 0 ? '+' : '') + fmt(delta) + ' ₩ depuis le ' + new Date(prevDay + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }),
+      'Somme des valeurs de tes cartes : médiane des ventes de chacune, 1 ₩ pour une carte sans vente connue.'),
+      tile('Cartes', fmt(rowsCache.reduce((a, r) => a + r.count, 0)), plural(new Set(rowsCache.map(r => r.cardId)).size, 'différente', 'différentes')),
+      tile('Places de vente libres', free == null ? '—' : fmt(free), free == null ? 'ouvre la page Marché du site' : 'sur ' + m.max + ' · ' + plural(sl.length, 'carte à vendre', 'cartes à vendre'),
+        'Le site limite le nombre d’enchères en cours. Les places libres sont celles que tu peux encore remplir.'),
+      tile('Revenus des 7 derniers jours', fmt(soldWeek.reduce((a, s) => a + s[6], 0)) + ' ₩', plural(soldWeek.length, 'vente', 'ventes') + ' · ' + plural(sold.length, 'vente en mémoire', 'ventes en mémoire'),
+        'D’après tes enchères lues sur la page Marché. Le site ne donne que les plus récentes, l’historique se construit avec le temps.'),
+      tile('Bonnes affaires', fmt(deals.length), plural(wish.length, 'souhait en vente', 'souhaits en vente'),
+        'Annonces de ta liste de souhaits au moins 30 % sous la valeur médiane de la carte.'));
+
+    const cards = [];
+    // ----- ce qui rend les chiffres douteux -----
     const warns = [];
     const fullAge = db.collectionFullAt ? now - db.collectionFullAt : Infinity;
     if (fullAge > DAY) {
-      warns.push(h('li', null, h('span', { class: 'grow' }, db.collectionFullAt
+      warns.push(line(h('span', { class: 'grow wrap' }, db.collectionFullAt
         ? 'Collection rechargée il y a ' + Math.round(fullAge / DAY) + ' j : les cartes vendues ou données depuis y sont encore.'
         : 'Collection jamais rechargée entièrement avec cette version : les cartes vendues ou données peuvent y être encore.'),
         h('button', { class: 'more', onclick: () => { setTab('col'); loadCollection(); } }, 'recharger')));
     }
     const noPrice = rowsCache.filter(r => ['L', 'UR', 'SR'].includes(r.rarity) && !db.prices[r.cardId]).length;
     if (noPrice && proState() === true) {
-      warns.push(h('li', null, h('span', { class: 'grow' }, plural(noPrice, 'carte L, UR ou SR sans prix relevé', 'cartes L, UR ou SR sans prix relevé') +
+      warns.push(line(h('span', { class: 'grow wrap' }, plural(noPrice, 'carte L, UR ou SR sans prix relevé', 'cartes L, UR ou SR sans prix relevé') +
         ' : elles comptent pour 1 ₩ et n’apparaissent pas dans À vendre.'),
         h('button', { class: 'more', onclick: () => setTab('col') }, 'compléter')));
     }
-    if (warns.length) cards.unshift(card('À vérifier', null, h('ul', null, warns)));
-    // À vendre
-    const m = db.market, used = m.selling ? m.selling.length : null;
-    const free = used != null && m.max ? Math.max(0, m.max - used) : null;
-    const sl = showPrices() ? sellList() : [];
+    if (warns.length) cards.push(card('À vérifier', null, h('ul', null, warns), null, 'warncard'));
+
+    // ----- à vendre -----
     cards.push(card('À vendre' + (free != null ? ' · ' + plural(free, 'place libre', 'places libres') : ''), 'sell',
-      sl.length ? h('ul', null, sl.slice(0, 5).map(r => line(rarBadge(r.rarity),
-        h('a', { class: 'grow', href: sellLink(r.cardId), target: '_blank', rel: 'noopener', style: 'color:inherit', title: 'Ouvrir la mise en vente' }, r.title),
-        r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null,
+      sl.length ? h('ul', null, sl.slice(0, 8).map(r => line(rarBadge(r.rarity),
+        h('a', { class: 'grow', href: sellLink(r.cardId), target: '_blank', rel: 'noopener', 'data-tip': 'Ouvrir le formulaire de mise en vente de cette carte' }, r.title),
+        r.count > 1 ? h('span', { class: 'tag' }, '×' + r.count) : null,
         h('b', null, fmt(Math.round(r.value)) + ' ₩'))))
-        : none('Aucune carte à vendre avec les réglages actuels.')));
-    // Souhaits : bonnes affaires d'abord, puis enchères qui finissent bientôt
-    const wish = Object.keys(db.wish).filter(id => !(db.wishHideOwned && ownedIds().has(id)))
-      .map(id => ({ id, title: db.wish[id][0], rarity: db.wish[id][1], ask: askOf(id), price: priceOf(id) })).filter(c => c.ask);
-    const deals = wish.filter(isDeal).sort((a, b) => dealPct(b.ask, b.price) - dealPct(a.ask, a.price));
+        : none('Aucune carte à vendre avec les réglages actuels.'),
+      'Tes cartes qui valent le plus, hors cartes déjà en vente. Un clic sur un nom ouvre sa mise en vente sur le site.'));
+
+    // ----- souhaits en vente -----
     const soon = wish.filter(c => !isDeal(c) && c.ask.e > now).sort((a, b) => a.ask.e - b.ask.e);
-    const pick = deals.concat(soon).slice(0, 6);
-    cards.push(card('Souhaits en vente' + (deals.length ? ' · ' + plural(deals.length, 'bonne affaire', 'bonnes affaires') : ''), 'wish',
+    const pick = deals.concat(soon).slice(0, 8);
+    cards.push(card('Souhaits en vente', 'wish',
       pick.length ? h('ul', null, pick.map(c => line(rarBadge(c.rarity), h('span', { class: 'grow' }, c.title),
         isDeal(c) ? h('span', { class: 'tag deal' }, '−' + dealPct(c.ask, c.price) + ' %') : null,
-        h('span', { class: 'sub' }, c.ask.e > now ? left(c.ask.e - now) : ''),
+        h('span', { class: 'sub', 'data-tip': 'Fin de l’enchère' }, c.ask.e > now ? left(c.ask.e - now) : ''),
         auctionLink(c.ask.i, h('b', null, fmt(c.ask.a) + ' ₩'), 'Ouvrir l’annonce'))))
-        : none('Aucun souhait en vente connu. Onglet Souhaits : « Chercher mes souhaits sur le marché ».')));
-    // Dernier booster
-    const lastPull = db.pulls[db.pulls.length - 1];
+        : none('Aucun souhait en vente connu. Onglet Souhaits : « Vérifier les alertes » ou « Trouver les annonces ».'),
+      'Les bonnes affaires d’abord, puis les enchères qui finissent le plus tôt.'));
+
+    // ----- répartition de la valeur par rareté -----
+    const byR = RARITIES.map(r => {
+      const g = rowsCache.filter(x => x.rarity === r);
+      return { r, n: g.reduce((a, x) => a + x.count, 0), v: g.reduce((a, x) => a + x.total, 0) };
+    }).filter(x => x.n);
+    const vmax = Math.max(1, ...byR.map(x => x.v));
+    cards.push(card('Valeur par rareté', 'col', h('ul', null, byR.map(x => line(rarBadge(x.r),
+      h('span', { class: 'grow barwrap', 'data-tip': plural(x.n, 'carte', 'cartes') + ' · ' + fmt(total ? 100 * x.v / total : 0) + ' % de la valeur' },
+        h('span', { class: 'hbar r-' + x.r, style: 'width:' + Math.max(2, Math.round(100 * x.v / vmax)) + '%' })),
+      h('span', { class: 'sub' }, fmt(x.n)), h('b', null, fmt(Math.round(x.v)) + ' ₩')))),
+      'Ce que pèse chaque rareté dans la valeur totale. La barre est proportionnelle à la valeur ; le petit nombre, au nombre de cartes.'));
+
+    // ----- top de la collection -----
+    const top = [...rowsCache].sort((a, b) => b.value - a.value).slice(0, 8);
+    cards.push(card('Mes cartes les plus chères', 'col', h('ul', null, top.map(r => line(rarBadge(r.rarity),
+      h('span', { class: 'grow' }, r.title, r.starred ? ' ★' : ''), r.price ? relCell(r.price) : null,
+      h('b', null, fmt(Math.round(r.value)) + ' ₩')))), 'Par valeur unitaire, y compris les cartes déjà en vente ou en favori.'));
+
+    // ----- dernier booster -----
+    const P = db.pulls, lastPull = P[P.length - 1];
+    const pullAvg = P.length ? P.reduce((a, pl) => a + pl.c.reduce((s, [id]) => s + valueOf(id), 0), 0) / P.length : 0;
     cards.push(card('Dernier booster', 'pulls', lastPull
       ? h('ul', null, lastPull.c.map(([id, title, r]) => line(rarBadge(r), h('span', { class: 'grow' }, title),
-        h('span', null, fmt(valueOf(id)) + ' ₩'))), line(h('span', { class: 'grow sub' }, 'ouvert ' + ago(lastPull.t)),
+        h('span', null, fmt(valueOf(id)) + ' ₩'))), line(h('span', { class: 'grow sub' }, 'ouvert ' + ago(lastPull.t) + ' · moyenne ' + fmt(pullAvg) + ' ₩ sur ' + P.length),
         h('b', null, fmt(lastPull.c.reduce((a, [id]) => a + valueOf(id), 0)) + ' ₩')))
-      : none('Aucun booster enregistré.')));
-    // Mes ventes récentes
-    const sales = Object.values(db.auctions).filter(a => a[0] !== 'b').sort((x, y) => (x[7] < y[7] ? 1 : -1)).slice(0, 5);
-    cards.push(card('Mes dernières enchères', 'sales', sales.length
+      : none('Aucun booster enregistré : ouvre un paquet sur le site.')));
+
+    // ----- dernières enchères -----
+    const sales = A.filter(a => a[0] !== 'b').sort((x, y) => (x[7] < y[7] ? 1 : -1)).slice(0, 6);
+    cards.push(card('Mes dernières ventes', 'sales', sales.length
       ? h('ul', null, sales.map(a => line(rarBadge(a[3]), h('span', { class: 'grow' }, a[2]),
+        h('span', { class: 'sub' }, fmtDate(a[7])),
         a[6] == null ? h('span', { class: 'est' }, 'invendue') : h('b', null, fmt(a[6]) + ' ₩'))))
       : none('Aucune enchère en mémoire : ouvre la page Marché du site.')));
+
+    // ----- échanges récents -----
+    const T = Object.values(db.trades).filter(t => t.s === 'accepted').sort(byDateDesc).slice(0, 5);
+    const tv = l => l.reduce((a, c) => { const p = priceOf(c[0]); return a + (p && p.n ? Math.max(p.med, DISCARD) : 0); }, 0);
+    cards.push(card('Mes derniers échanges', 'trades', T.length
+      ? h('ul', null, T.map(t => {
+        const gap = tv(t.r) + t.wr - tv(t.g) - t.wg;
+        return line(h('span', { class: 'grow' }, t.w), h('span', { class: 'sub' }, t.g.length + ' → ' + t.r.length + ' cartes'),
+          withPrices ? h('b', { 'data-tip': 'Valeur reçue moins valeur donnée, aux prix d’aujourd’hui' }, (gap > 0 ? '+' : '') + fmt(gap) + ' ₩') : null);
+      }))
+      : none('Aucun échange en mémoire : ouvre la page Échanges du site.')));
+
     e.homeBody.replaceChildren(...cards);
   }
 
@@ -2226,18 +2382,18 @@
         r.shiny ? ' ✨' : '', r.starred ? ' ★' : '', r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null] },
       { t: 'Rareté', asc: true, get: r => rarOrder(r.rarity), cell: r => rarBadge(r.rarity) },
       { t: 'Ex.', get: r => r.count, cell: r => r.count },
-      { t: 'Prix conseillé', get: r => advise(r).p, cell: r => {
+      { t: 'Prix conseillé', tip: 'La médiane des ventes de la carte. Une étiquette orange signale un concurrent qui a déjà une offre en dessous.', get: r => advise(r).p, cell: r => {
         const a = advise(r);
         return [h('b', null, fmt(a.p) + ' ₩'), a.adj ? h('span', { class: 'tag warn', title: 'Un concurrent a déjà une offre à ' + fmt(a.low) +
           ' ₩, sous la médiane : ton annonce risque de partir moins cher ou de ne pas partir' }, 'concurrent à ' + fmt(a.low) + ' ₩') : null];
       } },
-      { t: 'Médiane', get: r => r.value, cell: r => fmt(Math.round(r.value)) + ' ₩' },
-      { t: 'Concurrence', asc: true, get: r => (r.ask ? r.ask.a : null), cell: r => {
+      { t: 'Médiane', tip: 'Médiane des 10 dernières ventes de la carte.', get: r => r.value, cell: r => fmt(Math.round(r.value)) + ' ₩' },
+      { t: 'Concurrence', tip: 'Annonce la moins chère d’un autre joueur sur cette carte. Mise de départ ou offre en cours, pas un prix final. « aucune » : cherchée, rien en vente.', asc: true, get: r => (r.ask ? r.ask.a : null), cell: r => {
         if (!r.ask) return db.wishSeen[r.cardId] ? h('span', { class: 'est', title: 'Cherchée ' + ago(db.wishSeen[r.cardId]) }, 'aucune') : '—';
         return auctionLink(r.ask.i, fmt(r.ask.a) + ' ₩' + (r.ask.b ? ' •' : '') + (r.ask.list.length > 1 ? ' (' + r.ask.list.length + ')' : ''),
           r.ask.list.length > 1 ? r.ask.list.length + ' annonces, la moins chère affichée' : 'Annonce concurrente');
       } },
-      { t: 'Fiabilité', get: r => r.price.rel.level, cell: r => relCell(r.price) },
+      { t: 'Fiabilité', tip: TIP_REL, get: r => r.price.rel.level, cell: r => relCell(r.price) },
       { t: 'Dernière vente', get: r => r.price.lastT, cell: r => fmtDate(r.price.lastT) },
       { t: 'Fourchette', get: r => r.price.max, cell: r => fmt(r.price.min) + ' à ' + fmt(r.price.max) },
       { t: 'Ventes', get: r => r.price.n, cell: r => r.price.n }

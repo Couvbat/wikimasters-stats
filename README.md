@@ -35,9 +35,11 @@ Violentmonkey devrait aussi convenir, mais le script n'a pas été testé avec.
 
 Le panneau a dix onglets. Dans tous les tableaux, un clic sur un en-tête de colonne trie selon cette colonne, et un second clic inverse le sens.
 
+**Survole un bouton, une case ou un petit « ? »** : une bulle explique ce qu'il fait. Les boutons sont regroupés par rôle, et les options moins utiles sont rangées dans des sections repliables.
+
 ### Accueil
 
-L'essentiel en une page, à l'ouverture du panneau. Un bloc « À vérifier » apparaît en tête quand les chiffres risquent d'être faux : collection pas rechargée depuis plus d'un jour, ou cartes L, UR, SR sans prix relevé. Ensuite : valeur de la collection et variation depuis le dernier relevé, les cartes à vendre en premier avec tes places libres, tes souhaits en vente (bonnes affaires d'abord, puis ceux qui finissent bientôt), ton dernier booster et tes dernières enchères. Chaque bloc a un lien « voir → » vers son onglet.
+L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres clés (valeur et variation, cartes, places de vente libres, revenus de la semaine, bonnes affaires), puis des blocs. Un bloc « À vérifier » apparaît en tête quand les chiffres risquent d'être faux : collection pas rechargée depuis plus d'un jour, ou cartes L, UR, SR sans prix relevé. Ensuite : valeur de la collection et variation depuis le dernier relevé, les cartes à vendre en premier avec tes places libres, tes souhaits en vente (bonnes affaires d'abord, puis ceux qui finissent bientôt), ton dernier booster et tes dernières enchères. Chaque bloc a un lien « voir → » vers son onglet.
 
 ### Collection
 
