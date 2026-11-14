@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.6.2
+// @version      1.7.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -785,7 +785,7 @@
   const ui = {
     open: false, tab: 'col', chosen: new Set(['L', 'UR', 'SR']),
     sortKey: 'total', sortDir: -1, text: '', rarity: '', friend: '', frRarity: '',
-    wishRarity: '', wishAvail: false, metric: 0, sorts: {}, el: {}
+    wishRarity: '', wishAvail: false, wishOpen: new Set(), wishAll: false, metric: 0, sorts: {}, el: {}
   };
   const SVG = 'http://www.w3.org/2000/svg';
   function s(tag, attrs, ...kids) {
@@ -862,6 +862,12 @@
     th.s{cursor:pointer;user-select:none}
     th.s:hover{color:#e5e7eb}
     tr.top td{background:#12241c}
+    tr.click{cursor:pointer}
+    tr.click:hover td{background:#183226}
+    .caret{display:inline-block;width:16px;color:#34d399}
+    tr.det>td{background:#0b100e;padding:6px 8px 10px 32px;text-align:left}
+    tr.det table{width:auto}
+    tr.det table td{border-bottom:0;padding:3px 22px 3px 0;text-align:left;color:#cbd5d1}
     td a{color:#e5e7eb;text-decoration:none}
     td a:hover{color:#34d399}
     td a.go{color:#34d399;text-decoration:underline;text-underline-offset:2px;white-space:nowrap}
@@ -976,6 +982,7 @@
     e.wishLoad = h('button', { class: 'b pri', onclick: loadWish }, 'Charger ma liste de souhaits');
     e.wishCheck = h('button', { class: 'b', onclick: checkAlerts }, 'Vérifier les annonces signalées');
     e.wishSearch = h('button', { class: 'b', onclick: searchWish }, 'Chercher mes souhaits sur le marché');
+    e.wishFold = h('button', { class: 'b', onclick: () => { ui.wishAll = !ui.wishAll; ui.wishOpen.clear(); renderWish(); } }, 'Tout déplier');
     e.stop2 = h('button', { class: 'b', disabled: true, onclick: () => { job.stop = true; } }, 'Stop');
     e.sub = h('div', { class: 'sub' });
     e.pro = h('div', { class: 'sub', style: 'margin-bottom:10px' });
@@ -1068,7 +1075,8 @@
         rarSelect(ev => { ui.wishRarity = ev.target.value; syncButtons(); renderWish(); }),
         h('label', { class: 'chk' },
           h('input', { type: 'checkbox', onchange: ev => { ui.wishAvail = ev.target.checked; renderWish(); } }),
-          'Seulement celles que je peux obtenir maintenant')),
+          'Seulement celles que je peux obtenir maintenant'),
+        e.wishFold),
       e.wishStatus, e.wishTiles, e.wishBody,
       h('div', { class: 'note' },
         'Ta liste de souhaits est celle du site : les cartes pour lesquelles tu as demandé une alerte dans « Toutes les cartes ». ',
@@ -1186,8 +1194,15 @@
       }
     }, c.t + (st && st.i === i ? (st.dir > 0 ? ' ▲' : ' ▼') : ''))));
     const shown = opts.limit ? list.slice(0, opts.limit) : list;
-    return h('table', null, h('thead', null, head), h('tbody', null, shown.map(it =>
-      h('tr', { class: opts.rowClass ? opts.rowClass(it) : '' }, cols.map(c => h('td', { class: c.left ? 'l' : '' }, c.cell(it)))))));
+    // opts.onRow rend la ligne cliquable (sauf sur ses liens) ; opts.after peut glisser une ligne de détail juste dessous.
+    return h('table', null, h('thead', null, head), h('tbody', null, shown.map(it => {
+      const canClick = opts.onRow && (!opts.canClick || opts.canClick(it));
+      const row = h('tr', {
+        class: (opts.rowClass ? opts.rowClass(it) : '') + (canClick ? ' click' : ''),
+        onclick: ev => { if (canClick && !ev.target.closest('a,button,input,select')) opts.onRow(it); }
+      }, cols.map(c => h('td', { class: c.left ? 'l' : '' }, c.cell(it))));
+      return [row, opts.after ? opts.after(it, cols.length) : null];
+    })));
   }
 
   // ----- onglet Mes ventes -----
@@ -1298,31 +1313,47 @@
       return;
     }
     const LIMIT = 400;
-    // Une ligne par annonce : une carte mise en vente trois fois occupe trois lignes, de la moins chère à la plus chère.
-    const lines = [];
-    for (const c of list) {
-      if (c.ask) for (const au of c.ask.list) lines.push({ ...c, au, nAu: c.ask.list.length });
-      else lines.push({ ...c, au: null, nAu: 0 });
-    }
+    // Une ligne par carte. Quand elle a plusieurs annonces, un clic sur la ligne les déplie juste dessous.
+    const multi = c => !!c.ask && c.ask.list.length > 1;
+    const isOpen = c => multi(c) && (ui.wishAll ? !ui.wishOpen.has(c.id) : ui.wishOpen.has(c.id));
+    const soonest = c => {
+      if (!c.ask) return null;
+      const ends = c.ask.list.map(x => x.e).filter(x => x > now);
+      return ends.length ? Math.min(...ends) : null;
+    };
+    const anyMulti = list.some(multi);
+    e.wishFold.style.display = anyMulti ? '' : 'none';
+    e.wishFold.textContent = ui.wishAll ? 'Tout replier' : 'Tout déplier';
+    const detail = (c, n) => (isOpen(c) ? h('tr', { class: 'det' }, h('td', { colspan: n },
+      h('table', null, h('tbody', null, c.ask.list.map((au, k) => h('tr', null,
+        h('td', null, 'Annonce ' + (k + 1)),
+        h('td', null, auctionLink(au.i, h('b', null, fmt(au.a) + ' ₩'), 'Annonce ' + (k + 1))),
+        h('td', null, au.b ? 'une offre a déjà été faite' : 'pas encore d’offre'),
+        h('td', null, au.e > now ? 'fin dans ' + left(au.e - now) : 'fin inconnue'))))))) : null);
     e.wishBody.replaceChildren(
       sortTable('wish', [
         { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(),
-          cell: c => [c.title, c.nAu > 1 ? h('span', { class: 'tag' }, c.nAu + ' annonces') : null] },
+          cell: c => [multi(c) ? h('span', { class: 'caret' }, isOpen(c) ? '▾' : '▸') : h('span', { class: 'caret' }), c.title,
+            multi(c) ? h('span', { class: 'tag' }, c.ask.list.length + ' annonces') : null] },
         { t: 'Rareté', asc: true, get: c => rarOrder(c.rarity), cell: c => rarBadge(c.rarity) },
         withPrices ? { t: 'Valeur médiane', get: c => (c.price && c.price.n ? c.price.med : null),
           cell: c => (c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') } : null,
-        { t: 'En vente à', asc: true, get: c => (c.au ? c.au.a : null),
-          cell: c => (c.au
-            ? auctionLink(c.au.i, h('b', null, fmt(c.au.a) + ' ₩' + (c.au.b ? ' •' : '')),
-              c.au.b ? 'Cette enchère a déjà reçu une offre' : 'Mise de départ, pas encore d’offre')
+        { t: 'En vente à', asc: true, get: c => (c.ask ? c.ask.a : null),
+          cell: c => (c.ask
+            ? auctionLink(c.ask.i, h('b', null, (multi(c) ? 'dès ' : '') + fmt(c.ask.a) + ' ₩' + (c.ask.b ? ' •' : '')),
+              (multi(c) ? 'La moins chère des ' + c.ask.list.length + ' annonces · ' : '') +
+              (c.ask.b ? 'une offre a déjà été faite' : 'mise de départ, pas encore d’offre'))
             : c.alert ? auctionLink(c.alert[4], h('span', { class: 'est' }, 'à vérifier'), 'Prix pas encore lu') : '—') },
-        { t: 'Fin de l’enchère', asc: true, get: c => (c.au && c.au.e > now ? c.au.e : null),
-          cell: c => (c.au && c.au.e > now ? 'dans ' + left(c.au.e - now) : '—') },
+        { t: 'Fin de l’enchère', asc: true, get: soonest,
+          cell: c => (soonest(c) ? (multi(c) ? 'première dans ' : 'dans ') + left(soonest(c) - now) : '—') },
         { t: 'Alerte du site', get: c => (c.alert ? c.alert[2] : null), cell: c => (c.alert ? ago(c.alert[2]) : '—') },
         { t: 'Cherchée', get: c => db.wishSeen[c.id] || null, cell: c => (db.wishSeen[c.id] ? ago(db.wishSeen[c.id]) : '—') },
         { t: 'Chez un ami', asc: true, get: c => c.friends.join(', '), cell: c => (c.friends.length ? c.friends.join(', ') : '—') }
-      ], lines, renderWish, { limit: LIMIT, rowClass: c => (rank(c) < 3 ? 'top' : '') }),
-      ...(lines.length > LIMIT ? [h('div', { class: 'sub' }, '… et ' + fmt(lines.length - LIMIT) + ' autres lignes. Filtre par rareté pour les voir.')] : []));
+      ], list, renderWish, {
+        limit: LIMIT, rowClass: c => (rank(c) < 3 ? 'top' : ''), canClick: multi, after: detail,
+        onRow: c => { ui.wishOpen.has(c.id) ? ui.wishOpen.delete(c.id) : ui.wishOpen.add(c.id); renderWish(); }
+      }),
+      ...(list.length > LIMIT ? [h('div', { class: 'sub' }, '… et ' + fmt(list.length - LIMIT) + ' autres. Filtre par rareté pour les voir.')] : []));
   }
 
   // ----- onglet Évolution -----

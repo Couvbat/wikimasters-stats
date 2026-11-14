@@ -61,7 +61,7 @@ Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en
 
 « Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, qu'il y ait eu une alerte ou non. Elle traite 50 cartes par passage, en commençant par celles jamais cherchées : choisis une rareté pour cibler, et relance pour continuer. Une carte cherchée depuis moins d'une heure est sautée.
 
-Quand une carte est mise en vente plusieurs fois, chaque annonce a sa propre ligne, avec son prix et sa fin d'enchère, et une étiquette « 3 annonces » à côté du titre. Dans l'onglet Collection, la colonne « En vente à » affiche la moins chère suivie du nombre d'annonces entre parenthèses.
+Chaque carte a une ligne. Quand elle est mise en vente plusieurs fois, la ligne porte une étiquette « 3 annonces », affiche le prix le plus bas (« dès 30 ₩ ») et la première fin d'enchère. Un clic sur la ligne la déplie pour montrer chaque annonce avec son prix, sa fin et son lien ; un second clic la replie. Le bouton « Tout déplier » ouvre toutes les cartes d'un coup. Dans l'onglet Collection, la colonne « En vente à » affiche la moins chère suivie du nombre d'annonces entre parenthèses.
 
 Le prix d'une annonce est un lien : un clic ouvre cette enchère sur le site, dans un nouvel onglet. Une alerte pas encore vérifiée a aussi son lien.
 
