@@ -15,7 +15,7 @@ Testé avec Tampermonkey sur Chrome et sur Zen.
 
 ### Mises à jour
 
-Installé par ce lien, le script se met à jour tout seul : Tampermonkey vérifie régulièrement s'il existe une version plus récente. Pour forcer la vérification : tableau de bord Tampermonkey, puis « Rechercher des mises à jour » dans le menu de l'extension.
+Installé par ce lien, le script se met à jour tout seul : Tampermonkey vérifie une fois par jour s'il existe une version plus récente. Pour ne pas attendre : onglet **Réglages** du panneau, « Vérifier » puis « Installer la dernière version ». Tampermonkey affiche sa page de mise à jour, clique sur « Mettre à jour » et recharge le site. Quand une nouvelle version est publiée, un lien « Version X disponible » apparaît aussi en haut du panneau.
 
 **Si tu avais installé le script en le collant à la main**, il ne se mettra pas à jour : supprime-le du tableau de bord Tampermonkey, puis réinstalle-le avec le lien ci-dessus. Tes données ne sont pas perdues, elles sont rangées par le site et non par le script.
 
@@ -33,19 +33,30 @@ Violentmonkey devrait aussi convenir, mais le script n'a pas été testé avec.
 
 ## Utiliser
 
-Le panneau a dix onglets. Dans tous les tableaux, un clic sur un en-tête de colonne trie selon cette colonne, et un second clic inverse le sens.
+Le panneau a onze onglets. Dans tous les tableaux, un clic sur un en-tête de colonne trie selon cette colonne, et un second clic inverse le sens.
 
 **Survole un bouton, une case ou un petit « ? »** : une bulle explique ce qu'il fait. Les boutons sont regroupés par rôle, et les options moins utiles sont rangées dans des sections repliables.
 
 ### Valeur sur les cartes du site
 
-Sur les pages du site (Collection, Marché, Toutes les cartes, boosters…), chaque carte dont le prix est connu porte une petite pastille en haut à droite : sa valeur médiane. Le contour dit la fiabilité (vert fiable, orange moyen, gris douteux), « ≈ » signale un prix douteux et « ✓ » une carte que tu as déjà. Sur le Marché, la pastille compare aussi avec le prix de l'annonce : verte « −40 % » pour une bonne affaire, rouge « trop cher » quand l'annonce atteint déjà la valeur. Survole la pastille pour le détail : nombre de ventes, enchère max conseillée, marge. Une carte jamais relevée n'a pas de pastille. La case « Afficher la valeur sur les cartes du site » (onglet Collection, « Options et export ») la désactive.
+Sur les pages du site (Collection, Marché, Toutes les cartes, boosters…), chaque carte dont le prix est connu porte une petite pastille en haut à droite : sa valeur médiane. Le contour dit la fiabilité (vert fiable, orange moyen, gris douteux), « ≈ » signale un prix douteux et « ✓ » une carte que tu as déjà. Sur le Marché, la pastille compare aussi avec le prix de l'annonce : verte « −40 % » pour une bonne affaire, rouge « trop cher » quand l'annonce atteint déjà la valeur. Survole la pastille : une bulle donne le nombre de ventes, l'enchère max conseillée, la marge, et une petite courbe des dernières ventes (médiane en pointillés). Une carte jamais relevée n'a pas de pastille.
 
-Sur l'onglet **Mes enchères** du Marché, le prix des cartes où tu enchéris est relevé tout seul (compte Pro uniquement) : une carte à la fois, environ une par seconde, seulement si son prix date de plus de 24 h. Si le site freine ou si un autre relevé est en cours, le script s'arrête et reprend à ton prochain passage. La bulle d'aide indique quand c'est ton offre qui mène.
+Sur l'onglet **Mes enchères** du Marché :
+
+- quand quelqu'un passe devant toi, la pastille devient bleue « ↑ 240 ₩ » si tu peux encore remonter jusqu'à la valeur, ou rouge « laisse filer » si l'enchère la dépasse déjà ;
+- le prix des cartes où tu enchéris est relevé tout seul (compte Pro uniquement) : une carte à la fois, environ une par seconde, seulement si son prix date de plus de 24 h. Si le site freine ou si un autre relevé est en cours, le script s'arrête et reprend à ton prochain passage.
+
+Une carte **shiny** en vente porte « ✦ » au lieu d'une comparaison : l'historique du site ne dit pas quelles ventes étaient shiny, donc la valeur affichée est celle d'une carte normale. Les enchères shiny sont aussi exclues des prix observés et de tes ventes, pour ne pas fausser la valeur des cartes normales.
+
+**Sur la page Échanges du site**, chaque échange affiche sa valeur : ce que tu donnes, ce que tu reçois, l'écart (wikibidous compris). Dans la fenêtre « Échanger avec… », le total se met à jour en haut au fur et à mesure que tu choisis les cartes des deux côtés. Le script n'ajoute qu'une ligne de texte : il ne choisit rien et n'envoie rien.
+
+### Réglages
+
+Tout ce que le script ajoute aux pages du site se règle dans l'onglet Réglages : afficher la valeur, comparer au prix de l'annonce, conseil quand tu es surenchéri, ✓ sur les cartes que tu as, bulle détaillée (ou la bulle simple du navigateur), contour vert des bonnes affaires, cartes trop chères grisées (désactivé par défaut ; elles redeviennent normales au survol, et tes propres enchères ne sont jamais grisées), valeur des échanges, et les deux relevés automatiques (cartes tirées d'un booster, cartes de Mes enchères). On y trouve aussi la version installée et le bouton de mise à jour.
 
 ### Accueil
 
-L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres clés (valeur et variation, cartes, places de vente libres, revenus de la semaine, bonnes affaires), puis des blocs. Un bloc « À vérifier » apparaît en tête quand les chiffres risquent d'être faux : collection pas rechargée depuis plus d'un jour, ou cartes L, UR, SR sans prix relevé. Ensuite : valeur de la collection et variation depuis le dernier relevé, les cartes à vendre en premier avec tes places libres, tes souhaits en vente (bonnes affaires d'abord, puis ceux qui finissent bientôt), ton dernier booster et tes dernières enchères. Chaque bloc a un lien « voir → » vers son onglet.
+L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres clés (valeur et variation, cartes, places de vente libres, revenus de la semaine, bonnes affaires), puis des blocs. Un bloc « À vérifier » apparaît en tête quand les chiffres risquent d'être faux : collection pas rechargée depuis plus d'un jour, ou cartes L, UR, SR sans prix relevé. Ensuite : valeur de la collection et variation depuis le dernier relevé, les cartes à vendre en premier avec tes places libres, tes souhaits en vente (bonnes affaires d'abord, puis ceux qui finissent bientôt), tes enchères en cours (qui mène, combien tu as engagé pour quelle valeur), ton dernier booster et tes dernières enchères. Chaque bloc a un lien « voir → » vers son onglet.
 
 ### Collection
 
@@ -89,6 +100,8 @@ Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en
 
 **Enchère max** : la valeur médiane de la carte. Jusqu'à ce montant, tu ne paies pas la carte plus cher qu'elle ne se vend d'habitude. L'étiquette verte « +75 ₩ » donne la marge qu'il te reste sur l'annonce de la ligne, la rouge « trop cher » dit qu'elle a déjà dépassé. En dépliant une carte, chaque annonce a sa propre marge.
 
+**Mes enchères** : en haut de l'onglet, le bilan des enchères où tu as fait une offre, lu sur l'onglet Mes enchères du Marché : combien tu en mènes, les wikibidous engagés, la valeur des cartes, ce que tu gagnes ou perds si tu remportes tout, et les enchères où ton offre dépasse déjà la valeur. Le tableau donne pour chacune le statut, ton offre, la valeur, l'enchère max avec sa marge, et le temps restant.
+
 Les alertes de plus de 12 h sont ignorées : une enchère dure 12 h au plus, elles concernent donc forcément une vente terminée.
 
 « Chercher mes souhaits sur le marché » fait la même recherche pour toutes les cartes de ta liste, qu'il y ait eu une alerte ou non. Elle traite toute la liste d'un coup, en commençant par celles jamais cherchées. Choisis une rareté pour cibler. Une carte cherchée depuis moins d'une heure est sautée.
@@ -105,7 +118,7 @@ L'onglet indique aussi si un ami possède la carte, d'après les fichiers import
 
 Chaque paquet que tu ouvres toi-même est mémorisé : nombre de boosters, part de chaque rareté, valeur moyenne par booster, meilleurs tirages. Seuls les boosters ouverts depuis l'installation de la version 1.3 sont comptés.
 
-Avec un compte Pro, un petit panneau affiche aussi, juste après l'ouverture, le prix de chaque carte tirée et un conseil. Une case dans l'onglet Collection permet de le désactiver.
+Avec un compte Pro, un petit panneau affiche aussi, juste après l'ouverture, le prix de chaque carte tirée et un conseil. Une case dans l'onglet Réglages permet de le désactiver.
 
 ### Évolution
 
