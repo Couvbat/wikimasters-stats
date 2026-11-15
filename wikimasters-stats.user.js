@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.17.0
+// @version      1.18.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -37,7 +37,7 @@
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
       auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
-      obs: {}, obsSales: {}, obsRar: {}, trades: {}, tradesAt: 0,
+      obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: []
     };
   }
@@ -46,7 +46,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.17.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.18.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -101,7 +101,7 @@
         if (base.sell.v !== 2) { base.sell.doubt = true; base.sell.v = 2; }
         if (!Array.isArray(base.pulls)) base.pulls = [];
         if (!Array.isArray(base.bids)) base.bids = [];
-        for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'trades', 'ov']) {
+        for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov']) {
           if (!isObj(base[k])) base[k] = {};
         }
         // Nettoyage des doublons laissés par les versions précédentes : une carte rangée sous son propre
@@ -293,16 +293,26 @@
   }
 
   // ---------- prix observés : un historique construit à partir des enchères que tout compte peut voir ----------
-  // Le site ne montre pas le prix final d'une enchère aux autres joueurs. On retient donc la dernière offre vue
-  // avant la fin. C'est un minimum : l'offre a pu monter après. « g » dit combien de minutes avant la fin on l'a vue.
+  // À la fin d'une enchère suivie, la dernière offre vue sert de prix provisoire : c'est un minimum, l'offre a pu monter après.
+  // « g » dit combien de minutes avant la fin on l'a vue. Ensuite, la page de l'enchère (que tout compte peut ouvrir)
+  // donne son prix final exact : « Relever les prix finaux » le lit et remplace le prix provisoire (x = 1 : exact).
   const OBS_NEAR = 30;      // au-delà de 30 min avant la fin, le prix vu est trop incertain pour les niveaux par rareté
   const MAX_OBS = 6000;     // enchères en cours suivies
   const MAX_OBS_CARDS = 8000;
+  const MAX_FINQ = 3000;    // enchères finies en attente de leur prix final
   function addObserved(cardId, sale, rarity) {
     if (!okKey(cardId) || typeof sale.p !== 'number' || sale.p <= 0) return false;
-    const list = db.obsSales[cardId] || [];
-    if (list.some(x => x.t === sale.t && x.p === sale.p)) return false;
-    list.push({ p: sale.p, t: str(sale.t, 40), g: Math.max(0, Math.round(num(sale.g))) });
+    let list = db.obsSales[cardId] || [];
+    // Même enchère déjà notée : un prix exact remplace le prix provisoire, sinon on ne change rien.
+    const same = sale.i ? list.find(x => x.i === sale.i) : null;
+    if (same) {
+      if (!sale.x || same.x) return false;
+      list = list.filter(x => x !== same);
+    } else if (list.some(x => x.t === sale.t && x.p === sale.p)) return false;
+    const item = { p: sale.p, t: str(sale.t, 40), g: Math.max(0, Math.round(num(sale.g))) };
+    if (okKey(sale.i)) item.i = sale.i;
+    if (sale.x) item.x = 1;
+    list.push(item);
     db.obsSales[cardId] = list.sort(byDateDesc).slice(0, 10);
     const end = Date.parse(sale.t);
     if (rarity && rarity !== '?' && sale.g <= OBS_NEAR && Number.isFinite(end)) {
@@ -319,10 +329,17 @@
       const o = db.obs[id];
       if (!Array.isArray(o) || o[3] > now) continue;
       // Tes propres enchères ont déjà leur vrai prix final dans « Mes ventes ».
-      if (o[2] && !db.auctions[id]) addObserved(o[0], { p: o[1], t: new Date(o[3]).toISOString(), g: (o[3] - o[4]) / 6e4 }, o[5]);
+      const gap = (o[3] - o[4]) / 6e4;
+      if (o[2] && !db.auctions[id]) addObserved(o[0], { p: o[1], t: new Date(o[3]).toISOString(), g: gap, i: id }, o[5]);
+      // Prix final à relever : les enchères qui avaient une offre, et celles vues sans offre moins de 15 min avant la fin
+      // (une offre de dernière minute a pu arriver). Au-delà d'une semaine, on n'insiste plus.
+      if (!db.auctions[id] && (o[2] || gap <= 15) && now - o[3] < 7 * DAY) db.finQ[id] = [o[0], o[5], o[3], o[2] ? 1 : 0];
       delete db.obs[id];
       changed = true;
     }
+    const fq = Object.keys(db.finQ);
+    for (const id of fq) if (now - db.finQ[id][2] > 7 * DAY) delete db.finQ[id];
+    if (fq.length > MAX_FINQ) fq.sort((x, y) => db.finQ[x][2] - db.finQ[y][2]).slice(0, fq.length - MAX_FINQ).forEach(id => delete db.finQ[id]);
     const ids = Object.keys(db.obs);
     if (ids.length > MAX_OBS) {
       ids.sort((x, y) => db.obs[x][4] - db.obs[y][4]).slice(0, ids.length - MAX_OBS).forEach(id => delete db.obs[id]);
@@ -334,10 +351,40 @@
     }
     return changed;
   }
+  // Page d'une enchère (/api/marketplace/<id>), ouverte par toi sur le site ou relue par « Relever les prix finaux ».
+  // Une enchère réglée donne son prix final exact. Renvoie true si l'enchère est terminée et réglée.
+  function ingestFinal(id, j) {
+    const a = j && j.auction;
+    if (!isObj(a) || !okKey(id)) return false;
+    if (a.card && typeof a.card.wikipedia_title === 'string' && okKey(a.card_id)) seenTitle.set(a.card.wikipedia_title, a.card_id);
+    if (!a.settled_at && a.final_price == null) return false; // pas encore réglée
+    const q = db.finQ[id];
+    delete db.finQ[id];
+    if (!okKey(a.card_id) || a.is_shiny || (db.userId && a.seller_id === db.userId)) return true;
+    const list = db.obsSales[a.card_id] || [];
+    const prov = list.find(x => x.i === id);
+    if (typeof a.final_price === 'number' && a.final_price > 0) {
+      // Le niveau par rareté a déjà reçu le prix provisoire s'il était vu de près : on ne le compte pas deux fois.
+      const r = prov && prov.g <= OBS_NEAR ? null : rarOf(a.snapshot_rarity || (a.card && a.card.rarity) || (q && q[1]));
+      addObserved(a.card_id, { p: a.final_price, t: str(a.settled_at || a.end_at, 40), g: 0, i: id, x: 1 }, r);
+    } else if (prov) {
+      // Finie sans vente : le prix provisoire n'avait pas lieu d'être.
+      db.obsSales[a.card_id] = list.filter(x => x !== prov);
+      if (!db.obsSales[a.card_id].length) delete db.obsSales[a.card_id];
+    }
+    return true;
+  }
+  // Enchères finies dont le prix final reste à lire, à partir d'une minute après la fin (le temps que le site la règle).
+  // Celles qui avaient une offre d'abord, puis les plus récentes.
+  function finalsToFetch() {
+    const now = Date.now();
+    return Object.keys(db.finQ).filter(id => now - db.finQ[id][2] > 6e4)
+      .sort((x, y) => (db.finQ[y][3] - db.finQ[x][3]) || (db.finQ[y][2] - db.finQ[x][2]));
+  }
   // Ce qu'on peut partager : uniquement des observations d'enchères publiques, jamais l'historique réservé au Pro.
   function observedExport() {
     const sales = [];
-    for (const id in db.obsSales) for (const s of db.obsSales[id]) sales.push([id, s.p, s.t, s.g]);
+    for (const id in db.obsSales) for (const s of db.obsSales[id]) sales.push([id, s.p, s.t, s.g, s.x ? 1 : 0, s.i || '']);
     sales.sort((x, y) => (x[2] < y[2] ? 1 : -1));
     return { sales: sales.slice(0, 8000), rar: db.obsRar };
   }
@@ -347,7 +394,7 @@
     let added = 0;
     for (const s of (Array.isArray(seen.sales) ? seen.sales : []).slice(0, 20000)) {
       if (!Array.isArray(s) || !okKey(s[0]) || typeof s[1] !== 'number' || typeof s[2] !== 'string' || !Number.isFinite(Date.parse(s[2]))) continue;
-      if (addObserved(s[0], { p: s[1], t: s[2], g: num(s[3]) }, null)) added++;
+      if (addObserved(s[0], { p: s[1], t: s[2], g: num(s[3]), x: s[4] === 1, i: okKey(s[5]) ? s[5] : '' }, null)) added++;
     }
     if (isObj(seen.rar)) for (const r of RARITIES) {
       const src = Array.isArray(seen.rar[r]) ? seen.rar[r].slice(0, 400) : [];
@@ -492,6 +539,10 @@
         const m = url.pathname.match(/^\/api\/marketplace\/cards\/([^/]+)\/sales$/);
         if (m) {
           p.then(r => r.ok && r.clone().json().then(j => ingestSales(m[1], j))).catch(() => {});
+        } else if (/^\/api\/marketplace\/[0-9a-f-]{36}$/.test(url.pathname)) {
+          // Tu ouvres la page d'une enchère : si elle est finie, son prix final exact rejoint les prix observés.
+          const id = url.pathname.split('/').pop();
+          p.then(r => r.ok && r.clone().json().then(j => { if (ingestFinal(id, j)) { saveDb(); refresh(); } else overlaySoon(); })).catch(() => {});
         } else if (url.pathname === '/api/my-collection') {
           p.then(r => r.ok && r.clone().json().then(j => ingestCollection(j.collection, false))).catch(() => {});
         } else if (url.pathname === '/api/marketplace') {
@@ -566,8 +617,10 @@
         last: v[0], lastT: sales[0].t, min: Math.min(...v), max: Math.max(...v), n: v.length, at, own, obs,
         rel: reliability(sales), trend: trendOf(sales), sales
       };
-      // Un prix observé est un minimum, jamais un prix final certain : il ne peut pas être « Fiable ».
-      if (obs && out.rel.level > 1) out.rel.level = 1;
+      // Un prix observé provisoire est un minimum, pas un prix final : tant qu'il en reste un, pas de « Fiable ».
+      // Des prix finaux tous relus sur la page des enchères valent l'historique Pro.
+      out.exact = obs && sales.every(s => s.x);
+      if (obs && !out.exact && out.rel.level > 1) out.rel.level = 1;
     }
     priceCache.set(cardId, out);
     return out;
@@ -791,6 +844,40 @@
         : seen + ' enchères lues. Leur prix sera enregistré quand elles seront finies, d’ici quelques minutes.', where);
     } catch (e) {
       endJob('Lecture du marché impossible (' + e.message + ').', where);
+    }
+  }
+
+  // Relit la page de chaque enchère suivie qui vient de finir, pour remplacer le prix provisoire par le prix final exact.
+  // Pour tous les comptes, Pro ou non : c'est la page qu'on ouvre en cliquant sur une annonce du Marché.
+  async function fetchFinals(where) {
+    if (job.running) return;
+    where = where || 'status';
+    const todo = finalsToFetch();
+    if (!todo.length) return setStatus('Aucun prix final à relever pour l’instant. « Relever les fins d’enchères » en prépare : leurs prix finaux se relèvent quelques minutes après.', where);
+    startJob('Prix finaux : 0 / ' + todo.length, where);
+    let i = 0, sold = 0;
+    try {
+      for (const id of todo) {
+        if (job.stop) break;
+        try {
+          const j = await getJSON('/api/marketplace/' + encodeURIComponent(id));
+          ingestFinal(id, j);
+          if (j && j.auction && typeof j.auction.final_price === 'number') sold++;
+        } catch (e) {
+          if (e.status === 404 || e.status === 403) delete db.finQ[id]; // enchère retirée ou inaccessible : on l'oublie
+          else throw e;
+        }
+        i++;
+        if (i % 10 === 0) saveDb();
+        setStatus('Prix finaux : ' + i + ' / ' + todo.length + eta(todo.length - i), where);
+        if (i < todo.length) await pace();
+      }
+      saveDb();
+      endJob((job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '. ' : '') + plural(sold, 'prix final relevé', 'prix finaux relevés') +
+        ' sur ' + plural(i, 'enchère lue', 'enchères lues') + '.', where);
+    } catch (e) {
+      saveDb();
+      endJob('Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + todo.length + '. Réessaie plus tard.', where);
     }
   }
 
@@ -1509,7 +1596,8 @@
     const age = Number.isFinite(p.rel.age) ? 'dernière il y a ' + Math.round(p.rel.age) + ' j' : 'date inconnue';
     const title = p.n + ' vente' + (p.n > 1 ? 's' : '') + ', ' + age + ', écart ×' + fmt(p.rel.spread) +
       (p.trend ? (p.trend > 0 ? ', prix en hausse' : ', prix en baisse') : '') + (p.own ? ', d’après tes propres ventes et achats' : '') +
-      (p.obs ? ', d’après des fins d’enchères observées (dernière offre vue, donc un minimum)' : '');
+      (p.obs ? (p.exact ? ', d’après les prix finaux d’enchères relevés sur le marché'
+        : ', d’après des fins d’enchères observées (en partie la dernière offre vue, donc un minimum : « Relever les prix finaux » les précise)') : '');
     return h('span', { class: 'rel l' + p.rel.level, title }, REL[p.rel.level] + ARROW[p.trend]);
   }
   const rarBadge = r => h('span', { class: 'r r-' + r }, r);
@@ -1583,10 +1671,14 @@
     e.fill.disabled = job.running || pro !== true;
     e.stop.disabled = !job.running;
     e.fill.textContent = pro === true ? 'Relever les prix (' + missingIds().length + ')' : 'Relever les prix (Pro)';
+    const nf = finalsToFetch().length;
+    e.finals.textContent = 'Relever les prix finaux' + (nf ? ' (' + nf + ')' : '');
+    e.finals.disabled = job.running || !nf;
     e.pro.textContent = pro === true ? ''
       : pro === false
-        ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Les valeurs viennent de tes propres ventes et achats, ' +
-          'et des fins d’enchères que le script observe sur le marché ou que tes amis partagent.'
+        ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Pour avoir des prix quand même : « Relever les fins d’enchères », ' +
+          'puis quelques minutes plus tard « Relever les prix finaux », qui lit le prix exact de chaque enchère terminée. ' +
+          'S’y ajoutent tes propres ventes et achats, et les prix que tes amis partagent. Refais-le de temps en temps : les prix s’accumulent.'
         : 'Statut Pro pas encore détecté : recharge la page (F5).';
   }
 
@@ -1621,6 +1713,10 @@
       'Lit les 500 enchères du marché qui se terminent bientôt, toutes cartes confondues (pas seulement les tiennes). ' +
       'À leur fin, leur dernière offre devient un « prix observé » : utile sans compte Pro, et pour le niveau de prix par rareté.',
       () => scanMarket(MARKET_PAGES, 'status', 'ending_soon'));
+    e.finals = btn('Relever les prix finaux',
+      'Pour tous les comptes, Pro ou non. Relit la page de chaque enchère suivie qui vient de finir, celle qu’on ouvre en cliquant sur une annonce : ' +
+      'elle donne le prix final exact, qui remplace la dernière offre vue. Une enchère par seconde. ' +
+      'À faire quelques minutes après « Relever les fins d’enchères ».', () => fetchFinals('status'));
     e.stop = stopBtn();
 
     e.mine = btn('Mes places de vente',
@@ -1677,7 +1773,8 @@
       h('div', { class: 'tools' },
         group('Ma collection', null, e.load, e.fill),
         group('Annonces du marché sur mes cartes', null, e.colSearch, e.colRefresh),
-        group('Prix observés', 'Pour tous, avec ou sans compte Pro : le script note la dernière offre des enchères qu’il voit se terminer.', e.scan),
+        group('Prix observés', 'Pour tous, avec ou sans compte Pro. 1. « Relever les fins d’enchères » suit les enchères sur le point de finir. ' +
+          '2. Quelques minutes plus tard, « Relever les prix finaux » lit le prix exact de chacune.', e.scan, e.finals),
         group('Raretés concernées', '« Relever les prix » et « Trouver les annonces » ne traitent que les raretés cochées ici.', checks)),
       h('div', { class: 'run' }, e.status, e.stop),
       h('div', { class: 'filters' },
@@ -3018,7 +3115,7 @@
       const med = Math.max(p.med, DISCARD), mx = maxBid(p);
       text = (p.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(med)) + ' ₩';
       border = ['#6b7280', '#f59e0b', '#10b981'][p.rel.level];
-      lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? ' observées' : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
+      lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
         if (au.s) {
@@ -3259,7 +3356,7 @@
     overlaySoon();
   }
 
-  const start = () => { mount(); openSellForm(); startOverlay(); };
+  const start = () => { if (settleObserved()) saveDb(); mount(); openSellForm(); startOverlay(); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();

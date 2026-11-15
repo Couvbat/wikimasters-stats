@@ -63,6 +63,7 @@ L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres cl�
 - **Charger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
 - **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
 - **Relever les fins d'enchères** : lit les 500 enchères sur le point de se terminer, pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
+- **Relever les prix finaux** : quelques minutes plus tard, lit le prix final exact de ces enchères. Pour tous les comptes, Pro ou non.
 - **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite toutes les cartes d'un coup, une par seconde, et saute celles cherchées depuis moins d'une heure.
 - **Rafraîchir les annonces** : relit le prix et la fin des annonces déjà affichées dans cette colonne, sans attendre.
 - **Exporter en CSV** : le tableau tel qu'il est filtré et trié, à ouvrir dans Excel ou LibreOffice.
@@ -158,9 +159,12 @@ Tes données sont rangées dans le navigateur, donc Chrome et Zen ont chacun les
 L'historique des ventes d'une carte est une fonction Pro du site. Pour que tout le monde ait des prix, le script construit son propre historique à partir de ce que n'importe quel compte peut voir : les enchères en cours.
 
 - Chaque enchère vue (en parcourant le marché, avec « Relever les fins d'enchères », ou pendant une recherche) est suivie jusqu'à sa fin.
-- Quand elle se termine, la dernière offre vue devient un « prix observé » pour cette carte. Une enchère finie sans offre ne donne rien.
-- C'est un minimum : l'offre a pu monter après la dernière fois que le script l'a vue. Un prix observé n'est donc jamais noté « Fiable », et son origine est indiquée au survol de la fiabilité.
-- « Relever les fins d'enchères » est le moyen le plus précis, puisqu'il lit les enchères dans leur dernière minute.
+- Quand elle se termine, la dernière offre vue devient un prix **provisoire** pour cette carte. C'est un minimum : l'offre a pu monter ensuite.
+- **« Relever les prix finaux »** (onglet Collection) relit ensuite la page de chaque enchère suivie : la page qu'on ouvre en cliquant sur une annonce, que tout compte peut voir. Elle donne le prix final exact, qui remplace le prix provisoire. Une enchère finie sans vente retire son prix provisoire, et une enchère vue sans offre peu avant sa fin peut quand même apporter un prix si quelqu'un a enchéri au dernier moment. Une enchère par seconde, avec un bouton Stop.
+- Le prix final est aussi enregistré tout seul quand tu ouvres toi-même la page d'une enchère terminée.
+- Tant qu'une carte a un prix provisoire, elle n'est jamais notée « Fiable ». Avec uniquement des prix finaux exacts, elle peut l'être, comme avec l'historique Pro. L'origine du prix est indiquée au survol.
+
+**Sans compte Pro, la marche à suivre** : « Relever les fins d'enchères », attendre quelques minutes que ces enchères se terminent, puis « Relever les prix finaux ». À refaire de temps en temps : les prix s'accumulent.
 
 Ces prix servent de valeur pour une carte quand il n'y a ni historique Pro ni vente personnelle. Ils donnent aussi un niveau de prix par rareté, affiché en haut de l'onglet Collection.
 
@@ -172,7 +176,7 @@ La couverture reste partielle. Il existe près de trois millions de cartes, et l
 
 L'historique des ventes de chaque carte est une fonction Pro du site, et le script n'y touche pas sans compte Pro. Il reste :
 
-- les prix observés décrits ci-dessus ;
+- les prix observés décrits ci-dessus, précisés par leur prix final exact avec « Relever les prix finaux » ;
 
 - le tableau (rareté, ATK, DEF, Q-Score, vues, exemplaires) et l'export CSV ;
 - les stats de boosters, le bilan de tes ventes, la liste de souhaits, l'évolution, la comparaison entre amis et la sauvegarde ;
