@@ -137,7 +137,11 @@ Si vos listes de souhaits sont chargées, l'onglet montre aussi les cartes que t
 
 Avec plusieurs amis, un tableau « Tous mes amis » résume pour chacun ce que tu peux lui donner, ce qu'il peut te donner et la valeur de l'échange équilibré. Un clic sur une ligne ouvre cet ami.
 
-Le fichier contient la liste des cartes, leur nombre d'exemplaires, la liste de souhaits et les prix observés. Il ne contient jamais l'historique réservé au Pro, et il fonctionne avec ou sans compte Pro.
+Le fichier contient la liste des cartes, leur nombre d'exemplaires, la liste de souhaits et tous les prix que tu as accumulés : ton historique Pro, les prix observés, et tes propres ventes et achats. Il fonctionne avec ou sans compte Pro.
+
+**Les prix de ton ami remplissent tes tableaux.** À l'import, ses prix s'ajoutent aux tiens : la valeur de tes cartes dans Collection, À vendre, Souhaits et les pastilles du site en profite tout de suite, même sans compte Pro. Pour chaque carte, le relevé le plus récent est gardé, le tien ou le sien. Au survol de la fiabilité ou d'une pastille, « relevé partagé par … » dit d'où vient le prix. Les relevés Pro que tu as reçus d'un ami repartent dans ton propre fichier avec son nom, donc les prix circulent dans tout le groupe. Retirer un ami ne retire pas les prix qu'il a apportés. Les relevés « aucune vente » ne sont pas partagés, car le site en renvoie parfois à tort.
+
+Si le navigateur n'a plus assez de place pour les relevés Pro de ton ami, ils ne sont pas gardés, mais sa collection et ses prix observés le sont : un message le dit.
 
 ### Sauvegarde
 
@@ -168,7 +172,7 @@ L'historique des ventes d'une carte est une fonction Pro du site. Pour que tout 
 
 Ces prix servent de valeur pour une carte quand il n'y a ni historique Pro ni vente personnelle. Ils donnent aussi un niveau de prix par rareté, affiché en haut de l'onglet Collection.
 
-Les prix observés partent dans le fichier que tu exportes pour tes amis, et ceux de tes amis s'ajoutent aux tiens à l'import : à plusieurs, l'historique se remplit plus vite. L'historique réservé au Pro, lui, n'est jamais partagé.
+Les prix observés partent dans le fichier que tu exportes pour tes amis, avec ton historique Pro et tes ventes et achats, et ceux de tes amis s'ajoutent aux tiens à l'import : à plusieurs, l'historique se remplit plus vite (voir « Amis »).
 
 La couverture reste partielle. Il existe près de trois millions de cartes, et le script ne connaît que les enchères qu'il a vues passer : ne compte pas dessus pour avoir le prix de chaque carte.
 
@@ -177,6 +181,7 @@ La couverture reste partielle. Il existe près de trois millions de cartes, et l
 L'historique des ventes de chaque carte est une fonction Pro du site, et le script n'y touche pas sans compte Pro. Il reste :
 
 - les prix observés décrits ci-dessus, précisés par leur prix final exact avec « Relever les prix finaux » ;
+- l'historique Pro d'un ami qui a un compte Pro, quand tu importes son fichier dans l'onglet Amis ;
 
 - le tableau (rareté, ATK, DEF, Q-Score, vues, exemplaires) et l'export CSV ;
 - les stats de boosters, le bilan de tes ventes, la liste de souhaits, l'évolution, la comparaison entre amis et la sauvegarde ;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.18.0
+// @version      1.19.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -46,7 +46,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.18.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.19.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -117,11 +117,13 @@
   window.addEventListener('storage', ev => {
     if (ev.key === KEY && !job.running) { db = loadDb(); refresh(); }
   });
+  // Renvoie false si rien n'a pu être enregistré, faute de place.
   function saveDb() {
     try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {
       // Plus de place : on sacrifie le relevé du marché, qui se refait en un clic.
-      try { db.market.asks = {}; localStorage.setItem(KEY, JSON.stringify(db)); } catch (e2) {}
+      try { db.market.asks = {}; localStorage.setItem(KEY, JSON.stringify(db)); } catch (e2) { return false; }
     }
+    return true;
   }
   const byDateDesc = (a, b) => (a.t < b.t ? 1 : a.t > b.t ? -1 : 0);
   const rarOf = r => (typeof r === 'string' && /^[A-Z]{1,3}$/.test(r) ? r : '?');
@@ -381,7 +383,7 @@
     return Object.keys(db.finQ).filter(id => now - db.finQ[id][2] > 6e4)
       .sort((x, y) => (db.finQ[y][3] - db.finQ[x][3]) || (db.finQ[y][2] - db.finQ[x][2]));
   }
-  // Ce qu'on peut partager : uniquement des observations d'enchères publiques, jamais l'historique réservé au Pro.
+  // Les fins d'enchères observées, pour le fichier ami et la sauvegarde. L'historique Pro voyage à part (voir proExport).
   function observedExport() {
     const sales = [];
     for (const id in db.obsSales) for (const s of db.obsSales[id]) sales.push([id, s.p, s.t, s.g, s.x ? 1 : 0, s.i || '']);
@@ -412,6 +414,36 @@
       cards.sort((x, y) => (db.obsSales[x][0].t < db.obsSales[y][0].t ? -1 : 1))
         .slice(0, cards.length - MAX_OBS_CARDS).forEach(id => delete db.obsSales[id]);
     }
+    return added;
+  }
+  // ---------- historique Pro partagé avec les amis ----------
+  // Chaque relevé : [carte, date du relevé, [[prix, date de vente], …], origine]. Les relevés « aucune vente » restent
+  // chez soi : le site en renvoie parfois à tort pour des L, UR et SR. Un relevé reçu d'un ami garde son origine.
+  const MAX_PRO_SHARE = 8000;
+  function proExport(pseudo) {
+    return Object.keys(db.prices).filter(id => okKey(id) && isObj(db.prices[id]) && Array.isArray(db.prices[id].sales) && db.prices[id].sales.length)
+      .sort((x, y) => num(db.prices[y].at) - num(db.prices[x].at)).slice(0, MAX_PRO_SHARE)
+      .map(id => { const p = db.prices[id]; return [id, num(p.at), p.sales.map(s => [s.p, s.t]), p.by || pseudo]; });
+  }
+  // Fusionne les relevés Pro d'un ami : pour chaque carte, le relevé le plus récent gagne, comme pour une sauvegarde.
+  // Une date dans le futur est ramenée à maintenant, sinon ce prix ne serait jamais remplacé. Renvoie le nombre de relevés ajoutés.
+  function mergePro(list, from) {
+    if (!Array.isArray(list)) return 0;
+    const now = Date.now();
+    let added = 0;
+    for (const e of list.slice(0, 20000)) {
+      if (!Array.isArray(e) || !okKey(e[0]) || !(num(e[1]) > 0) || !Array.isArray(e[2])) continue;
+      const sales = e[2].filter(s => Array.isArray(s) && num(s[0]) > 0 && typeof s[1] === 'string')
+        .slice(0, 10).map(s => ({ p: s[0], t: str(s[1], 40) })).sort(byDateDesc);
+      if (!sales.length) continue;
+      const at = Math.min(e[1], now), cur = db.prices[e[0]];
+      if (cur && num(cur.at) >= at) continue;
+      // Tes propres prix revenus par un ami ne sont pas « partagés ».
+      const by = (typeof e[3] === 'string' && e[3].trim().slice(0, 40)) || from;
+      db.prices[e[0]] = by && by !== db.me ? { at, sales, by } : { at, sales };
+      added++;
+    }
+    if (added) priceCache = new Map();
     return added;
   }
   // Niveau de prix par rareté, d'après les fins d'enchères observées ces 7 derniers jours.
@@ -621,6 +653,8 @@
       // Des prix finaux tous relus sur la page des enchères valent l'historique Pro.
       out.exact = obs && sales.every(s => s.x);
       if (obs && !out.exact && out.rel.level > 1) out.rel.level = 1;
+      // Relevé Pro reçu d'un ami : son pseudo, pour le dire au survol.
+      out.by = (!own && !obs && rec && rec.by) || '';
     }
     priceCache.set(cardId, out);
     return out;
@@ -1258,21 +1292,30 @@
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
+  // Le fichier pour tes amis : ta collection, tes souhaits, et tous les prix que tu as accumulés.
+  function friendExport(pseudo) {
+    const mine = myCards();
+    const seen = observedExport();
+    // Tes ventes et achats : des prix finaux exacts, que tout compte peut lire sur la page de l'enchère.
+    // Pas dans la sauvegarde, qui a déjà tes enchères.
+    for (const id in db.auctions) {
+      const a = db.auctions[id];
+      if (Array.isArray(a) && typeof a[6] === 'number' && a[6] > 0 && !a[8] && okKey(a[1])) seen.sales.push([a[1], a[6], a[7], 0, 1, id]);
+    }
+    return {
+      wmstats: 1, pseudo, at: Date.now(),
+      cards: Object.keys(mine).map(id => [id, mine[id].title, mine[id].rarity, mine[id].count]),
+      wish: Object.entries(db.wish).map(([id, w]) => [id, w[0], w[1]]),
+      seen, pro: proExport(pseudo)
+    };
+  }
   function exportMine() {
     const pseudo = (db.me || '').trim();
     if (!pseudo) return setStatus('Écris d’abord ton pseudo.', 'frStatus');
-    const mine = myCards();
-    const ids = Object.keys(mine);
-    if (!ids.length) return setStatus('Charge d’abord ta collection dans l’onglet Collection.', 'frStatus');
-    // Volontairement sans les prix : seulement ce que chacun voit de sa propre collection.
-    const data = {
-      wmstats: 1, pseudo, at: Date.now(),
-      cards: ids.map(id => [id, mine[id].title, mine[id].rarity, mine[id].count]),
-      wish: Object.entries(db.wish).map(([id, w]) => [id, w[0], w[1]]),
-      seen: observedExport()
-    };
+    if (!Object.keys(db.cards).length) return setStatus('Charge d’abord ta collection dans l’onglet Collection.', 'frStatus');
+    const data = friendExport(pseudo);
     download('wikimasters-collection-' + pseudo.replace(/[^\w-]+/g, '_') + '.json', JSON.stringify(data), 'application/json');
-    setStatus('Fichier créé : envoie-le à tes amis.', 'frStatus');
+    setStatus('Fichier créé : envoie-le à tes amis.' + (data.pro.length ? ' Il contient ' + plural(data.pro.length, 'relevé Pro', 'relevés Pro') + '.' : ''), 'frStatus');
   }
   // Le fichier d'un ami est une donnée extérieure : on ne garde que des champs simples, bornés.
   function parseFriend(text) {
@@ -1292,7 +1335,7 @@
     for (const c of (Array.isArray(j.wish) ? j.wish : []).slice(0, 5000)) {
       if (Array.isArray(c) && okKey(c[0]) && typeof c[1] === 'string') wish[c[0].slice(0, 64)] = [c[1].slice(0, 200), rarOf(c[2])];
     }
-    return { pseudo, at: typeof j.at === 'number' ? j.at : Date.now(), cards, wish, seen: isObj(j.seen) ? j.seen : null };
+    return { pseudo, at: typeof j.at === 'number' ? j.at : Date.now(), cards, wish, seen: isObj(j.seen) ? j.seen : null, pro: Array.isArray(j.pro) ? j.pro : null };
   }
 
   // ---------- sauvegarde : passer ses données d'un navigateur à l'autre ----------
@@ -1323,7 +1366,12 @@
     if (isObj(b.prices)) for (const id in b.prices) {
       const p = b.prices[id], cur = db.prices[id];
       if (!okKey(id) || !isObj(p)) continue;
-      if (!cur || num(p.at) > cur.at) { db.prices[id] = { at: num(p.at), sales: cleanSales(p.sales) }; n.prix++; }
+      if (!cur || num(p.at) > cur.at) {
+        db.prices[id] = { at: num(p.at), sales: cleanSales(p.sales) };
+        // Un relevé reçu d'un ami garde son origine.
+        if (typeof p.by === 'string' && p.by.trim()) db.prices[id].by = p.by.trim().slice(0, 40);
+        n.prix++;
+      }
     }
     if (Array.isArray(b.pulls)) {
       const seen = new Set(db.pulls.map(p => p.t));
@@ -1403,15 +1451,22 @@
   async function importFriend(file) {
     if (!file) return;
     try {
-      if (file.size > 5e6) throw new Error('fichier trop gros');
+      if (file.size > 2e7) throw new Error('fichier trop gros');
       const f = parseFriend(await file.text());
       if (!db.friends[f.pseudo] && Object.keys(db.friends).length >= 10) throw new Error('10 amis au maximum, retire-en un');
       db.friends[f.pseudo] = { at: f.at, cards: f.cards, wish: f.wish };
       ui.friend = f.pseudo;
       const prices = mergeObserved(f.seen);
       saveDb();
-      setStatus('Collection de ' + f.pseudo + ' importée : ' + plural(Object.keys(f.cards).length, 'carte différente', 'cartes différentes') +
-        (prices ? ', et ' + plural(prices, 'prix observé ajouté', 'prix observés ajoutés') : '') + '.', 'frStatus');
+      // Ses relevés Pro passent à part : s'ils ne tiennent pas dans le navigateur, on les retire sans perdre le reste.
+      const before = Object.assign({}, db.prices);
+      let pro = mergePro(f.pro, f.pseudo), full = false;
+      if (pro && !saveDb()) { db.prices = before; priceCache = new Map(); saveDb(); pro = 0; full = true; }
+      const parts = [plural(Object.keys(f.cards).length, 'carte différente', 'cartes différentes')];
+      if (prices) parts.push(plural(prices, 'prix observé ajouté', 'prix observés ajoutés'));
+      if (pro) parts.push(plural(pro, 'relevé Pro ajouté', 'relevés Pro ajoutés'));
+      setStatus('Collection de ' + f.pseudo + ' importée : ' + parts.slice(0, -1).join(', ') + (parts.length > 1 ? ' et ' : '') + parts[parts.length - 1] + '.' +
+        (full ? ' Ses relevés Pro n’ont pas été gardés : plus assez de place dans le navigateur.' : ''), 'frStatus');
     } catch (e) {
       setStatus('Import impossible : ' + e.message + '.', 'frStatus');
     }
@@ -1597,7 +1652,8 @@
     const title = p.n + ' vente' + (p.n > 1 ? 's' : '') + ', ' + age + ', écart ×' + fmt(p.rel.spread) +
       (p.trend ? (p.trend > 0 ? ', prix en hausse' : ', prix en baisse') : '') + (p.own ? ', d’après tes propres ventes et achats' : '') +
       (p.obs ? (p.exact ? ', d’après les prix finaux d’enchères relevés sur le marché'
-        : ', d’après des fins d’enchères observées (en partie la dernière offre vue, donc un minimum : « Relever les prix finaux » les précise)') : '');
+        : ', d’après des fins d’enchères observées (en partie la dernière offre vue, donc un minimum : « Relever les prix finaux » les précise)') : '') +
+      (p.by ? ', relevé partagé par ' + p.by : '');
     return h('span', { class: 'rel l' + p.rel.level, title }, REL[p.rel.level] + ARROW[p.trend]);
   }
   const rarBadge = r => h('span', { class: 'r r-' + r }, r);
@@ -1678,7 +1734,7 @@
       : pro === false
         ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Pour avoir des prix quand même : « Relever les fins d’enchères », ' +
           'puis quelques minutes plus tard « Relever les prix finaux », qui lit le prix exact de chaque enchère terminée. ' +
-          'S’y ajoutent tes propres ventes et achats, et les prix que tes amis partagent. Refais-le de temps en temps : les prix s’accumulent.'
+          'S’y ajoutent tes propres ventes et achats, et les prix que tes amis partagent, y compris leur historique Pro. Refais-le de temps en temps : les prix s’accumulent.'
         : 'Statut Pro pas encore détecté : recharge la page (F5).';
   }
 
@@ -1829,11 +1885,13 @@
     e.frSelect = h('select', { onchange: ev => { ui.friend = ev.target.value; renderFriends(); }, 'data-tip': 'L’ami dont tu veux comparer la collection avec la tienne.' });
     e.view_friends = h('div', null,
       h('div', { class: 'tools' },
-        group('Partager ma collection', 'Le fichier contient tes cartes, leur nombre d’exemplaires, ta liste de souhaits et les prix observés. Jamais l’historique réservé au Pro.',
+        group('Partager ma collection', 'Le fichier contient tes cartes, leur nombre d’exemplaires, ta liste de souhaits et tous les prix que tu as accumulés : ' +
+          'ton historique Pro, les prix observés, tes ventes et achats. Chez ton ami, ils s’ajoutent à ses prix.',
           h('input', { type: 'text', value: db.me || '', style: 'min-width:140px', placeholder: 'ton pseudo', 'data-tip': 'Le nom sous lequel tes amis verront ta collection.',
             oninput: ev => { db.me = ev.target.value.slice(0, 40); saveDb(); } }),
           btn('Exporter pour mes amis', 'Télécharge un fichier à envoyer à tes amis.', exportMine, 'pri')),
-        group('Ajouter un ami', null,
+        group('Ajouter un ami', 'Ses cartes et ses souhaits servent à la comparaison. Ses prix (historique Pro, prix observés, ventes et achats) ' +
+          's’ajoutent aux tiens et remplissent tes tableaux : pour chaque carte, le relevé le plus récent est gardé.',
           h('input', { type: 'file', accept: '.json,application/json', 'data-tip': 'Choisis le fichier que ton ami t’a envoyé.',
             onchange: ev => { importFriend(ev.target.files[0]); ev.target.value = ''; } })),
         group('Comparer', null, e.frSelect,
@@ -3115,7 +3173,7 @@
       const med = Math.max(p.med, DISCARD), mx = maxBid(p);
       text = (p.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(med)) + ' ₩';
       border = ['#6b7280', '#f59e0b', '#10b981'][p.rel.level];
-      lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
+      lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
         if (au.s) {
