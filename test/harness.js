@@ -13,14 +13,15 @@ const EXPOSE = [
   'mergeObserved', 'ingestSales', 'ingestFinal', 'ingestMarket', 'settleObserved', 'fillPrices', 'backupData',
   'poolOn', 'poolQueue', 'poolFetch', 'poolFlush', 'poolTick', 'poolBackfill', 'poolPull', 'poolPullMine', 'poolWant', 'poolKnown', 'poolPrefetch',
   'keepPerRarity', 'rarityOf', 'seenRarity', 'askOf', 'dealPct', 'maxBid', 'tidyAuctions', 'addObserved', 'resetPrices',
-  'saveDb', 'loadDb', 'trimHistory', 'setAccount', 'clearAccount', 'ingestCollection', 'ingestPro'
+  'saveDb', 'loadDb', 'trimHistory', 'setAccount', 'clearAccount', 'ingestCollection', 'ingestPro',
+  'sellingRows', 'sellingStats', 'renderSales', 'minuteTick'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +
   SRC.slice(END);
 
 class El {
-  constructor(tag) { this.tagName = tag; this.title = ''; this.textContent = ''; this.className = ''; this.children = []; this.attrs = {}; this.style = {}; }
+  constructor(tag) { this.nodeType = 1; this.tagName = tag; this.title = ''; this.textContent = ''; this.className = ''; this.children = []; this.attrs = {}; this.style = {}; this.dataset = {}; this.classList = { add() {}, remove() {}, toggle() {}, contains: () => false }; }
   setAttribute(k, v) { this.attrs[k] = String(v); }
   addEventListener() {}
   append(...k) { this.children.push(...k); }

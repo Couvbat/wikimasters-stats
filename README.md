@@ -79,7 +79,18 @@ Un clic sur le nom d'une carte ouvre, dans un nouvel onglet, la page Collection 
 
 ### Mes ventes
 
-Le bilan de tes enchères : ventes réussies et invendus, revenus, achats, solde, détail par rareté, et comparaison entre mise de départ et prix obtenu. Le site ne donne que tes enchères les plus récentes ; le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s'allonge avec le temps.
+**Tes ventes en cours**, en haut de l'onglet : le bilan de tes annonces en cours, lu à chaque passage sur la page Marché.
+- Des tuiles :
+  - combien sont en vente, sur tes places de vente ;
+  - combien ont reçu une offre ;
+  - ce que tu toucherais si tout partait maintenant ;
+  - la valeur de ces cartes ;
+  - combien sont encore sous leur valeur.
+- Un tableau, une ligne par annonce : mise de départ, offre actuelle (un lien vers l'annonce), valeur à la rareté de l'exemplaire, écart en vert ou en rouge, et temps restant.
+- L'étiquette « mise > valeur » signale une annonce sans offre dont la mise de départ dépasse la valeur : elle risque de rester invendue.
+- Une shiny porte ✦ sans comparaison, comme ailleurs.
+
+Le bilan de tes enchères terminées : ventes réussies et invendus, revenus, achats, solde, détail par rareté, et comparaison entre mise de départ et prix obtenu. Le site ne donne que tes enchères les plus récentes ; le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s'allonge avec le temps.
 
 ### Échanges
 

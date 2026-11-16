@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.20.0
+// @version      1.21.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -38,7 +38,7 @@
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
       auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
-      friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [],
+      friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0,
       pool: { url: '', key: '', on: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
     };
   }
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.20.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.21.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -94,7 +94,7 @@
   // wmstats.v1.u.<compte> ; les prix du marché et les réglages d'affichage sont communs à tous, sous wmstats.v1.
   // Tant que le compte n'est pas reconnu, sa partie personnelle est sous wmstats.v1.u._.
   const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt',
-    'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'friends', 'me', 'sell', 'wishHideOwned'];
+    'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'selling', 'sellingAt', 'friends', 'me', 'sell', 'wishHideOwned'];
   const PERSONAL_SET = new Set(PERSONAL);
   const acctKey = uid => KEY + '.u.' + (uid || '_');
   function personalDefaults() {
@@ -116,6 +116,7 @@
     if (base.sell.v !== 2) { base.sell.doubt = true; base.sell.v = 2; }
     if (!Array.isArray(base.pulls)) base.pulls = [];
     if (!Array.isArray(base.bids)) base.bids = [];
+    if (!Array.isArray(base.selling)) base.selling = [];
     base.pool = Object.assign(defaults().pool, isObj(base.pool) ? base.pool : {});
     if (!Array.isArray(base.poolQ)) base.poolQ = [];
     for (const k of ['cards', 'prices', 'pro', 'auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov']) {
@@ -308,7 +309,20 @@
     if (!j || typeof j !== 'object') return;
     const m = db.market, now = Date.now();
     if (typeof j.maxConcurrentAuctions === 'number') m.max = j.maxConcurrentAuctions;
-    if (Array.isArray(j.selling)) m.selling = j.selling.map(a => a && a.card_id).filter(Boolean);
+    if (Array.isArray(j.selling)) {
+      m.selling = j.selling.map(a => a && a.card_id).filter(Boolean);
+      // Tes mises en vente en cours, en entier, pour leur bilan dans l'onglet Mes ventes.
+      db.selling = j.selling.filter(a => a && okKey(a.id) && okKey(a.card_id)).slice(0, 50).map(a => {
+        const end = Date.parse(a.end_at), bid = a.current_bid != null;
+        return {
+          i: a.id, c: a.card_id, t: str((a.card && a.card.wikipedia_title) || '?', 200), r: rarOf(a.snapshot_rarity || (a.card && a.card.rarity)),
+          base: num(a.base_amount), l: num(a.listing_base_amount != null ? a.listing_base_amount : a.base_amount),
+          o: bid ? num(typeof a.effective_bid === 'number' ? a.effective_bid : a.current_bid) : null, b: bid,
+          e: Number.isFinite(end) ? end : 0, s: a.is_shiny ? 1 : 0
+        };
+      });
+      db.sellingAt = now;
+    }
     // Tes propres listes (Mes enchères, Mes ventes, Gagnées, Historique) : on retient la carte de chaque annonce,
     // pour poser la pastille de valeur. Seules les annonces en cours gardent leur prix, comparé à la valeur.
     for (const k of ['bidding', 'selling', 'won', 'history']) {
@@ -2399,7 +2413,7 @@
     // ----- Mes ventes -----
     e.view_sales = h('div', null,
       h('div', { class: 'tools' }, group('Mettre à jour', null, e.mine2)),
-      e.salesStatus, e.salesTiles, e.salesBody,
+      e.salesStatus, (e.sellingBody = h('div')), e.salesTiles, e.salesBody,
       fold('Comment lire ce bilan ?', h('div', { class: 'note' },
         'Le site ne donne que tes enchères les plus récentes. Le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s’allonge avec le temps. ',
         'La comparaison à la valeur médiane est indicative : cette médiane inclut ta propre vente.')));
@@ -2656,15 +2670,82 @@
   }
 
   // ----- onglet Mes ventes -----
+  // ----- Mes ventes en cours -----
+  // Tes annonces en cours, avec la valeur de chaque carte à la rareté de son exemplaire (une shiny n'est pas comparée).
+  // cur : le prix actuel de l'annonce, l'offre s'il y en a une, sinon la mise de départ.
+  function sellingRows() {
+    const now = Date.now();
+    return (db.selling || []).map(x => {
+      const price = x.s ? null : priceOf(x.c, x.r);
+      return Object.assign({}, x, { price, value: price && price.n ? Math.max(price.med, DISCARD) : null,
+        live: !x.e || x.e > now, cur: x.o != null ? x.o : x.base });
+    });
+  }
+  function sellingStats(rows) {
+    const live = rows.filter(r => r.live), withOffer = live.filter(r => r.b);
+    const priced = live.filter(r => !r.s && r.value != null);
+    const max = num(db.market.max);
+    return {
+      live, withOffer, overBase: withOffer.filter(r => r.o > r.base),
+      revenue: withOffer.reduce((a, r) => a + r.o, 0),
+      value: priced.reduce((a, r) => a + r.value, 0), unknown: live.filter(r => !r.s && r.value == null).length,
+      below: priced.filter(r => r.cur < r.value), highBase: priced.filter(r => !r.b && r.base > r.value),
+      max, free: max ? Math.max(0, max - live.length) : null
+    };
+  }
+  // Le bloc en haut de l'onglet Mes ventes. Renvoie true s'il est affiché.
+  function renderSelling(hasHistory) {
+    const e = ui.el;
+    if (!e.sellingBody) return false;
+    if (!db.selling || !db.selling.length) { e.sellingBody.replaceChildren(); return false; }
+    const rows = sellingRows(), s = sellingStats(rows), now = Date.now();
+    const gapCell = r => {
+      if (r.s) return h('span', { title: 'Shiny : le site ne distingue pas les ventes shiny, pas de comparaison possible.' }, '✦');
+      if (r.value == null) return '—';
+      // Pas d'arrondi avant de choisir le signe : avec une valeur de 100,5 ₩, une offre à 100 ₩ est bien en dessous (−0,5 ₩).
+      const d = r.cur - r.value;
+      return [h('span', { class: 'tag ' + (d >= 0 ? 'deal' : 'bad'), title: (r.b ? 'Offre actuelle' : 'Mise de départ') + ' moins la valeur médiane de la carte' },
+        (d >= 0 ? '+' : '−') + fmt(Math.abs(d)) + ' ₩'),
+        !r.b && r.base > r.value ? [' ', h('span', { class: 'tag bad', title: 'Mise de départ au-dessus de la valeur médiane : l’annonce risque de rester invendue.' }, 'mise > valeur')] : null];
+    };
+    const kids = [
+      h('h2', null, 'Mes ventes en cours', help('Tes annonces en cours, telles que le site les montrait ' + (db.sellingAt ? ago(db.sellingAt) : '') +
+        '. Ouvre la page Marché du site, ou clique sur « Actualiser », pour les mettre à jour. Valeur : médiane des ventes à la rareté de l’exemplaire.')),
+      h('div', { class: 'tiles' },
+        tile('En vente', fmt(s.live.length) + (s.max ? ' / ' + s.max : ''), s.free == null ? null : plural(s.free, 'place libre', 'places libres')),
+        tile('Avec une offre', fmt(s.withOffer.length), s.withOffer.length
+          ? plural(s.overBase.length, 'au-dessus de sa mise de départ', 'au-dessus de leur mise de départ') : 'aucune pour l’instant'),
+        tile('Si tout part maintenant', fmt(s.revenue) + ' ₩', 'somme des offres actuelles', 'Ce que tu toucherais si les enchères se terminaient sur les offres actuelles.'),
+        tile('Valeur de ces cartes', fmt(Math.round(s.value)) + ' ₩', s.unknown ? plural(s.unknown, 'carte sans prix', 'cartes sans prix') : 'valeur médiane',
+          'Somme des valeurs médianes, chacune à la rareté de son exemplaire. Les shiny ne sont pas comptées.'),
+        tile('Sous la valeur', fmt(s.below.length), s.below.length ? s.below.slice(0, 2).map(r => r.t).join(', ') + (s.below.length > 2 ? '…' : '') : 'aucune',
+          'Annonces dont le prix actuel (l’offre, sinon la mise de départ) est encore sous la valeur médiane : elles risquent de partir en dessous de leur prix.')),
+      h('div', { class: 'scroll', style: 'margin-bottom:18px' }, sortTable('selling', [
+        { t: 'Carte', left: true, asc: true, get: r => r.t.toLowerCase(), cell: r => [rarBadge(r.r), ' ', r.t, r.s ? ' ✦' : ''] },
+        { t: 'Mise de départ', get: r => r.base, cell: r => fmt(r.base) + ' ₩' + (r.l && r.l !== r.base ? ' (au départ ' + fmt(r.l) + ' ₩)' : '') },
+        { t: 'Offre actuelle', get: r => r.o, cell: r => (r.b ? auctionLink(r.i, h('b', null, fmt(r.o) + ' ₩ •'), 'Une offre a été faite')
+          : auctionLink(r.i, h('span', { class: 'est' }, 'pas d’offre'), 'Pas encore d’offre')) },
+        { t: 'Valeur', get: r => r.value, cell: r => (r.value == null ? '—' : (r.price.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(r.value)) + ' ₩') },
+        { t: 'Écart', get: r => (r.value == null || r.s ? null : r.cur - r.value), cell: gapCell },
+        { t: 'Fin', asc: true, get: r => r.e || null, cell: r => (!r.live ? 'terminée' : r.e ? 'dans ' + leftTime(r.e - now) : '—') }
+      ], rows.sort((a, b) => (b.live - a.live) || ((a.e || Infinity) - (b.e || Infinity))), renderSales))
+    ];
+    // replaceChildren, contrairement à h(), afficherait une valeur vide comme le texte « null » : on n'ajoute le titre que s'il sert.
+    if (hasHistory) kids.push(h('h2', null, 'Tes enchères terminées'));
+    e.sellingBody.replaceChildren(...kids);
+    return true;
+  }
   function renderSales() {
     const e = ui.el;
     const A = Object.values(db.auctions)
       .map(a => ({ kind: a[0], cardId: a[1], title: a[2], rarity: a[3], list: a[4], base: a[5], final: a[6], t: a[7] }))
       .sort(byDateDesc);
+    const live = renderSelling(A.length > 0);
     if (!A.length) {
       e.salesTiles.replaceChildren();
-      e.salesBody.replaceChildren(h('div', { class: 'empty' },
-        'Aucune enchère en mémoire. Clique sur « Actualiser depuis la page Marché », ou ouvre simplement la page Marché du site.'));
+      e.salesBody.replaceChildren(h('div', { class: 'empty' }, live
+        ? 'Aucune enchère terminée en mémoire pour l’instant : le bilan de tes ventes passées s’affichera ici.'
+        : 'Aucune enchère en mémoire. Clique sur « Actualiser depuis la page Marché », ou ouvre simplement la page Marché du site.'));
       return;
     }
     const sold = A.filter(a => a.kind === 's'), unsold = A.filter(a => a.kind === 'u'), bought = A.filter(a => a.kind === 'b');
@@ -3654,7 +3735,13 @@
   window.addEventListener('hashchange', () => openSellForm());
 
   // Chaque minute, les enchères observées qui viennent de finir deviennent des prix.
-  setInterval(() => { if (!job.running && settleObserved()) { saveDb(); refresh(); } }, 60000);
+  // Toutes les minutes : les enchères suivies qui viennent de finir, et le temps restant de tes ventes en cours si l'onglet
+  // Mes ventes est affiché (une annonce terminée sort des tuiles sans attendre une nouvelle réponse du Marché).
+  function minuteTick() {
+    if (!job.running && settleObserved()) { saveDb(); refresh(); return; }
+    if (ui.open && ui.tab === 'sales' && db.selling && db.selling.length) renderSales();
+  }
+  setInterval(minuteTick, 60000);
   setInterval(() => { if (autoDue(Date.now())) autoRun(); }, 60000);
   setInterval(() => { poolTick(Date.now()); }, POOL_FLUSH_EVERY);
 
