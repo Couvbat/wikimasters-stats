@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.23.3
+// @version      1.23.4
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.3';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.4';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -315,12 +315,19 @@
       .filter(s => s && typeof s.final_price === 'number')
       .map(s => (rarOk(s.rarity) ? { p: s.final_price, t: s.settled_at || '', r: s.rarity } : { p: s.final_price, t: s.settled_at || '' })));
     db.prices[cardId] = { at: Date.now(), sales };
-    if (sales.length) poolQueue('p', [cardId, db.prices[cardId].at, sales.map(s => [s.p, s.t, s.r || null]), rarity && rarity !== '?' ? rarity : null]);
+    if (sales.length) poolQueue('p', [cardId, rarity && rarity !== '?' ? rarity : null]);
     saveDb();
     refresh();
   }
 
   // Page Marché : enchères en cours, tes ventes en cours, et ton propre historique de ventes et d'achats.
+  // Une enchère en cours vue sur le site (liste du Marché ou page de l'enchère) : sa carte, son prix, la rareté de son exemplaire.
+  function seeLive(id, a, price) {
+    const prev = seenAuction.get(id);
+    seenAuction.set(id, { c: a.card_id, a: price, b: a.current_bid != null, m: !!db.userId && a.current_bidder_id === db.userId,
+      bid: !!(prev && prev.bid) || db.bids.some(x => x.i === id), own: !!db.userId && a.seller_id === db.userId, s: !!a.is_shiny,
+      r: rarOf(a.snapshot_rarity || (a.card && a.card.rarity)) });
+  }
   function ingestMarket(j) {
     if (!j || typeof j !== 'object') return;
     const m = db.market, now = Date.now();
@@ -386,12 +393,7 @@
         if (!a || typeof a.card_id !== 'string' || BAD_KEYS.has(a.card_id) || a.final_price != null) continue;
         const price = typeof a.effective_bid === 'number' ? a.effective_bid : a.base_amount;
         if (typeof price !== 'number') continue;
-        if (okKey(a.id)) {
-          const prev = seenAuction.get(a.id);
-          seenAuction.set(a.id, { c: a.card_id, a: price, b: a.current_bid != null, m: !!db.userId && a.current_bidder_id === db.userId,
-            bid: !!(prev && prev.bid) || db.bids.some(x => x.i === a.id), own: !!db.userId && a.seller_id === db.userId, s: !!a.is_shiny,
-            r: rarOf(a.snapshot_rarity || (a.card && a.card.rarity)) });
-        }
+        if (okKey(a.id)) seeLive(a.id, a, price);
         if (a.card && typeof a.card.wikipedia_title === 'string') seenTitle.set(a.card.wikipedia_title, a.card_id);
         if (a.card && rarOk(a.card.rarity)) seenRarity.set(a.card_id, a.card.rarity); // rareté actuelle de la carte
         const end = Date.parse(a.end_at);
@@ -494,7 +496,12 @@
     const a = j && j.auction;
     if (!isObj(a) || !okKey(id)) return false;
     if (a.card && typeof a.card.wikipedia_title === 'string' && okKey(a.card_id)) seenTitle.set(a.card.wikipedia_title, a.card_id);
-    if (!a.settled_at && a.final_price == null) return false; // pas encore réglée
+    if (!a.settled_at && a.final_price == null) {
+      // Pas encore réglée : on la retient, pour que la pastille de la page juge la carte à la rareté de cet exemplaire.
+      const price = typeof a.effective_bid === 'number' ? a.effective_bid : a.current_bid != null ? a.current_bid : a.base_amount;
+      if (okKey(a.card_id) && typeof price === 'number') seeLive(id, a, price);
+      return false;
+    }
     const q = db.finQ[id];
     delete db.finQ[id];
     if (!okKey(a.card_id) || a.is_shiny || (db.userId && a.seller_id === db.userId)) return true;
@@ -686,8 +693,9 @@
   const POOL_BATCH = { p: 2000, s: 5000, u: 5000 };
   const poolUrlOk = u => /^https:\/\/[^\s/]+/.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u);
   const poolOn = () => !!(db.pool && db.pool.on && db.pool.key && poolUrlOk(db.pool.url || ''));
-  // type : 'p' relevé Pro [carte, date du relevé, [[prix, date], …], rareté] ; 's' vente [carte, prix, date, écart, exact, enchère, rareté] ;
-  // 'u' enchère finie sans vente.
+  // type : 'p' relevé Pro [carte, rareté] ; 's' vente [carte, prix, date, écart, exact, enchère, rareté] ; 'u' enchère finie sans vente.
+  // Un relevé Pro en file ne garde que la carte : son historique est relu dans db.prices au moment de l'envoi. Le copier dans la file
+  // doublait la place prise par tout l'historique Pro à l'activation du partage, et le navigateur plein n'enregistrait plus rien.
   function poolQueue(type, entry) {
     if (!poolOn()) return;
     db.poolQ.push([type, entry]);
@@ -722,6 +730,14 @@
     p.retryAt = now + p.wait;
   }
   const poolOk = () => { db.pool.err = ''; db.pool.wait = 0; db.pool.retryAt = 0; };
+  // Le relevé Pro à envoyer pour une entrée de la file : [carte, date du relevé, [[prix, date, rareté], …], rareté].
+  // null si la carte n'a plus de relevé à elle (remplacé depuis par celui d'un ami, déjà dans le pool).
+  function proEntry(e) {
+    if (Array.isArray(e[2])) return e; // file d'une version précédente : l'historique y est déjà
+    const p = db.prices[e[0]];
+    if (!isObj(p) || p.by || !Array.isArray(p.sales) || !p.sales.length) return null;
+    return [e[0], num(p.at), p.sales.map(s => [s.p, s.t, s.r || null]), e[1] || null];
+  }
   const poolState = { flushing: false };
   async function poolFlush(now) {
     now = now || Date.now();
@@ -732,15 +748,17 @@
     for (const item of db.poolQ) {
       const k = item[0];
       if (!(k in count) || count[k] >= POOL_BATCH[k]) continue;
-      count[k]++;
+      const e = k === 'p' ? proEntry(item[1]) : item[1];
       batch.push(item);
-      (k === 'p' ? body.pro : k === 's' ? body.sales : body.unsold).push(item[1]);
+      if (!e) continue;
+      count[k]++;
+      (k === 'p' ? body.pro : k === 's' ? body.sales : body.unsold).push(e);
     }
     try {
-      await poolFetch('/v1/push', body);
+      if (count.p + count.s + count.u) await poolFetch('/v1/push', body);
       const sent = new Set(batch);
       db.poolQ = db.poolQ.filter(x => !sent.has(x));
-      db.pool.sent = num(db.pool.sent) + batch.length;
+      db.pool.sent = num(db.pool.sent) + count.p + count.s + count.u;
       db.pool.pushAt = Date.now();
       poolOk();
     } catch (e) {
@@ -757,7 +775,7 @@
   function poolBackfill() {
     for (const id in db.prices) {
       const p = db.prices[id];
-      if (okKey(id) && isObj(p) && !p.by && Array.isArray(p.sales) && p.sales.length) poolQueue('p', [id, num(p.at), p.sales.map(s => [s.p, s.t, s.r || null]), null]);
+      if (okKey(id) && isObj(p) && !p.by && Array.isArray(p.sales) && p.sales.length) poolQueue('p', [id, null]);
     }
     for (const id in db.auctions) {
       const a = db.auctions[id];
@@ -3999,12 +4017,21 @@
   function auctionInfo(id) {
     if (seenAuction.has(id)) return seenAuction.get(id);
     const o = db.obs[id];
-    if (o) return { c: o[0], a: o[1], b: !!o[2] };
+    if (o) return { c: o[0], a: o[1], b: !!o[2], r: o[5] };
     for (const cid in db.market.asks) {
       const x = (db.market.asks[cid].list || []).find(y => y.i === id);
-      if (x) return { c: cid, a: x.a, b: x.b };
+      if (x) return { c: cid, a: x.a, b: x.b, r: x.r };
     }
     return null;
+  }
+  // L'annonce d'une carte affichée : celle de son lien vers le Marché. Sur la page d'une enchère, la carte sans lien est celle
+  // mise en vente : sans cela, la pastille la jugeait à la rareté d'un autre exemplaire (le tien, ou celui vu ailleurs).
+  function auctionFor(link, title) {
+    if (link) return auctionInfo(link.getAttribute('href').split('/')[2]);
+    const m = location.pathname.match(/^\/marketplace\/([0-9a-f-]{36})$/);
+    const au = m ? auctionInfo(m[1]) : null;
+    const byTitle = title ? cardByTitle(title) : null;
+    return au && (!title || au.c === byTitle) ? au : null;
   }
   function overlaySoon() {
     titleIdx = null;
@@ -4074,8 +4101,7 @@
         const title = ((h3 && h3.textContent) || (img && img.alt) || '').trim();
         const link = card.closest('a[href^="/marketplace/"]');
         if (!title && !link) continue;
-        const auId = link ? link.getAttribute('href').split('/')[2] : '';
-        const au = auId ? auctionInfo(auId) : null;
+        const au = auctionFor(link, title);
         const cardId = au ? au.c : title ? cardByTitle(title) : null;
         if (cardId && !priceOf(cardId)) poolWant(cardId); // le groupe la connaît peut-être
         const b = cardId ? badgeFor(cardId, au, mine) : null;

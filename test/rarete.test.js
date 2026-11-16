@@ -150,6 +150,25 @@ test('pastille : une annonce UR affiche la valeur UR', () => {
   assert.match(b.text, /7[\s  ]?000/);
 });
 
+test('page d’une enchère : la pastille prend la rareté de l’exemplaire en vente, pas celle de ton exemplaire', () => {
+  const { t, location } = load();
+  mixedCard(t);
+  t.db.cards = { x1: { cardId: 'C', title: 'C', rarity: 'UR', count: 1 } }; // ton exemplaire est UR
+  t.resetPrices();
+  assert.match(t.badgeFor('C', null, {}).text, /7[\s  ]?000/, 'sans l’enchère, la pastille prend la valeur UR : c’était le bug');
+  const id = '11111111-2222-3333-4444-555555555555';
+  t.ingestFinal(id, { auction: { id, card_id: 'C', base_amount: 1100, current_bid: 1774, effective_bid: 1774,
+    end_at: new Date(Date.now() + 3600e3).toISOString(), snapshot_rarity: 'L', card: { wikipedia_title: 'C', rarity: 'UR' } } });
+  location.pathname = '/marketplace/' + id;
+  const au = t.auctionFor(null, 'C');
+  assert.equal(au && au.r, 'L', 'la carte sans lien, sur la page d’une enchère, est celle mise en vente');
+  assert.equal(au.a, 1774);
+  assert.match(t.badgeFor('C', au, {}).text, /13[\s  ]?4/, 'valeur L, pas la valeur UR');
+  assert.equal(t.auctionFor(null, 'Autre carte'), null, 'une autre carte de la page n’est pas l’enchère');
+  location.pathname = '/collection';
+  assert.equal(t.auctionFor(null, 'C'), null);
+});
+
 // ----- Tâche 4 : la rareté de chaque vente circule dans le pool -----
 test('poolPull garde la rareté de chaque vente reçue', async () => {
   const { reply } = require('./harness');
