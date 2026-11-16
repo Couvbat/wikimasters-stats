@@ -36,7 +36,7 @@ test('health répond sans clé', async () => {
   const r = await req('GET', '/v1/health');
   assert.equal(r.status, 200);
   assert.deepEqual(r.json, { ok: true, version: VERSION });
-  assert.equal(VERSION, '1.0.0');
+  assert.equal(VERSION, '1.1.0');
 });
 
 test('push : sans clé ou mauvaise clé, 401 ; bonne clé, 200', async () => {

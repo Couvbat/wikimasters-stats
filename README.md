@@ -192,7 +192,7 @@ Le partage est désactivé par défaut. La ligne d'état indique ce qui a été 
 
 Si le pool est injoignable (serveur éteint, connexion coupée), le script continue normalement avec tes propres données. Les envois attendent et repartent tout seuls au retour du pool.
 
-Pour héberger un pool : voir [server/README.md](server/README.md). C'est un petit serveur Node, sans dépendance, prévu pour un NAS TrueNAS et un tunnel Cloudflare.
+Pour héberger un pool : voir [server/README.md](server/README.md). C'est un petit serveur Node, sans dépendance, prévu pour un NAS TrueNAS et un tunnel Cloudflare. En attendant le NAS, il peut tourner sur ton PC (`server/start-local.cmd`, adresse `http://localhost:8787`), puis tout envoyer au NAS le jour où il est en ligne.
 
 ### Sauvegarde
 

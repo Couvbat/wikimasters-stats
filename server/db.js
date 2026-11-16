@@ -19,6 +19,10 @@ CREATE INDEX IF NOT EXISTS sales_card ON sales(card, sold_at DESC);
 CREATE INDEX IF NOT EXISTS sales_same ON sales(card, sold_at, price);
 CREATE UNIQUE INDEX IF NOT EXISTS sales_auction ON sales(auction) WHERE auction IS NOT NULL;
 CREATE TABLE IF NOT EXISTS pro_fetch (card TEXT PRIMARY KEY, at INTEGER NOT NULL, member TEXT);
+-- Synchronisation vers un autre pool (mode local, puis NAS) : la position atteinte, et les enchères finies sans vente reçues.
+CREATE INDEX IF NOT EXISTS sales_received ON sales(received_at, id);
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS unsold_log (auction TEXT PRIMARY KEY, at INTEGER NOT NULL);
 `;
 
 function openDb(path) {
@@ -31,7 +35,8 @@ function openDb(path) {
     insert: db.prepare('INSERT INTO sales (card, price, sold_at, kind, auction, gap, rarity, member, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'),
     upgrade: db.prepare('UPDATE sales SET price = ?, sold_at = ?, kind = ?, gap = 0, member = ?, received_at = ? WHERE id = ?'),
     setKind: db.prepare('UPDATE sales SET kind = ?, gap = 0, auction = COALESCE(auction, ?), member = ?, received_at = ? WHERE id = ?'),
-    setAuction: db.prepare('UPDATE sales SET auction = ? WHERE id = ?'),
+    setAuction: db.prepare('UPDATE sales SET auction = ?, received_at = ? WHERE id = ?'),
+    logUnsold: db.prepare('INSERT INTO unsold_log (auction, at) VALUES (?, ?) ON CONFLICT(auction) DO UPDATE SET at = excluded.at'),
     remove: db.prepare('DELETE FROM sales WHERE id = ?'),
     dropProv: db.prepare("DELETE FROM sales WHERE auction = ? AND kind = 'prov'"),
     proFetch: db.prepare('INSERT INTO pro_fetch (card, at, member) VALUES (?, ?, ?) ON CONFLICT(card) DO UPDATE SET at = excluded.at, member = excluded.member WHERE excluded.at > pro_fetch.at'),
@@ -60,7 +65,7 @@ function upsertSale(db, r, member, now) {
     if (byAuc.kind !== 'prov' || r.kind === 'prov') return null;
     if (same && same.kind !== 'prov') {
       q.remove.run(byAuc.id);
-      if (!same.auction) q.setAuction.run(r.auction, same.id);
+      if (!same.auction) q.setAuction.run(r.auction, now, same.id);
       return 'upgraded';
     }
     q.upgrade.run(r.price, r.t, r.kind, member, now, byAuc.id);
@@ -68,7 +73,7 @@ function upsertSale(db, r, member, now) {
   }
   if (same) {
     if (same.kind === 'prov' && r.kind !== 'prov') { q.setKind.run(r.kind, r.auction, member, now, same.id); return 'upgraded'; }
-    if (r.auction && !same.auction) { q.setAuction.run(r.auction, same.id); return 'upgraded'; }
+    if (r.auction && !same.auction) { q.setAuction.run(r.auction, now, same.id); return 'upgraded'; }
     return null;
   }
   q.insert.run(r.card, r.price, r.t, r.kind, r.auction, r.gap || 0, r.rarity, member, now);
@@ -85,7 +90,10 @@ function applyPush(db, push, now) {
       db.q.proFetch.run(e.card, Math.min(e.at, now), push.member);
     }
     for (const s of push.sales) count(upsertSale(db, { ...s, kind: s.x ? 'exact' : 'prov' }, push.member, now));
-    for (const id of push.unsold) out.dropped += Number(db.q.dropProv.run(id).changes);
+    for (const id of push.unsold) {
+      out.dropped += Number(db.q.dropProv.run(id).changes);
+      db.q.logUnsold.run(id, now); // à transmettre au pool du NAS, qui a peut-être ce prix provisoire
+    }
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
@@ -134,4 +142,12 @@ function purgeMember(db, member) {
   return n;
 }
 
-module.exports = { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember };
+function getMeta(db, k) {
+  const r = db.prepare('SELECT v FROM meta WHERE k = ?').get(k);
+  return r ? r.v : null;
+}
+function setMeta(db, k, v) {
+  db.prepare('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(k, String(v));
+}
+
+module.exports = { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember, getMeta, setMeta };

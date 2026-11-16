@@ -14,6 +14,34 @@ Toutes les ventes reçues, sans limite de durée :
 
 Pour chaque vente, il garde aussi le pseudo du membre qui l'a envoyée. Il ne reçoit jamais la collection d'un membre, ni ses souhaits, ni rien de son compte.
 
+## En attendant le NAS : le pool sur ton PC (temporaire)
+
+Tant que le pool du NAS n'est pas en ligne, tu peux le faire tourner sur ton PC. Tes navigateurs de ce PC (Chrome, Zen) et tes comptes partagent alors leurs prix, sans NAS ni tunnel. Le jour où le NAS est prêt, tout ce que ce pool a reçu y part tout seul, et tu n'as plus besoin de lui.
+
+Il faut Node 24 ou plus récent ([nodejs.org](https://nodejs.org)).
+
+**Démarrer**
+
+1. Double-clique sur `server/start-local.cmd`. La fenêtre affiche l'adresse (`http://localhost:8787`) et la clé. La clé est créée la première fois, dans `Documents\wm-pool\cle.txt`, à côté de la base `pool.db`.
+2. Dans le script, onglet Réglages, groupe « Pool partagé du groupe » :
+   1. colle l'adresse et la clé ;
+   2. clique « Tester » ;
+   3. coche « Partager et recevoir les prix ».
+3. Laisse la fenêtre ouverte (ou réduis-la) pendant que tu joues.
+
+Chrome peut te demander si wiki-masters.com a le droit d'accéder aux applications de cet appareil : accepte, c'est le pool local. Seuls les navigateurs de ce PC peuvent l'atteindre : tes potes devront attendre le NAS.
+
+**Quand le pool du NAS est en ligne**
+
+1. Dans `Documents\wm-pool`, crée un fichier `amont.txt` avec, sur une seule ligne, l'adresse du NAS et sa clé, séparées par un espace :
+   `https://pool.ton-domaine.fr la-cle-du-nas`
+2. Ferme la fenêtre du pool local et relance `start-local.cmd`. Elle affiche « Synchro : vers https://pool… ». Le pool local envoie tout ce qu'il a reçu, puis il continue toutes les 5 minutes.
+3. Vérifie que c'est passé : `http://localhost:8787/v1/health` affiche `"upstream":{"at":…,"err":"","sent":…}`, avec un `err` vide.
+4. Dans le script, remplace l'adresse et la clé par celles du NAS, puis clique « Tester ».
+5. Ferme la fenêtre du pool local. Tu peux garder `Documents\wm-pool` quelque temps par sécurité, puis le supprimer.
+
+Renvoyer deux fois les mêmes ventes ne crée aucun doublon, et si le NAS ne répond pas, rien n'est perdu : le passage suivant reprend là où il s'était arrêté. Pour forcer un envoi sans attendre : `node server/admin.js sync <adresse> <clé>`, avec `DB_PATH` pointant vers `Documents\wm-pool\pool.db`.
+
 ## Installation sur TrueNAS (25.10)
 
 ### 1. Le dataset
@@ -76,6 +104,7 @@ Dans TrueNAS : Apps → wm-pool → Shell (conteneur `wm-pool`) :
 ```bash
 node /app/admin.js stats            # nombre de ventes, de cartes et de membres
 node /app/admin.js purge <membre>   # retire tout ce qu'un membre a envoyé
+node /app/admin.js sync <adresse> <clé>   # envoie ce pool vers un autre (le pool local vers le NAS)
 ```
 
 ## Si le NAS ou ta connexion tombe
