@@ -89,8 +89,15 @@ Un clic sur le nom d'une carte ouvre, dans un nouvel onglet, la page Collection 
 - Un tableau, une ligne par annonce : mise de départ, offre actuelle (un lien vers l'annonce), valeur à la rareté de l'exemplaire, écart en vert ou en rouge, et temps restant.
 - L'étiquette « mise > valeur » signale une annonce sans offre dont la mise de départ dépasse la valeur : elle risque de rester invendue.
 - Une shiny porte ✦ sans comparaison, comme ailleurs.
+- **Origine et profit** : pour chaque annonce, d'où vient la carte et ce qu'elle te rapporterait au prix actuel.
+  - Achetée aux enchères : le prix que tu as payé.
+  - Tirée d'un booster : 0 ₩.
+  - Reçue par échange : « ≈ » ce que tu as donné, réparti entre les cartes reçues.
+  - Le script retient la dernière acquisition de cette carte, à la même rareté, avant la mise en vente.
+  - La tuile « Profit si tout part maintenant » fait le total. Une carte d'origine inconnue (booster ouvert avant la version 1.3, achat trop ancien) n'y est pas comptée.
+  - Aucune commission du Marché n'est connue, donc le profit est calculé sans commission.
 
-Le bilan de tes enchères terminées : ventes réussies et invendus, revenus, achats, solde, détail par rareté, et comparaison entre mise de départ et prix obtenu. Le site ne donne que tes enchères les plus récentes ; le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s'allonge avec le temps.
+Le bilan de tes enchères terminées : ventes réussies et invendus, revenus, achats, solde, détail par rareté, comparaison entre mise de départ et prix obtenu, et profit de chaque vente réussie quand l'origine de la carte est connue. Le site ne donne que tes enchères les plus récentes ; le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s'allonge avec le temps.
 
 ### Échanges
 
