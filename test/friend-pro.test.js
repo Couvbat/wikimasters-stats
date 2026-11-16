@@ -33,17 +33,17 @@ test('friendExport partage les relevés Pro non vides, les plus récents d’abo
   assert.equal(data.wmstats, 1);
   assert.equal(data.pseudo, 'Jules');
   assert.deepEqual(data.pro, [
-    ['B', 300, [[7, T2], [9, T3]], 'Jules'],
-    ['D', 200, [[3, T1]], 'Paul'],
-    ['A', 100, [[5, T1]], 'Jules']
+    ['B', 300, [[7, T2, null], [9, T3, null]], 'Jules'],
+    ['D', 200, [[3, T1, null]], 'Paul'],
+    ['A', 100, [[5, T1, null]], 'Jules']
   ]);
   assert.deepEqual(data.cards, [['A', 'Alpha', 'R', 2]]);
 });
 
 test('friendExport ajoute mes ventes et achats comme prix finaux exacts, sans les invendues ni les shiny', () => {
   const sales = plain(jules().friendExport('Jules')).seen.sales;
-  assert.deepEqual(sales.find(s => s[5] === 'a1'), ['E', 42, T1, 0, 1, 'a1']);
-  assert.deepEqual(sales.find(s => s[5] === 'a3'), ['G', 80, T2, 0, 1, 'a3']);
+  assert.deepEqual(sales.find(s => s[5] === 'a1'), ['E', 42, T1, 0, 1, 'a1', 'R']);
+  assert.deepEqual(sales.find(s => s[5] === 'a3'), ['G', 80, T2, 0, 1, 'a3', 'SR']);
   assert.equal(sales.some(s => s[5] === 'a2' || s[5] === 'a4'), false);
 });
 
@@ -56,7 +56,7 @@ test('l’import d’un fichier ami verse ses relevés Pro et ses ventes dans me
   assert.deepEqual(plain(t.db.prices.B), { at: 300, sales: [{ p: 7, t: T2 }, { p: 9, t: T3 }], by: 'Jules' });
   assert.equal(t.db.prices.D.by, 'Paul');
   assert.equal(t.db.prices.C, undefined);
-  assert.deepEqual(plain(t.db.obsSales.E), [{ p: 42, t: T1, g: 0, i: 'a1', x: 1 }]);
+  assert.deepEqual(plain(t.db.obsSales.E), [{ p: 42, t: T1, g: 0, i: 'a1', x: 1, r: 'R' }]);
   assert.ok(t.db.friends.Jules);
   assert.match(t.ui.el.frStatus.textContent, /3 relevés Pro ajoutés/);
 });
@@ -124,9 +124,9 @@ test('navigateur plein : les relevés Pro sont annulés, l’ami reste importé'
   assert.deepEqual(Object.keys(t.db.prices), ['Z']);
   assert.ok(t.db.friends.Jules);
   assert.match(t.ui.el.frStatus.textContent, /plus assez de place/);
-  const saved = JSON.parse(store.get('wmstats.v1'));
+  const saved = JSON.parse(store.get('wmstats.v1.u._')); // les amis sont propres au compte (encore inconnu ici)
   assert.ok(saved.friends.Jules);
-  assert.equal(saved.prices.B, undefined);
+  assert.equal(JSON.parse(store.get('wmstats.v1')).prices.B, undefined);
 });
 
 // ----- Tâche 3 : origine affichée, gardée par la sauvegarde -----

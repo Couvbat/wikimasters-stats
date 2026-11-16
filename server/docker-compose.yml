@@ -1,0 +1,31 @@
+# Pool de prix partagé — application TrueNAS (Apps → Discover → ⋮ → Install via YAML).
+# Remplace <POOL> par le nom de ton pool de stockage, et remplis GROUP_KEY et TUNNEL_TOKEN (voir README.md).
+# Aucun port n'est publié : seul le tunnel Cloudflare parle au serveur.
+services:
+  wm-pool:
+    image: node:24-alpine
+    command: node /app/server.js
+    user: "568:568"                 # utilisateur « apps » de TrueNAS, propriétaire du dataset
+    restart: unless-stopped
+    environment:
+      GROUP_KEY: "<colle ici la clé du groupe>"
+      DB_PATH: /data/pool.db
+      PORT: "8787"
+      ALLOWED_ORIGINS: https://www.wiki-masters.com,https://wiki-masters.com
+    volumes:
+      - /mnt/<POOL>/apps/wm-pool/app:/app:ro
+      - /mnt/<POOL>/apps/wm-pool/data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/v1/health"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    restart: unless-stopped
+    environment:
+      TUNNEL_TOKEN: "<colle ici le jeton du tunnel>"
+    depends_on:
+      - wm-pool

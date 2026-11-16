@@ -9,7 +9,11 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'wikimasters-stats.user.j
 const END = SRC.lastIndexOf('})();');
 const EXPOSE = [
   'ui', 'job', 'auto', 'friendExport', 'parseFriend', 'mergePro', 'importFriend', 'mergeBackup', 'priceOf', 'relCell', 'badgeFor',
-  'finalsToFetch', 'sweepUrls', 'scanMarket', 'fetchFinals', 'autoDue', 'autoRun'
+  'finalsToFetch', 'sweepUrls', 'scanMarket', 'fetchFinals', 'autoDue', 'autoRun',
+  'mergeObserved', 'ingestSales', 'ingestFinal', 'ingestMarket', 'settleObserved', 'fillPrices', 'backupData',
+  'poolOn', 'poolQueue', 'poolFetch', 'poolFlush', 'poolTick', 'poolBackfill', 'poolPull', 'poolPullMine', 'poolWant', 'poolKnown', 'poolPrefetch',
+  'keepPerRarity', 'rarityOf', 'seenRarity', 'askOf', 'dealPct', 'maxBid', 'tidyAuctions', 'addObserved', 'resetPrices',
+  'saveDb', 'loadDb', 'trimHistory', 'setAccount', 'clearAccount', 'ingestCollection', 'ingestPro'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +
@@ -28,8 +32,9 @@ const reply = (body, status = 200) => ({ ok: status >= 200 && status < 300, stat
 
 // reject(texte) : renvoie true pour simuler un navigateur plein au moment d'enregistrer ce texte.
 // fetch(url) : réponse du site simulée (voir reply). fast : les attentes (une requête par seconde) passent tout de suite.
-function load({ reject = () => false, fetch = async () => reply({}), fast = false } = {}) {
-  const store = new Map();
+// storage : contenu du localStorage simulé avant le chargement du script ({ clé: texte }).
+function load({ reject = () => false, fetch = async () => reply({}), fast = false, storage = {} } = {}) {
+  const store = new Map(Object.entries(storage));
   const localStorage = {
     getItem: k => (store.has(k) ? store.get(k) : null),
     setItem: (k, v) => { if (reject(String(v))) throw new Error('QuotaExceededError'); store.set(k, String(v)); },
@@ -38,7 +43,7 @@ function load({ reject = () => false, fetch = async () => reply({}), fast = fals
   const requests = [];
   const window = { fetch: async (url, init) => { requests.push(String(url)); return fetch(String(url), init); }, addEventListener() {}, innerWidth: 1000, innerHeight: 800 };
   const document = { readyState: 'loading', visibilityState: 'visible', addEventListener() {}, createElement: t => new El(t), createElementNS: (n, t) => new El(t) };
-  const ctx = { window, document, localStorage, setInterval: () => 0, setTimeout: fast ? (f => setImmediate(f)) : setTimeout, clearTimeout, console, URL };
+  const ctx = { window, document, localStorage, setInterval: () => 0, setTimeout: fast ? (f => setImmediate(f)) : setTimeout, clearTimeout, console, URL, AbortController };
   vm.createContext(ctx);
   vm.runInContext(CODE, ctx);
   const t = window.__t;

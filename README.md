@@ -61,7 +61,7 @@ L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres cl�
 ### Collection
 
 - **Charger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
-- **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
+- **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées (jusqu'à 200 ventes par carte, dont le script garde les 10 dernières de chaque rareté), une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
 - **Relever les fins d'enchères** : lit les 500 enchères sur le point de se terminer, plus 150 de chaque rareté L, UR et SR (qui sinon se perdent parmi les centaines d'enchères qui finissent chaque minute), pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
 - **Relever les prix finaux** : quelques minutes plus tard, lit le prix final exact de ces enchères. Pour tous les comptes, Pro ou non. Comme il n'en lit qu'une par seconde, il commence par tes cartes et tes souhaits, puis les raretés qui valent le plus (L, UR, SR…), puis les enchères qui avaient reçu une offre. Une carte qui a déjà dix prix exacts plus récents n'est pas relue.
 - **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite toutes les cartes d'un coup, une par seconde, et saute celles cherchées depuis moins d'une heure.
@@ -98,6 +98,8 @@ Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en
 « Rafraîchir les annonces » relit le prix et la fin des annonces déjà listées, sans attendre : utile avant d'enchérir, puisque les offres montent.
 
 **Bonnes affaires** : une annonce au moins 30 % sous la valeur médiane de la carte (sur 3 ventes ou plus) porte une étiquette verte « bonne affaire −40 % » et remonte en tête. Une case filtre sur elles seules. Pour qu'elles soient repérées, il faut la valeur médiane : « Relever les prix des souhaits en vente » (compte Pro) la relève pour les seuls souhaits actuellement en vente.
+
+**Annonces de plusieurs raretés** : chaque annonce porte la rareté de son exemplaire. La ligne d'une carte présente d'abord les annonces à la rareté de ta liste, et une annonce d'une autre rareté porte son étiquette, sur la ligne comme une fois dépliée. Bonne affaire, enchère max et marge comparent chaque annonce à la valeur de sa propre rareté.
 
 **Enchère max** : la valeur médiane de la carte. Jusqu'à ce montant, tu ne paies pas la carte plus cher qu'elle ne se vend d'habitude. L'étiquette verte « +75 ₩ » donne la marge qu'il te reste sur l'annonce de la ligne, la rouge « trop cher » dit qu'elle a déjà dépassé. En dépliant une carte, chaque annonce a sa propre marge.
 
@@ -143,13 +145,51 @@ Le fichier contient la liste des cartes, leur nombre d'exemplaires, la liste de 
 
 Si le navigateur n'a plus assez de place pour les relevés Pro de ton ami, ils ne sont pas gardés, mais sa collection et ses prix observés le sont : un message le dit.
 
+### Pool partagé du groupe
+
+Le partage par fichier est manuel. Le pool fait la même chose tout seul, pour tout un groupe : une base commune, hébergée par l'un des membres, où chaque prix relevé par quelqu'un sert à tout le monde, Pro et non-Pro mélangés.
+
+- **Ce qui part** :
+  - les prix que tu relèves : historique Pro, prix finaux, dernières offres vues, tes ventes et achats ;
+  - à l'activation, tes relevés déjà accumulés.
+- **Ce qui ne part jamais** : ta collection, tes souhaits, la clé du groupe. Les prix reçus d'un ami ou du pool ne sont pas renvoyés non plus.
+- **Ce que tu reçois** : les prix du groupe pour ta collection, tes souhaits et les cartes affichées sur le site, avec « relevé partagé par … » au survol.
+- **Moins de requêtes au site** :
+  - un prix final déjà relu par un membre n'est plus relu par les autres ;
+  - un historique Pro relevé par un membre il y a moins de 24 h n'est pas redemandé.
+
+Pour t'y joindre, dans Réglages, groupe « Pool partagé du groupe » :
+1. colle l'adresse et la clé que t'a données la personne qui l'héberge ;
+2. clique « Tester » ;
+3. coche « Partager et recevoir les prix ».
+
+Le partage est désactivé par défaut. La ligne d'état indique ce qui a été envoyé et reçu, et la dernière erreur s'il y en a.
+
+Si le pool est injoignable (serveur éteint, connexion coupée), le script continue normalement avec tes propres données. Les envois attendent et repartent tout seuls au retour du pool.
+
+Pour héberger un pool : voir [server/README.md](server/README.md). C'est un petit serveur Node, sans dépendance, prévu pour un NAS TrueNAS et un tunnel Cloudflare.
+
 ### Sauvegarde
 
 Tes données sont rangées dans le navigateur, donc Chrome et Zen ont chacun les leurs. « Exporter toutes mes données » crée un fichier à importer dans l'autre navigateur. L'import fusionne : il ajoute ce qui manque et ne remplace un prix ou une collection que par plus récent. Garde ce fichier pour toi, il contient des prix issus de ton compte.
 
+### Plusieurs comptes
+
+Si tu utilises plusieurs comptes WikiMasters dans le même navigateur, chacun a ses propres données :
+- collection ;
+- ventes et achats ;
+- échanges, boosters, évolution ;
+- liste de souhaits, amis, pseudo.
+
+Le script reconnaît tout seul le compte connecté, dès le chargement de la page, et affiche les bonnes données. Les prix du marché, eux, sont communs à tous les comptes du navigateur : ce que l'un relève profite aux autres.
+
+Dans Réglages, le groupe « Compte » indique le compte connecté. Le bouton « Effacer les données de ce compte » (à confirmer par un second clic) vide sa collection, ses ventes, ses échanges, ses boosters, son évolution, ses souhaits et ses amis, sans toucher aux prix.
+
+Les données rangées avant la version 1.20 sont attribuées au premier compte reconnu. Si deux comptes ont déjà été mélangés, recharge la collection de chacun, ou efface les données de l'un pour repartir de zéro.
+
 ## Comment lire les chiffres
 
-- **Valeur** : médiane des 10 dernières ventes de la carte.
+- **Valeur** : médiane des dernières ventes de la carte **à sa rareté** (20 ventes gardées pour les L, UR et SR, 10 pour les autres ; le pool partagé, lui, garde tout l'historique). Une même carte se vend à plusieurs raretés, car des exemplaires de raretés différentes circulent : une L ne se compare qu'aux ventes en L. Sans vente connue à cette rareté, le script prend les ventes plus anciennes dont la rareté n'est pas connue, sinon celles d'autres raretés. Dans ce dernier cas, la valeur est notée « Douteux » et la bulle le dit.
 - **En italique** : carte sans vente connue, comptée à 1 wikibidou. C'est ce que rapporte la défausse, donc le minimum qu'une carte puisse valoir.
 - **Cartes déjà vendues aux enchères** : le nombre de tes cartes pour lesquelles au moins une vente est connue.
 - **Sans vente connue, comptées à 1** : les autres, et la part de la valeur totale qu'elles représentent. Beaucoup de cartes peuvent être dans ce cas tout en pesant très peu dans le total.
