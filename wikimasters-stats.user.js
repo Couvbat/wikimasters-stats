@@ -2702,12 +2702,13 @@
     const gapCell = r => {
       if (r.s) return h('span', { title: 'Shiny : le site ne distingue pas les ventes shiny, pas de comparaison possible.' }, '✦');
       if (r.value == null) return '—';
-      const d = Math.round(r.cur - r.value);
+      // Pas d'arrondi avant de choisir le signe : avec une valeur de 100,5 ₩, une offre à 100 ₩ est bien en dessous (−0,5 ₩).
+      const d = r.cur - r.value;
       return [h('span', { class: 'tag ' + (d >= 0 ? 'deal' : 'bad'), title: (r.b ? 'Offre actuelle' : 'Mise de départ') + ' moins la valeur médiane de la carte' },
         (d >= 0 ? '+' : '−') + fmt(Math.abs(d)) + ' ₩'),
         !r.b && r.base > r.value ? [' ', h('span', { class: 'tag bad', title: 'Mise de départ au-dessus de la valeur médiane : l’annonce risque de rester invendue.' }, 'mise > valeur')] : null];
     };
-    e.sellingBody.replaceChildren(
+    const kids = [
       h('h2', null, 'Mes ventes en cours', help('Tes annonces en cours, telles que le site les montrait ' + (db.sellingAt ? ago(db.sellingAt) : '') +
         '. Ouvre la page Marché du site, ou clique sur « Actualiser », pour les mettre à jour. Valeur : médiane des ventes à la rareté de l’exemplaire.')),
       h('div', { class: 'tiles' },
@@ -2727,8 +2728,11 @@
         { t: 'Valeur', get: r => r.value, cell: r => (r.value == null ? '—' : (r.price.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(r.value)) + ' ₩') },
         { t: 'Écart', get: r => (r.value == null || r.s ? null : r.cur - r.value), cell: gapCell },
         { t: 'Fin', asc: true, get: r => r.e || null, cell: r => (!r.live ? 'terminée' : r.e ? 'dans ' + leftTime(r.e - now) : '—') }
-      ], rows.sort((a, b) => (b.live - a.live) || ((a.e || Infinity) - (b.e || Infinity))), renderSales)),
-      hasHistory ? h('h2', null, 'Tes enchères terminées') : null);
+      ], rows.sort((a, b) => (b.live - a.live) || ((a.e || Infinity) - (b.e || Infinity))), renderSales))
+    ];
+    // replaceChildren, contrairement à h(), afficherait une valeur vide comme le texte « null » : on n'ajoute le titre que s'il sert.
+    if (hasHistory) kids.push(h('h2', null, 'Tes enchères terminées'));
+    e.sellingBody.replaceChildren(...kids);
     return true;
   }
   function renderSales() {
@@ -3731,7 +3735,13 @@
   window.addEventListener('hashchange', () => openSellForm());
 
   // Chaque minute, les enchères observées qui viennent de finir deviennent des prix.
-  setInterval(() => { if (!job.running && settleObserved()) { saveDb(); refresh(); } }, 60000);
+  // Toutes les minutes : les enchères suivies qui viennent de finir, et le temps restant de tes ventes en cours si l'onglet
+  // Mes ventes est affiché (une annonce terminée sort des tuiles sans attendre une nouvelle réponse du Marché).
+  function minuteTick() {
+    if (!job.running && settleObserved()) { saveDb(); refresh(); return; }
+    if (ui.open && ui.tab === 'sales' && db.selling && db.selling.length) renderSales();
+  }
+  setInterval(minuteTick, 60000);
   setInterval(() => { if (autoDue(Date.now())) autoRun(); }, 60000);
   setInterval(() => { poolTick(Date.now()); }, POOL_FLUSH_EVERY);
 

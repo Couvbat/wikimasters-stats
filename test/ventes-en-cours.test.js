@@ -89,3 +89,53 @@ test('les annonces en cours sont propres à chaque compte', () => {
   t.ingestPro('U1', [{ is_pro: true }]);
   assert.equal(t.db.selling.length, 1);
 });
+
+// ----- Remarques de relecture -----
+const stubSales = t => {
+  const out = {};
+  t.ui.el.salesTiles = { replaceChildren(...k) { out.tiles = k; } };
+  t.ui.el.salesBody = { replaceChildren(...k) { out.body = k; } };
+  t.ui.el.sellingBody = { replaceChildren(...k) { out.selling = k; } };
+  return out;
+};
+
+test('aucune valeur vide passée à l’affichage quand il n’y a pas encore d’enchère terminée', () => {
+  const { t } = load();
+  const out = stubSales(t);
+  t.ingestMarket({ selling: [listing('A1', 'C1')] });
+  t.db.auctions = {};
+  t.renderSales();
+  assert.ok(out.selling.length > 0);
+  assert.ok(out.selling.every(x => x != null), 'replaceChildren afficherait « null »');
+});
+
+test('écart d’une demi-unité sous la valeur : affiché en rouge avec son signe, jamais « +0 ₩ »', () => {
+  const { t } = load();
+  const out = stubSales(t);
+  t.db.prices.HALF = { at: Date.now(), sales: [{ p: 100, t: T, r: 'SR' }, { p: 101, t: T, r: 'SR' }] }; // médiane 100,5
+  t.ingestMarket({ selling: [listing('A1', 'HALF', { base: 50, bid: 100, rarity: 'SR' })] });
+  t.db.auctions = {};
+  t.renderSales();
+  const s = t.sellingStats(t.sellingRows());
+  assert.equal(s.below.length, 1);
+  const text = textOf({ k: out.selling });
+  assert.doesNotMatch(text, /\+0 ₩/);
+  assert.match(text, /−0,5 ₩/);
+});
+
+test('une annonce qui se termine pendant que l’onglet est ouvert sort des tuiles à la minute suivante', () => {
+  const { t } = load();
+  const out = stubSales(t);
+  t.ui.el.host = null;
+  t.ui.open = true;
+  t.ui.tab = 'sales';
+  t.ingestMarket({ selling: [listing('A1', 'C1', { endIn: H })], maxConcurrentAuctions: 5 });
+  t.db.auctions = {};
+  t.renderSales();
+  assert.match(textOf({ k: out.selling }), /dans /);
+  t.db.selling[0].e = Date.now() - 1000; // l'enchère vient de finir, sans nouvelle réponse du Marché
+  t.minuteTick();
+  const text = textOf({ k: out.selling });
+  assert.match(text, /terminée/);
+  assert.equal(t.sellingStats(t.sellingRows()).live.length, 0);
+});
