@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.19.0
+// @version      1.20.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -38,7 +38,8 @@
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
       auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
-      friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: []
+      friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [],
+      pool: { url: '', key: '', on: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
     };
   }
   // Réglages de ce que le script ajoute aux pages du site (onglet Réglages). Valeur par défaut si jamais touché.
@@ -46,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.19.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.20.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -101,6 +102,8 @@
         if (base.sell.v !== 2) { base.sell.doubt = true; base.sell.v = 2; }
         if (!Array.isArray(base.pulls)) base.pulls = [];
         if (!Array.isArray(base.bids)) base.bids = [];
+        base.pool = Object.assign(defaults().pool, isObj(d.pool) ? d.pool : {});
+        if (!Array.isArray(base.poolQ)) base.poolQ = [];
         for (const k of ['auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov']) {
           if (!isObj(base[k])) base[k] = {};
         }
@@ -153,7 +156,7 @@
     db.collectionAt = Date.now();
     saveDb();
     // Un chargement complet donne une photo fiable du jour ; une page isolée, non.
-    if (replace) { db.collectionFullAt = Date.now(); saveDb(); priceCache = new Map(); snapshot(buildRows()); }
+    if (replace) { db.collectionFullAt = Date.now(); saveDb(); priceCache = new Map(); snapshot(buildRows()); poolPullMine(true); }
     refresh();
   }
 
@@ -165,6 +168,7 @@
     db.wishAt = Date.now();
     saveDb();
     refresh();
+    poolPullMine(!!replace);
   }
 
   // Tes enchères passées, accumulées au fil des passages : le site ne renvoie que les plus récentes.
@@ -172,10 +176,13 @@
   // type : s = vendue, u = invendue, b = achetée
   function recordAuction(a, kind) {
     if (!a || !okKey(a.id) || !okKey(a.card_id)) return;
-    const c = a.card || {};
+    const c = a.card || {}, had = db.auctions[a.id];
     db.auctions[a.id] = [kind, a.card_id, str(c.wikipedia_title || '?', 200), rarOf(a.snapshot_rarity || c.rarity),
       num(a.listing_base_amount != null ? a.listing_base_amount : a.base_amount), num(a.base_amount),
       typeof a.final_price === 'number' ? a.final_price : null, str(a.settled_at || a.end_at, 40), a.is_shiny ? 1 : 0];
+    // Une vente ou un achat à toi, vu pour la première fois : un prix final exact pour le pool du groupe.
+    const e = db.auctions[a.id];
+    if (!had && kind !== 'u' && typeof e[6] === 'number' && e[6] > 0 && !e[8]) poolQueue('s', [e[1], e[6], e[7], 0, 1, a.id, e[3] !== '?' ? e[3] : null]);
   }
   function tidyAuctions() {
     const ids = Object.keys(db.auctions);
@@ -193,7 +200,8 @@
     db.mySales = mine;
   }
 
-  function ingestSales(cardId, j) {
+  // rarity : connue quand c'est le script qui demande l'historique, absente quand c'est le site.
+  function ingestSales(cardId, j, rarity) {
     if (!j || typeof j !== 'object') return;
     const src = Array.isArray(j.recent) && j.recent.length ? j.recent : (j.sales || []);
     const sales = src
@@ -202,6 +210,7 @@
       .sort(byDateDesc)
       .slice(0, 10);
     db.prices[cardId] = { at: Date.now(), sales };
+    if (sales.length) poolQueue('p', [cardId, db.prices[cardId].at, sales.map(s => [s.p, s.t]), rarity && rarity !== '?' ? rarity : null]);
     saveDb();
     refresh();
   }
@@ -332,7 +341,9 @@
       if (!Array.isArray(o) || o[3] > now) continue;
       // Tes propres enchères ont déjà leur vrai prix final dans « Mes ventes ».
       const gap = (o[3] - o[4]) / 6e4;
-      if (o[2] && !db.auctions[id]) addObserved(o[0], { p: o[1], t: new Date(o[3]).toISOString(), g: gap, i: id }, o[5]);
+      if (o[2] && !db.auctions[id] && addObserved(o[0], { p: o[1], t: new Date(o[3]).toISOString(), g: gap, i: id }, o[5])) {
+        poolQueue('s', [o[0], o[1], new Date(o[3]).toISOString(), Math.max(0, Math.round(gap)), 0, id, o[5] !== '?' ? o[5] : null]);
+      }
       // Prix final à relever : les enchères qui avaient une offre, et celles vues sans offre moins de 15 min avant la fin
       // (une offre de dernière minute a pu arriver). Au-delà d'une semaine, on n'insiste plus.
       if (!db.auctions[id] && (o[2] || gap <= 15) && now - o[3] < 7 * DAY) db.finQ[id] = [o[0], o[5], o[3], o[2] ? 1 : 0];
@@ -366,13 +377,18 @@
     const list = db.obsSales[a.card_id] || [];
     const prov = list.find(x => x.i === id);
     if (typeof a.final_price === 'number' && a.final_price > 0) {
+      const rar = rarOf(a.snapshot_rarity || (a.card && a.card.rarity) || (q && q[1]));
       // Le niveau par rareté a déjà reçu le prix provisoire s'il était vu de près : on ne le compte pas deux fois.
-      const r = prov && prov.g <= OBS_NEAR ? null : rarOf(a.snapshot_rarity || (a.card && a.card.rarity) || (q && q[1]));
-      addObserved(a.card_id, { p: a.final_price, t: str(a.settled_at || a.end_at, 40), g: 0, i: id, x: 1 }, r);
-    } else if (prov) {
-      // Finie sans vente : le prix provisoire n'avait pas lieu d'être.
-      db.obsSales[a.card_id] = list.filter(x => x !== prov);
-      if (!db.obsSales[a.card_id].length) delete db.obsSales[a.card_id];
+      const r = prov && prov.g <= OBS_NEAR ? null : rar;
+      const t = str(a.settled_at || a.end_at, 40);
+      if (addObserved(a.card_id, { p: a.final_price, t, g: 0, i: id, x: 1 }, r)) poolQueue('s', [a.card_id, a.final_price, t, 0, 1, id, rar !== '?' ? rar : null]);
+    } else {
+      // Finie sans vente : le prix provisoire n'avait pas lieu d'être, ici comme dans le pool.
+      if (prov) {
+        db.obsSales[a.card_id] = list.filter(x => x !== prov);
+        if (!db.obsSales[a.card_id].length) delete db.obsSales[a.card_id];
+      }
+      poolQueue('u', id);
     }
     return true;
   }
@@ -461,6 +477,153 @@
     if (added) priceCache = new Map();
     return added;
   }
+
+  // ---------- pool partagé du groupe ----------
+  // Une base commune hébergée par un membre (voir server/README.md) : chaque prix relevé ici y part, et l'on reçoit ceux du groupe,
+  // Pro et non-Pro mélangés. Seul ce qui est relevé sur ce navigateur part : ce qui vient du pool, d'un fichier ami ou d'une
+  // sauvegarde ne repart jamais. Facultatif : désactivé ou injoignable, le script fonctionne comme avant.
+  const POOL_FLUSH_EVERY = 15e3;      // envoi de la file
+  const POOL_PULL_EVERY = 6 * 36e5;   // réception de la collection et des souhaits
+  const POOL_QMAX = 20000;            // entrées en attente gardées au plus
+  const POOL_BATCH = { p: 2000, s: 5000, u: 5000 };
+  const poolUrlOk = u => /^https:\/\/[^\s/]+/.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u);
+  const poolOn = () => !!(db.pool && db.pool.on && db.pool.key && poolUrlOk(db.pool.url || ''));
+  // type : 'p' relevé Pro [carte, date du relevé, [[prix, date], …], rareté] ; 's' vente [carte, prix, date, écart, exact, enchère, rareté] ;
+  // 'u' enchère finie sans vente.
+  function poolQueue(type, entry) {
+    if (!poolOn()) return;
+    db.poolQ.push([type, entry]);
+    if (db.poolQ.length > POOL_QMAX) db.poolQ.splice(0, db.poolQ.length - POOL_QMAX);
+  }
+  async function poolFetch(path, body) {
+    const headers = { 'x-group-key': db.pool.key };
+    if (body) headers['content-type'] = 'application/json';
+    const r = await nativeFetch(db.pool.url.replace(/\/+$/, '') + path,
+      { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined, credentials: 'omit', cache: 'no-store' });
+    if (!r.ok) throw Object.assign(new Error('pool : HTTP ' + r.status + (r.status === 401 ? ', clé refusée' : '')), { status: r.status });
+    return r.json();
+  }
+  // Échec : on garde tout, et on attend de plus en plus longtemps (1 min, 2, 4… jusqu'à 30 min) avant de réessayer.
+  function poolFailed(e, now) {
+    const p = db.pool;
+    p.err = (e && e.message) || 'pool injoignable';
+    p.wait = Math.min(Math.max(num(p.wait) * 2, 6e4), 18e5);
+    p.retryAt = now + p.wait;
+  }
+  const poolOk = () => { db.pool.err = ''; db.pool.wait = 0; db.pool.retryAt = 0; };
+  const poolState = { flushing: false };
+  async function poolFlush(now) {
+    now = now || Date.now();
+    if (!poolOn() || poolState.flushing || !db.poolQ.length) return;
+    poolState.flushing = true;
+    const count = { p: 0, s: 0, u: 0 }, batch = [];
+    const body = { member: (db.me || '').trim().slice(0, 40) || 'anonyme', pro: [], sales: [], unsold: [] };
+    for (const item of db.poolQ) {
+      const k = item[0];
+      if (!(k in count) || count[k] >= POOL_BATCH[k]) continue;
+      count[k]++;
+      batch.push(item);
+      (k === 'p' ? body.pro : k === 's' ? body.sales : body.unsold).push(item[1]);
+    }
+    try {
+      await poolFetch('/v1/push', body);
+      const sent = new Set(batch);
+      db.poolQ = db.poolQ.filter(x => !sent.has(x));
+      db.pool.sent = num(db.pool.sent) + batch.length;
+      db.pool.pushAt = Date.now();
+      poolOk();
+    } catch (e) {
+      poolFailed(e, now);
+    }
+    poolState.flushing = false;
+    saveDb();
+  }
+  function poolTick(now) {
+    now = now || Date.now();
+    if (poolOn() && db.poolQ.length && now >= num(db.pool.retryAt)) return poolFlush(now);
+  }
+  // À l'activation du partage : tes propres relevés déjà accumulés partent aussi (historique Pro relevé ici, tes ventes et achats).
+  function poolBackfill() {
+    for (const id in db.prices) {
+      const p = db.prices[id];
+      if (okKey(id) && isObj(p) && !p.by && Array.isArray(p.sales) && p.sales.length) poolQueue('p', [id, num(p.at), p.sales.map(s => [s.p, s.t]), null]);
+    }
+    for (const id in db.auctions) {
+      const a = db.auctions[id];
+      if (Array.isArray(a) && a[0] !== 'u' && typeof a[6] === 'number' && a[6] > 0 && !a[8] && okKey(a[1])) poolQueue('s', [a[1], a[6], a[7], 0, 1, id, a[3] !== '?' ? a[3] : null]);
+    }
+  }
+  // Réception : les prix du groupe pour ces cartes, fusionnés comme ceux d'un fichier ami
+  // (le relevé Pro le plus récent gagne, les ventes observées s'ajoutent). Rien de ce qui est reçu ne repart.
+  async function poolPull(ids) {
+    if (!poolOn()) return 0;
+    const list = [...new Set((ids || []).filter(okKey))];
+    let added = 0;
+    for (let i = 0; i < list.length; i += 500) {
+      const j = await poolFetch('/v1/pull', { cards: list.slice(i, i + 500) });
+      const cards = isObj(j && j.cards) ? j.cards : {}, pro = [], sales = [];
+      for (const id of Object.keys(cards)) {
+        const c = cards[id];
+        if (!okKey(id) || !isObj(c)) continue;
+        if (isObj(c.pro) && Array.isArray(c.pro.sales)) pro.push([id, num(c.pro.at), c.pro.sales, typeof c.pro.by === 'string' ? c.pro.by : '']);
+        for (const s of Array.isArray(c.sales) ? c.sales : []) if (Array.isArray(s)) sales.push([id, ...s]);
+      }
+      added += mergePro(pro, 'groupe') + mergeObserved({ sales });
+    }
+    db.pool.recv = num(db.pool.recv) + added;
+    db.pool.err = '';
+    if (added) priceCache = new Map();
+    saveDb();
+    return added;
+  }
+  const poolNote = e => { db.pool.err = (e && e.message) || 'pool injoignable'; saveDb(); };
+  // Ta collection et tes souhaits, au plus toutes les 6 h (ou tout de suite si on force).
+  async function poolPullMine(force) {
+    if (!poolOn()) return;
+    const now = Date.now();
+    if (!force && now - num(db.pool.pullAt) < POOL_PULL_EVERY) return;
+    db.pool.pullAt = now;
+    const ids = new Set(Object.keys(db.wish));
+    for (const c of Object.values(db.cards)) if (c && okKey(c.cardId)) ids.add(c.cardId);
+    try { if (await poolPull([...ids])) refresh(); } catch (e) { poolNote(e); }
+  }
+  // Cartes affichées par le site sans aucun prix connu : regroupées pendant 2 s, chacune demandée une seule fois par visite.
+  const poolWanted = { queue: new Set(), asked: new Set(), timer: 0 };
+  function poolWant(id) {
+    if (!poolOn() || !okKey(id) || poolWanted.asked.has(id)) return;
+    poolWanted.asked.add(id);
+    poolWanted.queue.add(id);
+    if (poolWanted.timer) return;
+    poolWanted.timer = setTimeout(async () => {
+      const ids = [...poolWanted.queue].slice(0, 500);
+      for (const x of ids) poolWanted.queue.delete(x);
+      try { if (await poolPull(ids)) refresh(); } catch (e) { poolNote(e); }
+      poolWanted.timer = 0;
+      if (poolWanted.queue.size) { const next = [...poolWanted.queue][0]; poolWanted.asked.delete(next); poolWanted.queue.delete(next); poolWant(next); }
+    }, 2000);
+  }
+  // Enchères finies dont le prix final est déjà connu du groupe : on le prend au pool, et on ne les relit pas sur le site.
+  async function poolKnown() {
+    if (!poolOn()) return 0;
+    const ids = finalsToFetch().slice(0, 1000);
+    if (!ids.length) return 0;
+    const j = await poolFetch('/v1/known', { auctions: ids });
+    const exact = isObj(j && j.exact) ? j.exact : {}, sales = [];
+    for (const id of Object.keys(exact)) {
+      const e = exact[id];
+      if (!okKey(id) || !Array.isArray(e) || !db.finQ[id]) continue;
+      sales.push([e[0], e[1], e[2], 0, 1, id]);
+      delete db.finQ[id];
+    }
+    if (sales.length) { mergeObserved({ sales }); priceCache = new Map(); saveDb(); }
+    return sales.length;
+  }
+  // Avant de demander des historiques Pro au site : ceux que le groupe a relevés il y a moins de 24 h suffisent.
+  async function poolPrefetch(ids) {
+    if (!poolOn() || !ids || !ids.length) return;
+    try { await poolPull(ids); } catch (e) { poolNote(e); }
+  }
+
   // Niveau de prix par rareté, d'après les fins d'enchères observées ces 7 derniers jours.
   function observedByRarity() {
     const since = Date.now() - 7 * DAY;
@@ -769,7 +932,7 @@
       await sleep(1500);
       j = await getJSON(url);
     }
-    ingestSales(cardId, j);
+    ingestSales(cardId, j, rarity);
   }
   function missingIds() {
     const ids = new Set();
@@ -858,9 +1021,16 @@
 
   async function fillPrices() {
     if (job.running || proState() !== true) return;
-    const ids = missingIds();
+    let ids = missingIds();
     if (!ids.length) return setStatus('Rien à compléter pour les raretés cochées.');
     startJob('Prix : 0 / ' + ids.length);
+    if (poolOn()) {
+      setStatus('Prix : recherche dans le pool du groupe…');
+      await poolPrefetch(ids);
+      ids = missingIds();
+      if (!ids.length) return endJob('Tous les prix manquants étaient dans le pool du groupe.');
+      setStatus('Prix : 0 / ' + ids.length);
+    }
     let i = 0;
     try {
       const rarById = {};
@@ -924,9 +1094,17 @@
   async function fetchFinals(where) {
     if (job.running) return;
     where = where || 'status';
+    startJob('Prix finaux…', where);
+    // Ceux que le groupe connaît déjà ne sont pas relus sur le site. Pool injoignable : on lit tout sur le site, comme avant.
+    let fromPool = 0;
+    if (poolOn()) {
+      setStatus('Prix finaux : recherche dans le pool du groupe…', where);
+      try { fromPool = await poolKnown(); } catch (e) { poolNote(e); }
+    }
+    const poolMsg = fromPool ? ' ' + plural(fromPool, 'prix final trouvé', 'prix finaux trouvés') + ' dans le pool du groupe.' : '';
     const todo = finalsToFetch();
-    if (!todo.length) return setStatus('Aucun prix final à relever pour l’instant. « Relever les fins d’enchères » en prépare : leurs prix finaux se relèvent quelques minutes après.', where);
-    startJob('Prix finaux : 0 / ' + todo.length, where);
+    if (!todo.length) return endJob((poolMsg ? poolMsg.trim() + ' ' : '') + 'Aucun prix final à relever pour l’instant. « Relever les fins d’enchères » en prépare : leurs prix finaux se relèvent quelques minutes après.', where);
+    setStatus('Prix finaux : 0 / ' + todo.length, where);
     const mine = myCards();
     let i = 0, sold = 0, soldMine = 0;
     try {
@@ -952,7 +1130,7 @@
       }
       saveDb();
       endJob((job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '. ' : '') + plural(sold, 'prix final relevé', 'prix finaux relevés') +
-        (soldMine ? ', dont ' + fmt(soldMine) + ' sur tes cartes ou tes souhaits,' : '') + ' sur ' + plural(i, 'enchère lue', 'enchères lues') + '.', where);
+        (soldMine ? ', dont ' + fmt(soldMine) + ' sur tes cartes ou tes souhaits,' : '') + ' sur ' + plural(i, 'enchère lue', 'enchères lues') + '.' + poolMsg, where);
     } catch (e) {
       saveDb();
       endJob(e.code === AUTO_LIMIT
@@ -987,6 +1165,7 @@
     const prev = readAuto();
     let read = 0, finals = 0;
     try {
+      if (poolOn()) { try { await poolKnown(); } catch (e) { poolNote(e); } }
       const todo = finalsToFetch().slice(0, AUTO_MAX);
       writeAuto({ tab: auto.tab, until: Date.now() + (todo.length + 20) * (PRICE_DELAY + 500), at: num(prev.at) });
       for (const id of todo) {
@@ -1039,9 +1218,14 @@
   }
   async function fillTradePrices() {
     if (job.running || proState() !== true) return;
-    const todo = tradeCardsToPrice().slice(0, TRADE_BATCH);
+    let todo = tradeCardsToPrice().slice(0, TRADE_BATCH);
     if (!todo.length) return setStatus('Toutes les cartes échangées ont déjà un prix relevé.', 'tradeStatus');
     startJob('Prix : 0 / ' + todo.length, 'tradeStatus');
+    if (poolOn()) {
+      await poolPrefetch(todo.map(x => x[0]));
+      todo = todo.filter(([id, r]) => priceStale(id, r));
+      if (!todo.length) return endJob('Tous les prix étaient dans le pool du groupe.', 'tradeStatus');
+    }
     let i = 0;
     try {
       for (const [id, rarity] of todo) {
@@ -1216,6 +1400,11 @@
     if (proState() !== true) return setStatus('Les prix de vente sont réservés aux comptes Pro.', where);
     if (!todo.length) return setStatus('Tous les prix sont déjà à jour.', where);
     startJob('Prix : 0 / ' + todo.length, where);
+    if (poolOn()) {
+      await poolPrefetch(todo.map(x => x[0]));
+      todo = todo.filter(([id, r]) => priceStale(id, r));
+      if (!todo.length) return endJob('Tous les prix étaient dans le pool du groupe.', where);
+    }
     let i = 0;
     try {
       for (const [id, rarity] of todo) {
@@ -1289,6 +1478,11 @@
     if (pull.busy) return;
     pull.busy = true;
     try {
+      if (poolOn()) {
+        await poolPrefetch(pull.queue.slice());
+        pull.queue = pull.queue.filter(id => { const c = pull.cards.find(x => x.cardId === id); return priceStale(id, c ? c.rarity : ''); });
+        renderPull();
+      }
       while (pull.queue.length) {
         const id = pull.queue[0];
         const pulled = pull.cards.find(c => c.cardId === id);
@@ -1321,6 +1515,7 @@
     if (bidQ.busy) return;
     bidQ.busy = true;
     try {
+      if (poolOn()) await poolPrefetch(bidQ.queue.map(x => x[0]));
       while (bidQ.queue.length && !job.running && !pull.busy) {
         const [id, r] = bidQ.queue.shift();
         if (!priceStale(id, r)) continue;
@@ -1448,13 +1643,17 @@
   }
 
   // ---------- sauvegarde : passer ses données d'un navigateur à l'autre ----------
-  function exportBackup() {
+  // Le contenu de la sauvegarde. Volontairement sans db.pool : la clé du groupe ne sort jamais du navigateur.
+  function backupData() {
     const data = {};
     for (const k of ['cards', 'collectionAt', 'prices', 'pulls', 'auctions', 'history', 'wish', 'wishAt', 'friends', 'me', 'sell']) data[k] = db[k];
     data.seen = observedExport();
     data.trades = db.trades;
+    return data;
+  }
+  function exportBackup() {
     download('wikimasters-sauvegarde-' + dayKey(new Date()) + '.json',
-      JSON.stringify({ wmstatsBackup: 1, at: Date.now(), data }), 'application/json');
+      JSON.stringify({ wmstatsBackup: 1, at: Date.now(), data: backupData() }), 'application/json');
     setStatus('Sauvegarde créée. Importe ce fichier dans ton autre navigateur.', 'dataStatus');
   }
   const cleanSales = a => (Array.isArray(a) ? a : []).filter(s => s && typeof s.p === 'number')
@@ -1802,8 +2001,38 @@
   ];
 
   function setStatus(msg, where) { const el = ui.el[where || 'status']; if (el) el.textContent = msg || ''; }
+  // État du pool, affiché dans Réglages.
+  function poolLine() {
+    const p = db.pool, now = Date.now();
+    if (!p.on) return 'Désactivé.';
+    if (!poolOn()) return 'Remplis l’adresse (https://…) et la clé, puis « Tester ».';
+    const parts = [];
+    if (p.err) parts.push('Dernière erreur : ' + p.err + (num(p.retryAt) > now ? ' (nouvel essai dans ' + Math.ceil((p.retryAt - now) / 6e4) + ' min)' : ''));
+    parts.push(plural(num(p.sent), 'prix envoyé', 'prix envoyés') + ', ' + plural(num(p.recv), 'reçu', 'reçus') + (db.poolQ.length ? ', ' + fmt(db.poolQ.length) + ' en attente' : ''));
+    if (p.pushAt) parts.push('dernier envoi ' + ago(p.pushAt));
+    return parts.join(' · ') + '.';
+  }
+  const poolUi = { testing: false };
+  async function poolTest() {
+    const el = ui.el.poolInfo;
+    const say = t => { if (el) el.textContent = t; };
+    if (!poolUrlOk(db.pool.url || '') || !db.pool.key) return say('Remplis d’abord l’adresse (https://…) et la clé.');
+    poolUi.testing = true;
+    say('Test en cours…');
+    try {
+      const s = await poolFetch('/v1/stats');
+      say('Connecté : ' + plural(num(s.sales), 'vente', 'ventes') + ', ' + plural(num(s.cards), 'carte', 'cartes') + ', ' + plural(num(s.members), 'membre', 'membres') + '.');
+      db.pool.err = '';
+      saveDb();
+      if (poolOn()) poolPullMine(true);
+    } catch (e) {
+      say('Échec : ' + ((e && e.message) || 'pool injoignable') + '. Vérifie l’adresse et la clé.');
+    }
+    setTimeout(() => { poolUi.testing = false; }, 8000);
+  }
   function syncButtons() {
     const e = ui.el;
+    if (e.poolInfo && !poolUi.testing) e.poolInfo.textContent = poolLine();
     if (!e.load) return;
     const pro = proState();
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
@@ -2094,6 +2323,18 @@
           h('span', { class: 'sub' }, db.autoLast && db.autoLast.at
             ? 'Dernier relevé automatique : ' + ago(db.autoLast.at) + ', ' + plural(num(db.autoLast.finals), 'prix final', 'prix finaux') + '.'
             : (db.autoPauseUntil > Date.now() ? 'En pause : le site a limité les relevés automatiques. Reprise plus tard.' : 'Pas encore de relevé automatique.'))),
+        group('Pool partagé du groupe (tous comptes)', 'Une base commune, hébergée par un membre du groupe : chaque prix relevé par l’un sert à tous, Pro et non-Pro mélangés. ' +
+          'Seuls des prix partent, jamais ta collection ni la clé. Désactivé par défaut. Pour l’héberger : server/README.md dans le dépôt du script.',
+          h('input', { type: 'text', value: db.pool.url || '', placeholder: 'https://pool.exemple.fr', style: 'min-width:200px',
+            'data-tip': 'L’adresse du pool, donnée par la personne qui l’héberge.',
+            oninput: ev => { db.pool.url = ev.target.value.trim().slice(0, 200); saveDb(); syncButtons(); } }),
+          h('input', { type: 'password', value: db.pool.key || '', placeholder: 'clé du groupe', style: 'min-width:150px', autocomplete: 'off',
+            'data-tip': 'La clé du groupe. Ne la donne qu’aux membres.',
+            oninput: ev => { db.pool.key = ev.target.value.trim().slice(0, 200); saveDb(); syncButtons(); } }),
+          btn('Tester', 'Vérifie l’adresse et la clé, et affiche ce que contient le pool.', poolTest),
+          chk('Partager et recevoir les prix', 'Envoie les prix que tu relèves, y compris ceux déjà accumulés, et reçoit ceux du groupe pour ta collection, tes souhaits et les cartes affichées.',
+            !!db.pool.on, ev => { db.pool.on = ev.target.checked; if (poolOn()) { poolBackfill(); poolPullMine(true); } saveDb(); syncButtons(); }),
+          (e.poolInfo = h('span', { class: 'sub' }, poolLine()))),
         group('Mise à jour', 'Tampermonkey met le script à jour tout seul, une fois par jour. Ces boutons servent à ne pas attendre.',
           h('span', { class: 'sub' }, 'Version installée : ' + VERSION),
           btn('Vérifier', 'Compare ta version à la dernière publiée sur GitHub.', () => checkUpdate(true)),
@@ -2169,7 +2410,7 @@
   function toggle(force) {
     ui.open = force == null ? !ui.open : force;
     ui.el.back.classList.toggle('open', ui.open);
-    if (ui.open) { checkUpdate(false); renderUpdate(); }
+    if (ui.open) { checkUpdate(false); renderUpdate(); poolPullMine(); }
     refresh();
   }
 
@@ -3236,6 +3477,7 @@
   // Chaque minute, les enchères observées qui viennent de finir deviennent des prix.
   setInterval(() => { if (!job.running && settleObserved()) { saveDb(); refresh(); } }, 60000);
   setInterval(() => { if (autoDue(Date.now())) autoRun(); }, 60000);
+  setInterval(() => { poolTick(Date.now()); }, POOL_FLUSH_EVERY);
 
   // ---------- valeur affichée sur les cartes du site ----------
   // Une pastille sur chaque carte que le site affiche : Collection, Marché, Toutes les cartes, boosters…
@@ -3341,6 +3583,7 @@
         const auId = link ? link.getAttribute('href').split('/')[2] : '';
         const au = auId ? auctionInfo(auId) : null;
         const cardId = au ? au.c : title ? cardByTitle(title) : null;
+        if (cardId && !priceOf(cardId)) poolWant(cardId); // le groupe la connaît peut-être
         const b = cardId ? badgeFor(cardId, au, mine) : null;
         let el = card.querySelector(':scope > .' + BADGE);
         if (!b) { if (el) el.remove(); continue; }

@@ -9,7 +9,9 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'wikimasters-stats.user.j
 const END = SRC.lastIndexOf('})();');
 const EXPOSE = [
   'ui', 'job', 'auto', 'friendExport', 'parseFriend', 'mergePro', 'importFriend', 'mergeBackup', 'priceOf', 'relCell', 'badgeFor',
-  'finalsToFetch', 'sweepUrls', 'scanMarket', 'fetchFinals', 'autoDue', 'autoRun'
+  'finalsToFetch', 'sweepUrls', 'scanMarket', 'fetchFinals', 'autoDue', 'autoRun',
+  'mergeObserved', 'ingestSales', 'ingestFinal', 'ingestMarket', 'settleObserved', 'fillPrices', 'backupData',
+  'poolOn', 'poolQueue', 'poolFetch', 'poolFlush', 'poolTick', 'poolBackfill', 'poolPull', 'poolPullMine', 'poolWant', 'poolKnown', 'poolPrefetch'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +

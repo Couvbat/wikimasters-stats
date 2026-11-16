@@ -143,6 +143,30 @@ Le fichier contient la liste des cartes, leur nombre d'exemplaires, la liste de 
 
 Si le navigateur n'a plus assez de place pour les relevés Pro de ton ami, ils ne sont pas gardés, mais sa collection et ses prix observés le sont : un message le dit.
 
+### Pool partagé du groupe
+
+Le partage par fichier est manuel. Le pool fait la même chose tout seul, pour tout un groupe : une base commune, hébergée par l'un des membres, où chaque prix relevé par quelqu'un sert à tout le monde, Pro et non-Pro mélangés.
+
+- **Ce qui part** :
+  - les prix que tu relèves : historique Pro, prix finaux, dernières offres vues, tes ventes et achats ;
+  - à l'activation, tes relevés déjà accumulés.
+- **Ce qui ne part jamais** : ta collection, tes souhaits, la clé du groupe. Les prix reçus d'un ami ou du pool ne sont pas renvoyés non plus.
+- **Ce que tu reçois** : les prix du groupe pour ta collection, tes souhaits et les cartes affichées sur le site, avec « relevé partagé par … » au survol.
+- **Moins de requêtes au site** :
+  - un prix final déjà relu par un membre n'est plus relu par les autres ;
+  - un historique Pro relevé par un membre il y a moins de 24 h n'est pas redemandé.
+
+Pour t'y joindre, dans Réglages, groupe « Pool partagé du groupe » :
+1. colle l'adresse et la clé que t'a données la personne qui l'héberge ;
+2. clique « Tester » ;
+3. coche « Partager et recevoir les prix ».
+
+Le partage est désactivé par défaut. La ligne d'état indique ce qui a été envoyé et reçu, et la dernière erreur s'il y en a.
+
+Si le pool est injoignable (serveur éteint, connexion coupée), le script continue normalement avec tes propres données. Les envois attendent et repartent tout seuls au retour du pool.
+
+Pour héberger un pool : voir [server/README.md](server/README.md). C'est un petit serveur Node, sans dépendance, prévu pour un NAS TrueNAS et un tunnel Cloudflare.
+
 ### Sauvegarde
 
 Tes données sont rangées dans le navigateur, donc Chrome et Zen ont chacun les leurs. « Exporter toutes mes données » crée un fichier à importer dans l'autre navigateur. L'import fusionne : il ajoute ce qui manque et ne remplace un prix ou une collection que par plus récent. Garde ce fichier pour toi, il contient des prix issus de ton compte.
