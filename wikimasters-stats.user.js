@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.21.0
+// @version      1.22.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.21.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.22.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -318,7 +318,8 @@
           i: a.id, c: a.card_id, t: str((a.card && a.card.wikipedia_title) || '?', 200), r: rarOf(a.snapshot_rarity || (a.card && a.card.rarity)),
           base: num(a.base_amount), l: num(a.listing_base_amount != null ? a.listing_base_amount : a.base_amount),
           o: bid ? num(typeof a.effective_bid === 'number' ? a.effective_bid : a.current_bid) : null, b: bid,
-          e: Number.isFinite(end) ? end : 0, s: a.is_shiny ? 1 : 0
+          e: Number.isFinite(end) ? end : 0, s: a.is_shiny ? 1 : 0,
+          at: Number.isFinite(Date.parse(a.created_at)) ? Date.parse(a.created_at) : 0 // mise en vente, pour retrouver l'origine de la carte
         };
       });
       db.sellingAt = now;
@@ -2673,12 +2674,45 @@
   // ----- Mes ventes en cours -----
   // Tes annonces en cours, avec la valeur de chaque carte à la rareté de son exemplaire (une shiny n'est pas comparée).
   // cur : le prix actuel de l'annonce, l'offre s'il y en a une, sinon la mise de départ.
+  // D'où vient une carte : sa dernière acquisition à cette rareté (ou à rareté inconnue), datée avant `before` (la mise en vente).
+  // Achetée aux enchères : le prix payé (une shiny ne compte que pour une shiny). Tirée d'un booster : 0 ₩.
+  // Reçue par échange accepté : ≈ ce que tu as donné (valeur actuelle des cartes données, plus les wikibidous donnés, moins ceux
+  // reçus), réparti entre les cartes reçues. Rien de connu : null.
+  function originOf(cardId, rarity, shiny, before) {
+    const lim = before || Infinity;
+    const sameRar = r => !rarOk(rarity) || !rarOk(r) || r === rarity;
+    let best = null;
+    const keep = o => { if (o.t <= lim && (!best || o.t > best.t)) best = o; };
+    for (const a of Object.values(db.auctions)) {
+      if (!Array.isArray(a) || a[0] !== 'b' || a[1] !== cardId || typeof a[6] !== 'number' || !!a[8] !== !!shiny || !sameRar(a[3])) continue;
+      const t = Date.parse(a[7]);
+      if (Number.isFinite(t)) keep({ kind: 'buy', t, cost: a[6] });
+    }
+    for (const p of db.pulls || []) {
+      if (p && num(p.t) && Array.isArray(p.c) && p.c.some(c => Array.isArray(c) && c[0] === cardId && sameRar(c[2]))) keep({ kind: 'pull', t: p.t, cost: 0 });
+    }
+    for (const tr of Object.values(db.trades)) {
+      if (!tr || tr.s !== 'accepted' || !Array.isArray(tr.r) || !tr.r.some(c => c[0] === cardId && sameRar(c[2]))) continue;
+      const t = Date.parse(tr.t);
+      if (!Number.isFinite(t)) continue;
+      const given = (tr.g || []).reduce((sum, c) => sum + valueOf(c[0], c[2]), 0) + num(tr.wg) - num(tr.wr);
+      keep({ kind: 'trade', t, cost: Math.max(0, Math.round(given / Math.max(1, tr.r.length))), approx: true, who: tr.w || '?' });
+    }
+    return best;
+  }
+  // Ce que dit la colonne « Origine ».
+  const originText = o => (!o ? 'origine inconnue' : o.kind === 'buy' ? 'achetée ' + fmt(o.cost) + ' ₩ le ' + fmtDate(o.t)
+    : o.kind === 'pull' ? 'booster du ' + fmtDate(o.t) : 'échange avec ' + o.who + ' (≈ ' + fmt(o.cost) + ' ₩)');
+  // Un profit, signé, en vert ou en rouge.
+  const profitTag = (d, approx, tip) => h('span', { class: 'tag ' + (d >= 0 ? 'deal' : 'bad'), title: tip || '' },
+    (approx ? '≈ ' : '') + (d >= 0 ? '+' : '−') + fmt(Math.abs(d)) + ' ₩');
   function sellingRows() {
     const now = Date.now();
     return (db.selling || []).map(x => {
       const price = x.s ? null : priceOf(x.c, x.r);
+      const cur = x.o != null ? x.o : x.base, origin = originOf(x.c, x.r, x.s, x.at || now);
       return Object.assign({}, x, { price, value: price && price.n ? Math.max(price.med, DISCARD) : null,
-        live: !x.e || x.e > now, cur: x.o != null ? x.o : x.base });
+        live: !x.e || x.e > now, cur, origin, profit: origin ? cur - origin.cost : null });
     });
   }
   function sellingStats(rows) {
@@ -2690,6 +2724,7 @@
       revenue: withOffer.reduce((a, r) => a + r.o, 0),
       value: priced.reduce((a, r) => a + r.value, 0), unknown: live.filter(r => !r.s && r.value == null).length,
       below: priced.filter(r => r.cur < r.value), highBase: priced.filter(r => !r.b && r.base > r.value),
+      profit: live.reduce((a, r) => a + (r.profit == null ? 0 : r.profit), 0), unknownOrigin: live.filter(r => r.profit == null).length,
       max, free: max ? Math.max(0, max - live.length) : null
     };
   }
@@ -2718,6 +2753,11 @@
         tile('Si tout part maintenant', fmt(s.revenue) + ' ₩', 'somme des offres actuelles', 'Ce que tu toucherais si les enchères se terminaient sur les offres actuelles.'),
         tile('Valeur de ces cartes', fmt(Math.round(s.value)) + ' ₩', s.unknown ? plural(s.unknown, 'carte sans prix', 'cartes sans prix') : 'valeur médiane',
           'Somme des valeurs médianes, chacune à la rareté de son exemplaire. Les shiny ne sont pas comptées.'),
+        tile('Profit si tout part maintenant', (s.profit > 0 ? '+' : s.profit < 0 ? '−' : '') + fmt(Math.abs(s.profit)) + ' ₩',
+          s.unknownOrigin ? plural(s.unknownOrigin, 'annonce d’origine inconnue, non comptée', 'annonces d’origine inconnue, non comptées')
+            : 'prix actuel moins ce que les cartes t’ont coûté',
+          'Pour chaque annonce : le prix actuel (l’offre, sinon la mise de départ) moins ce que la carte t’a coûté. Achetée : le prix payé. Booster : 0 ₩. ' +
+          'Échange : ≈ ce que tu as donné, réparti entre les cartes reçues. Aucune commission n’est connue sur le Marché.'),
         tile('Sous la valeur', fmt(s.below.length), s.below.length ? s.below.slice(0, 2).map(r => r.t).join(', ') + (s.below.length > 2 ? '…' : '') : 'aucune',
           'Annonces dont le prix actuel (l’offre, sinon la mise de départ) est encore sous la valeur médiane : elles risquent de partir en dessous de leur prix.')),
       h('div', { class: 'scroll', style: 'margin-bottom:18px' }, sortTable('selling', [
@@ -2727,6 +2767,10 @@
           : auctionLink(r.i, h('span', { class: 'est' }, 'pas d’offre'), 'Pas encore d’offre')) },
         { t: 'Valeur', get: r => r.value, cell: r => (r.value == null ? '—' : (r.price.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(r.value)) + ' ₩') },
         { t: 'Écart', get: r => (r.value == null || r.s ? null : r.cur - r.value), cell: gapCell },
+        { t: 'Origine', asc: true, get: r => (r.origin ? r.origin.t : null),
+          cell: r => (r.origin ? originText(r.origin)
+            : h('span', { class: 'est', title: 'Booster ouvert avant la version 1.3, achat trop ancien pour être en mémoire, ou échange non lu.' }, 'origine inconnue')) },
+        { t: 'Profit', get: r => r.profit, cell: r => (r.profit == null ? '—' : profitTag(r.profit, r.origin.approx, 'Prix actuel moins coût : ' + originText(r.origin))) },
         { t: 'Fin', asc: true, get: r => r.e || null, cell: r => (!r.live ? 'terminée' : r.e ? 'dans ' + leftTime(r.e - now) : '—') }
       ], rows.sort((a, b) => (b.live - a.live) || ((a.e || Infinity) - (b.e || Infinity))), renderSales))
     ];
@@ -2738,7 +2782,7 @@
   function renderSales() {
     const e = ui.el;
     const A = Object.values(db.auctions)
-      .map(a => ({ kind: a[0], cardId: a[1], title: a[2], rarity: a[3], list: a[4], base: a[5], final: a[6], t: a[7] }))
+      .map(a => ({ kind: a[0], cardId: a[1], title: a[2], rarity: a[3], list: a[4], base: a[5], final: a[6], t: a[7], shiny: !!a[8] }))
       .sort(byDateDesc);
     const live = renderSelling(A.length > 0);
     if (!A.length) {
@@ -2785,6 +2829,26 @@
       lines.push('Tes ventes se sont conclues, en médiane, à ' + fmt(100 * median(ratios)) + ' % de la valeur médiane actuelle de la carte (sur ' +
         ratios.length + ' ventes).');
     }
+    // Profit d'une vente réussie : prix final moins ce que la carte t'avait coûté (origine datée avant la vente).
+    // Mémorisé par vente pour ce rendu (null compris) : le tri par profit compare chaque ligne de nombreuses fois.
+    const profitMemo = new Map();
+    const profitOf = a => {
+      if (profitMemo.has(a)) return profitMemo.get(a);
+      let out = null;
+      if (a.kind === 's' && a.final != null) {
+        // Une shiny ne se compare qu'à un achat shiny (et inversement).
+        const o = originOf(a.cardId, a.rarity, a.shiny, Date.parse(a.t) || Date.now());
+        if (o) out = { d: a.final - o.cost, o };
+      }
+      profitMemo.set(a, out);
+      return out;
+    };
+    const withProfit = sold.map(profitOf).filter(Boolean);
+    if (withProfit.length) {
+      const total = withProfit.reduce((x, p) => x + p.d, 0);
+      lines.push('Profit sur tes ventes dont l’origine est connue : ' + (total >= 0 ? '+' : '−') + fmt(Math.abs(total)) + ' ₩ (' +
+        plural(withProfit.length, 'vente', 'ventes') + ' sur ' + sold.length + ').');
+    }
     if (lines.length) kids.push(h('h2', null, 'Mise de départ et prix obtenu'), lines.map(t => h('p', { class: 'line' }, t)));
     const withPrices = showPrices();
     const medOf = a => { const p = priceOf(a.cardId, a.rarity); return p && p.n ? p.med : null; };
@@ -2796,7 +2860,9 @@
         { t: 'Type', asc: true, get: a => (a.kind === 'b' ? 'Achat' : 'Vente'), cell: a => (a.kind === 'b' ? 'Achat' : 'Vente') },
         { t: 'Mise de départ', get: a => a.list, cell: a => fmt(a.list) + ' ₩' + (a.base !== a.list ? ' → ' + fmt(a.base) + ' ₩' : '') },
         { t: 'Résultat', get: a => a.final, cell: a => (a.final == null ? h('span', { class: 'est' }, 'Invendue') : h('b', null, fmt(a.final) + ' ₩')) },
-        withPrices ? { t: 'Valeur médiane', get: medOf, cell: a => (medOf(a) == null ? '—' : fmt(medOf(a)) + ' ₩') } : null
+        withPrices ? { t: 'Valeur médiane', get: medOf, cell: a => (medOf(a) == null ? '—' : fmt(medOf(a)) + ' ₩') } : null,
+        { t: 'Profit', get: a => { const p = profitOf(a); return p ? p.d : null; },
+          cell: a => { const p = profitOf(a); return p ? profitTag(p.d, p.o.approx, 'Prix final moins coût : ' + originText(p.o)) : '—'; } }
       ], A, renderSales, { limit: 200 }));
     e.salesBody.replaceChildren(...kids.flat(2));
   }

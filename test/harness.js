@@ -14,7 +14,7 @@ const EXPOSE = [
   'poolOn', 'poolQueue', 'poolFetch', 'poolFlush', 'poolTick', 'poolBackfill', 'poolPull', 'poolPullMine', 'poolWant', 'poolKnown', 'poolPrefetch',
   'keepPerRarity', 'rarityOf', 'seenRarity', 'askOf', 'dealPct', 'maxBid', 'tidyAuctions', 'addObserved', 'resetPrices',
   'saveDb', 'loadDb', 'trimHistory', 'setAccount', 'clearAccount', 'ingestCollection', 'ingestPro',
-  'sellingRows', 'sellingStats', 'renderSales', 'minuteTick'
+  'sellingRows', 'sellingStats', 'renderSales', 'minuteTick', 'originOf'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +
