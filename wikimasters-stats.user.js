@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.22.0
+// @version      1.23.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -38,7 +38,7 @@
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
       auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
-      friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0,
+      friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
       pool: { url: '', key: '', on: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
     };
   }
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.22.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -94,7 +94,7 @@
   // wmstats.v1.u.<compte> ; les prix du marché et les réglages d'affichage sont communs à tous, sous wmstats.v1.
   // Tant que le compte n'est pas reconnu, sa partie personnelle est sous wmstats.v1.u._.
   const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt',
-    'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'selling', 'sellingAt', 'friends', 'me', 'sell', 'wishHideOwned'];
+    'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'selling', 'sellingAt', 'tagCat', 'friends', 'me', 'sell', 'wishHideOwned'];
   const PERSONAL_SET = new Set(PERSONAL);
   const acctKey = uid => KEY + '.u.' + (uid || '_');
   function personalDefaults() {
@@ -117,6 +117,7 @@
     if (!Array.isArray(base.pulls)) base.pulls = [];
     if (!Array.isArray(base.bids)) base.bids = [];
     if (!Array.isArray(base.selling)) base.selling = [];
+    if (!Array.isArray(base.tagCat)) base.tagCat = [];
     base.pool = Object.assign(defaults().pool, isObj(base.pool) ? base.pool : {});
     if (!Array.isArray(base.poolQ)) base.poolQ = [];
     for (const k of ['cards', 'prices', 'pro', 'auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov']) {
@@ -240,8 +241,16 @@
         cat: c.category || '', url: safeUrl(c.wikipedia_url),
         count: it.count || 1, shiny: !!it.is_shiny, starred: !!it.starred,
         tags: (it.tags || []).map(t => (typeof t === 'string' ? t : (t && t.name) || '')).filter(Boolean),
+        _tagObjs: (it.tags || []).filter(t => t && typeof t === 'object'),
         obtained: it.obtained_at || ''
       };
+    }
+    // Les étiquettes vues sur tes cartes complètent le catalogue (identifiant, nom, couleur).
+    for (const k in db.cards) {
+      const c = db.cards[k];
+      if (!c || !c._tagObjs) continue;
+      for (const t of c._tagObjs) addTag(t);
+      delete c._tagObjs;
     }
     db.collectionAt = Date.now();
     saveDb();
@@ -586,6 +595,80 @@
     return added;
   }
 
+  // ---------- étiquetage par lots ----------
+  // Le site écrit les étiquettes directement dans sa base (Supabase) : une ligne { user_card_id, tag_id } par carte étiquetée,
+  // toutes envoyées en une seule requête quand on étiquette en mode « Sélectionner ». Le script fait pareil, mais seulement
+  // après ton clic, et il ne fait qu'ajouter une de tes étiquettes existantes : il n'en crée, n'en retire et n'en supprime aucune.
+  // La session du site est lue sur ses propres appels à sa base et gardée en mémoire : jamais enregistrée, jamais exportée.
+  const sbSession = { base: '', apikey: '', auth: '' };
+  function noteSession(url, input, init) {
+    let hd;
+    try { hd = new Headers((init && init.headers) || (input && typeof input === 'object' && input.headers) || undefined); } catch (e) { return; }
+    const key = hd.get('apikey'), auth = hd.get('authorization');
+    if (key && auth && /^Bearer\s+\S+/i.test(auth)) { sbSession.base = url.origin; sbSession.apikey = key; sbSession.auth = auth; }
+  }
+  function addTag(t) {
+    if (!t || !okKey(t.id) || typeof t.name !== 'string' || !t.name.trim()) return;
+    const tag = { id: t.id, name: str(t.name, 60), color: typeof t.color === 'string' ? t.color.slice(0, 20) : '' };
+    const i = db.tagCat.findIndex(x => x.id === tag.id);
+    if (i < 0) db.tagCat.push(tag); else db.tagCat[i] = tag;
+  }
+  function ingestTags(list) {
+    if (!Array.isArray(list)) return;
+    db.tagCat = [];
+    for (const t of list.slice(0, 200)) addTag(t);
+    saveDb();
+    refresh();
+  }
+  const TAG_MAX = 200; // exemplaires par lot
+  const TAG_RULES = [['sell', 'Cartes de la liste À vendre'], ['discard', 'Cartes qui valent 1 ₩'], ['dupes', 'Doublons'],
+    ['rarity', 'Une rareté'], ['value', 'Valeur au moins…']];
+  // Le lot d'une règle : les exemplaires de ta collection qui n'ont pas encore l'étiquette. Un exemplaire rangé sous l'identifiant
+  // de la carte (ancienne clé) est laissé de côté : on ne connaît pas son identifiant d'exemplaire.
+  function tagBatch(rule, tagId, opt) {
+    opt = opt || {};
+    const tag = (db.tagCat || []).find(x => x.id === tagId);
+    if (!tag) return { tag: null, items: [], total: 0 };
+    const sell = rule === 'sell' ? new Set(sellList(buildRows()).map(r => r.id)) : null;
+    const all = [];
+    for (const [id, c] of Object.entries(db.cards)) {
+      if (!c || !okKey(id) || id === c.cardId || (c.tags || []).includes(tag.name)) continue;
+      const p = rule === 'discard' || rule === 'value' ? priceOf(c.cardId, c.rarity) : null;
+      const ok = rule === 'dupes' ? c.count >= 2
+        : rule === 'discard' ? !c.starred && !!p && (p.n === 0 || p.med <= DISCARD)
+          : rule === 'rarity' ? rarOk(opt.rarity) && c.rarity === opt.rarity
+            : rule === 'value' ? !!p && p.n > 0 && Math.max(p.med, DISCARD) >= num(opt.min)
+              : rule === 'sell' ? sell.has(id) : false;
+      if (ok) all.push({ id, title: c.title, rarity: c.rarity });
+    }
+    return { tag, items: all.slice(0, TAG_MAX), total: all.length };
+  }
+  // Applique un lot, en une seule requête. Toute erreur arrête tout ; rien ne change en local sans la réponse du site.
+  async function applyTagBatch(batch) {
+    if (!batch || !batch.tag || !batch.items.length) return { n: 0 };
+    if (!sbSession.base || !sbSession.apikey || !sbSession.auth) {
+      throw new Error('le script n’a pas encore vu ta session : recharge la page Collection du site, puis réessaie');
+    }
+    const rows = batch.items.slice(0, TAG_MAX).map(x => ({ user_card_id: x.id, tag_id: batch.tag.id }));
+    const r = await nativeFetch(sbSession.base + '/rest/v1/user_card_tags', {
+      method: 'POST', credentials: 'omit', body: JSON.stringify(rows),
+      headers: { apikey: sbSession.apikey, Authorization: sbSession.auth, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' }
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => null);
+      if (body && body.code === AUTO_LIMIT) { db.autoPauseUntil = Date.now() + DAY; saveDb(); throw new Error('le site limite les actions automatiques, réessaie plus tard'); }
+      if (r.status === 401) throw new Error('session expirée : recharge la page du site, puis réessaie');
+      throw new Error('le site a refusé (HTTP ' + r.status + ')');
+    }
+    for (const x of rows) {
+      const c = db.cards[x.user_card_id];
+      if (c) c.tags = [...new Set([...(c.tags || []), batch.tag.name])];
+    }
+    saveDb();
+    refresh();
+    return { n: rows.length };
+  }
+
   // ---------- pool partagé du groupe ----------
   // Une base commune hébergée par un membre (voir server/README.md) : chaque prix relevé ici y part, et l'on reçoit ceux du groupe,
   // Pro et non-Pro mélangés. Seul ce qui est relevé sur ce navigateur part : ce qui vient du pool, d'un fichier ami ou d'une
@@ -859,6 +942,11 @@
       const raw = typeof input === 'string' ? input : (input && input.url) || String(input);
       const url = new URL(raw, location.href);
       const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+      if (/\.supabase\.co$/.test(url.hostname)) {
+        noteSession(url, input, init);
+        // Le site lit tes étiquettes (page Collection) : on retient leur liste, pour l'étiquetage par lots.
+        if (method === 'GET' && url.pathname === '/rest/v1/tags') p.then(r => r.ok && r.clone().json().then(ingestTags)).catch(() => {});
+      }
       if (method === 'GET' && /\.supabase\.co$/.test(url.hostname) && url.pathname === '/rest/v1/profiles' &&
           url.searchParams.get('select') === 'is_pro') { // la requête que le site fait sur ton propre profil
         const u = /^eq\.(.+)$/.exec(url.searchParams.get('id') || '');
@@ -2341,7 +2429,19 @@
         group('Annonces du marché sur mes cartes', null, e.colSearch, e.colRefresh),
         group('Prix observés', 'Pour tous, avec ou sans compte Pro. 1. « Relever les fins d’enchères » suit les enchères sur le point de finir. ' +
           '2. Quelques minutes plus tard, « Relever les prix finaux » lit le prix exact de chacune.', e.scan, e.finals),
-        group('Raretés concernées', '« Relever les prix » et « Trouver les annonces » ne traitent que les raretés cochées ici.', checks)),
+        group('Raretés concernées', '« Relever les prix » et « Trouver les annonces » ne traitent que les raretés cochées ici.', checks),
+        group('Étiquetage par lots', 'Ajoute une de tes étiquettes à un lot de cartes choisi par une règle. Rien ne part sans ton clic (deux fois), ' +
+          'et le script ne fait qu’ajouter : il ne crée, ne retire et ne supprime aucune étiquette. Le lot part en une seule requête, ' +
+          'comme quand tu étiquettes plusieurs cartes en mode « Sélectionner » sur le site. 200 cartes au plus par lot.',
+          (e.tagRule = h('select', { 'data-tip': 'Quelles cartes étiqueter.', onchange: ev => { ui.tagRule = ev.target.value; renderTagBatch(); } },
+            TAG_RULES.map(([v, l]) => h('option', { value: v }, l)))),
+          (e.tagRar = h('select', { 'data-tip': 'La rareté à étiqueter.', onchange: ev => { ui.tagRar = ev.target.value; renderTagBatch(); } },
+            RARITIES.map(r => h('option', { value: r }, r)))),
+          (e.tagMin = h('input', { type: 'number', min: 0, value: 100, style: 'width:80px', 'data-tip': 'Valeur médiane minimale, en wikibidous.',
+            oninput: ev => { ui.tagMin = Number(ev.target.value) || 0; renderTagBatch(); } })),
+          (e.tagSel = h('select', { 'data-tip': 'L’étiquette à ajouter, parmi les tiennes.', onchange: ev => { ui.tagId = ev.target.value; renderTagBatch(); } })),
+          (e.tagApply = btn('Appliquer ce lot', 'Premier clic : demande confirmation. Second clic (dans les 5 s) : ajoute l’étiquette aux cartes du lot.', onTagApply)),
+          (e.tagInfo = h('span', { class: 'sub' })))),
       h('div', { class: 'run' }, e.status, e.stop),
       h('div', { class: 'filters' },
         h('input', { type: 'text', placeholder: 'Filtrer par titre, catégorie, étiquette…', 'data-tip': 'Ne garde que les cartes dont le titre, la catégorie ou une étiquette contient ce texte.',
@@ -3234,7 +3334,55 @@
   }
 
   // ----- onglet Collection -----
+  // Le lot en préparation, d'après les choix du groupe « Étiquetage par lots ».
+  const currentTagBatch = () => tagBatch(ui.tagRule || 'sell', ui.tagId || '', { rarity: ui.tagRar || 'L', min: ui.tagMin == null ? 100 : ui.tagMin });
+  function renderTagBatch() {
+    const e = ui.el;
+    if (!e.tagSel) return;
+    const cat = db.tagCat || [];
+    if (!cat.some(t => t.id === ui.tagId)) ui.tagId = cat.length ? cat[0].id : '';
+    e.tagSel.replaceChildren(...(cat.length ? cat.map(t => h('option', { value: t.id, selected: t.id === ui.tagId }, t.name)) : [h('option', { value: '' }, 'aucune étiquette connue')]));
+    const rule = ui.tagRule || 'sell';
+    e.tagRar.style.display = rule === 'rarity' ? '' : 'none';
+    e.tagMin.style.display = rule === 'value' ? '' : 'none';
+    if (e.tagApply.dataset.armed) return;
+    if (!cat.length) {
+      e.tagApply.disabled = true;
+      e.tagInfo.textContent = 'Aucune étiquette connue : ouvre la page Collection du site (le script lit tes étiquettes au passage), ou crée-en une sur le site.';
+      return;
+    }
+    const b = currentTagBatch();
+    e.tagApply.disabled = !b.items.length || job.running;
+    e.tagInfo.textContent = b.items.length
+      ? plural(b.items.length, 'carte', 'cartes') + ' → « ' + b.tag.name + ' »' + (b.total > b.items.length ? ' (sur ' + fmt(b.total) + ' : un lot à la fois)' : '')
+      : 'Aucune carte à étiqueter avec cette règle.';
+    e.tagInfo.title = b.items.slice(0, 25).map(x => x.rarity + ' · ' + x.title).join('\n') + (b.items.length > 25 ? '\n…' : '');
+  }
+  async function onTagApply(ev) {
+    const btnEl = ev.currentTarget, e = ui.el, idle = 'Appliquer ce lot';
+    const b = currentTagBatch();
+    if (!b.items.length) return;
+    if (!btnEl.dataset.armed) {
+      btnEl.dataset.armed = '1';
+      btnEl.textContent = 'Confirmer : étiqueter ' + plural(b.items.length, 'carte', 'cartes') + ' ?';
+      setTimeout(() => { if (btnEl.dataset.armed) { delete btnEl.dataset.armed; btnEl.textContent = idle; renderTagBatch(); } }, 5000);
+      return;
+    }
+    delete btnEl.dataset.armed;
+    btnEl.textContent = idle;
+    btnEl.disabled = true;
+    e.tagInfo.textContent = 'Étiquetage en cours…';
+    try {
+      const res = await applyTagBatch(b);
+      e.tagInfo.textContent = plural(res.n, 'carte étiquetée', 'cartes étiquetées') + ' « ' + b.tag.name + ' ».';
+    } catch (err) {
+      e.tagInfo.textContent = 'Échec : ' + err.message + '. Rien n’a été modifié.';
+    }
+    btnEl.disabled = false;
+    setTimeout(renderTagBatch, 4000);
+  }
   function renderCol() {
+    renderTagBatch();
     const rows = rowsCache, e = ui.el;
     const nCards = rows.reduce((a, r) => a + r.count, 0);
     const total = rows.reduce((a, r) => a + r.total, 0);
@@ -3465,10 +3613,10 @@
   }
 
   // ----- onglet À vendre -----
-  function sellList() {
+  function sellList(rows) {
     const selling = new Set(db.market.selling || []);
     const s = db.sell;
-    return rowsCache
+    return (rows || rowsCache)
       .filter(r => r.price && r.price.n > 0 && r.value >= s.min && (s.favs || !r.starred) &&
         (s.doubt || r.price.rel.level > 0) && !selling.has(r.cardId))
       .sort((a, b) => (s.dupFirst ? (b.count > 1) - (a.count > 1) : 0) || b.value - a.value);
