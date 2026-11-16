@@ -100,3 +100,44 @@ test('affichage : colonnes Origine et Profit dans les ventes en cours et les ven
   assert.match(done, /Profit/);
   assert.match(done, /\+180/);
 });
+
+// ----- Remarques de relecture -----
+const stub = t => {
+  const out = {};
+  t.ui.el.salesTiles = { replaceChildren(...k) { out.tiles = k; } };
+  t.ui.el.salesBody = { replaceChildren(...k) { out.body = k; } };
+  t.ui.el.sellingBody = { replaceChildren(...k) { out.selling = k; } };
+  return out;
+};
+
+test('vente terminée d’une shiny : son origine est un achat shiny, pas l’achat d’un exemplaire normal', () => {
+  const { t } = load();
+  const out = stub(t);
+  t.db.auctions = {
+    BN: ['b', 'C1', 'X', 'SR', 20, 20, 20, iso(now - 9 * D), 0],
+    BS: ['b', 'C1', 'X', 'SR', 100, 100, 100, iso(now - 8 * D), 1],
+    SS: ['s', 'C1', 'X', 'SR', 150, 150, 150, iso(now - 2 * D), 1]
+  };
+  t.renderSales();
+  const done = textOf({ k: out.body });
+  assert.match(done, /\+50 ₩/);
+  assert.doesNotMatch(done, /\+130/);
+});
+
+test('trier par profit ne recalcule pas l’origine à chaque comparaison', () => {
+  const { t } = load();
+  stub(t);
+  t.db.prices = { Z: { at: now, sales: [{ p: 5, t: iso(now), r: 'C' }] } }; // la colonne « Valeur médiane » s'affiche
+  const K = 120;
+  for (let i = 0; i < K; i++) {
+    t.db.auctions['B' + i] = ['b', 'C' + i, 'X' + i, 'R', 10, 10, 10 + i, iso(now - 9 * D), 0];
+    t.db.auctions['S' + i] = ['s', 'C' + i, 'X' + i, 'R', 50, 50, 50 + (i * 7) % 90, iso(now - 2 * D), 0];
+  }
+  // Compte les parcours de la liste des boosters : originOf la parcourt une fois par appel.
+  let walks = 0;
+  const pulls = [];
+  t.db.pulls = new Proxy(pulls, { get(target, k) { if (k === Symbol.iterator) walks++; return Reflect.get(target, k); } });
+  t.ui.sorts.sales = { i: 7, dir: -1 };
+  t.renderSales();
+  assert.ok(walks <= K, 'origine calculée ' + walks + ' fois pour ' + K + ' ventes');
+});
