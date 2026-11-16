@@ -314,7 +314,11 @@
     const sales = keepPerRarity(src
       .filter(s => s && typeof s.final_price === 'number')
       .map(s => (rarOk(s.rarity) ? { p: s.final_price, t: s.settled_at || '', r: s.rarity } : { p: s.final_price, t: s.settled_at || '' })));
-    db.prices[cardId] = { at: Date.now(), sales };
+    // L'historique d'une carte ne disparaît pas : un retour vide vient du site. Un historique déjà relevé ici garde ses ventes,
+    // et son envoi au pool, s'il attend dans la file, aussi.
+    const old = db.prices[cardId];
+    if (!sales.length && isObj(old) && !old.by && Array.isArray(old.sales) && old.sales.length) old.at = Date.now();
+    else db.prices[cardId] = { at: Date.now(), sales };
     if (sales.length) poolQueue('p', [cardId, rarity && rarity !== '?' ? rarity : null]);
     saveDb();
     refresh();
@@ -502,6 +506,8 @@
       if (okKey(a.card_id) && typeof price === 'number') seeLive(id, a, price);
       return false;
     }
+    // Réglée : plus en vente, mais la pastille de sa page garde la rareté de son exemplaire.
+    if (okKey(a.card_id)) seenAuction.set(id, { c: a.card_id, a: null, s: !!a.is_shiny, r: rarOf(a.snapshot_rarity || (a.card && a.card.rarity)) });
     const q = db.finQ[id];
     delete db.finQ[id];
     if (!okKey(a.card_id) || a.is_shiny || (db.userId && a.seller_id === db.userId)) return true;
@@ -698,6 +704,11 @@
   // doublait la place prise par tout l'historique Pro à l'activation du partage, et le navigateur plein n'enregistrait plus rien.
   function poolQueue(type, entry) {
     if (!poolOn()) return;
+    // Un seul relevé Pro en attente par carte : le dernier, avec sa rareté, puisque l'historique est relu à l'envoi.
+    if (type === 'p') {
+      const i = db.poolQ.findIndex(x => x[0] === 'p' && x[1][0] === entry[0] && !Array.isArray(x[1][2]));
+      if (i >= 0) db.poolQ.splice(i, 1);
+    }
     db.poolQ.push([type, entry]);
     if (db.poolQ.length > POOL_QMAX) db.poolQ.splice(0, db.poolQ.length - POOL_QMAX);
   }

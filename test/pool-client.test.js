@@ -255,3 +255,21 @@ test('pool qui ne répond pas : l’appel abandonne, et les prix finaux sont qua
   assert.deepEqual(site, ['/api/marketplace/A1']);
   assert.ok(t.db.pool.err);
 });
+
+test('relevé Pro relu vide avant l’envoi : l’historique et son envoi au pool restent', async () => {
+  const { t, calls } = setup();
+  enable(t);
+  t.ingestSales('C1', { sales: [{ final_price: 50, settled_at: T, rarity: 'L' }] }, 'L');
+  t.ingestSales('C1', { sales: [], recent: [] }, 'L');
+  assert.equal(t.db.prices.C1.sales.length, 1, 'une relecture vide n’efface pas un historique connu');
+  await t.poolFlush();
+  assert.deepEqual(calls[0].body.pro, [['C1', t.db.prices.C1.at, [[50, T, 'L']], 'L']]);
+});
+
+test('carte relue à une autre rareté avant l’envoi : une seule entrée, à la rareté du dernier relevé', () => {
+  const { t } = setup();
+  enable(t);
+  t.ingestSales('C1', { recent: [{ final_price: 50, settled_at: T }] }, 'L');
+  t.ingestSales('C1', { recent: [{ final_price: 40, settled_at: T2 }] }, 'UR');
+  assert.deepEqual(plain(t.db.poolQ), [['p', ['C1', 'UR']]]);
+});

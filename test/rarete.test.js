@@ -183,3 +183,18 @@ test('poolPull garde la rareté de chaque vente reçue', async () => {
   assert.equal(t.db.obsSales.C1[0].r, 'UR');
   assert.equal(t.priceOf('C1', 'L').med, 13000);
 });
+
+test('page d’une enchère qui se termine : la pastille ne la montre plus en cours, à son ancienne offre', () => {
+  const { t, location } = load();
+  mixedCard(t);
+  const id = '11111111-2222-3333-4444-666666666666';
+  const auction = extra => ({ auction: Object.assign({ id, card_id: 'C', base_amount: 100, current_bid: 100, effective_bid: 100,
+    end_at: new Date(Date.now() - 6e4).toISOString(), snapshot_rarity: 'L', card: { wikipedia_title: 'C', rarity: 'UR' } }, extra) });
+  t.ingestFinal(id, auction({}));
+  t.ingestFinal(id, auction({ final_price: 10000, settled_at: new Date().toISOString() }));
+  location.pathname = '/marketplace/' + id;
+  const au = t.auctionFor(null, 'C');
+  assert.equal(au.a, null, 'plus d’annonce en cours');
+  assert.equal(au.r, 'L', 'la rareté de l’exemplaire reste connue');
+  assert.doesNotMatch(t.badgeFor('C', au, {}).lines.join('\n'), /Prix de l’annonce/);
+});
