@@ -2,7 +2,7 @@
 
 Un bouton « 📊 Stats » ajouté sur wiki-masters.com : valeur de ta collection, cartes à vendre en priorité, stats de boosters, comparaison entre amis, export CSV.
 
-Le script ne fait que lire. Il n'ouvre pas de paquet, ne met rien aux enchères, n'échange rien et ne défausse rien. Les données restent dans ton navigateur.
+Le script ne fait que lire. Il n'ouvre pas de paquet, ne met rien aux enchères, n'échange rien et ne défausse rien. Seule exception, à ta demande et après ton clic : l'étiquetage par lots, qui ajoute une de tes étiquettes à des cartes. Les données restent dans ton navigateur.
 
 ## Installer
 
@@ -66,6 +66,12 @@ L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres cl�
 - **Relever les prix finaux** : quelques minutes plus tard, lit le prix final exact de ces enchères. Pour tous les comptes, Pro ou non. Comme il n'en lit qu'une par seconde, il commence par tes cartes et tes souhaits, puis les raretés qui valent le plus (L, UR, SR…), puis les enchères qui avaient reçu une offre. Une carte qui a déjà dix prix exacts plus récents n'est pas relue.
 - **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite toutes les cartes d'un coup, une par seconde, et saute celles cherchées depuis moins d'une heure.
 - **Rafraîchir les annonces** : relit le prix et la fin des annonces déjà affichées dans cette colonne, sans attendre.
+- **Étiquetage par lots** : ajoute une de tes étiquettes à un lot de cartes, choisi par une règle.
+  - Les règles : cartes de la liste À vendre, cartes qui valent 1 ₩, doublons, une rareté, valeur au moins N ₩.
+  - Le groupe annonce le lot (« 12 cartes → À vendre », survole pour voir lesquelles). Le premier clic sur « Appliquer ce lot » demande confirmation, le second l'applique.
+  - Le lot part en une seule requête, comme quand tu étiquettes plusieurs cartes en mode « Sélectionner » sur le site. 200 cartes au plus par lot.
+  - **C'est la seule fonction du script qui modifie ton compte**, et seulement après ton clic. Elle ne fait qu'ajouter une étiquette qui existe déjà : elle n'en crée, n'en retire et n'en supprime aucune.
+  - Le script lit tes étiquettes et la session du site quand le site les charge sur la page Collection. Il garde la session en mémoire seulement : jamais enregistrée, jamais exportée.
 - **Exporter en CSV** : le tableau tel qu'il est filtré et trié, à ouvrir dans Excel ou LibreOffice.
 - Clique sur un en-tête de colonne pour trier.
 

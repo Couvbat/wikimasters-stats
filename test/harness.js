@@ -14,7 +14,7 @@ const EXPOSE = [
   'poolOn', 'poolQueue', 'poolFetch', 'poolFlush', 'poolTick', 'poolBackfill', 'poolPull', 'poolPullMine', 'poolWant', 'poolKnown', 'poolPrefetch',
   'keepPerRarity', 'rarityOf', 'seenRarity', 'askOf', 'dealPct', 'maxBid', 'tidyAuctions', 'addObserved', 'resetPrices',
   'saveDb', 'loadDb', 'trimHistory', 'setAccount', 'clearAccount', 'ingestCollection', 'ingestPro',
-  'sellingRows', 'sellingStats', 'renderSales', 'minuteTick', 'originOf'
+  'sellingRows', 'sellingStats', 'renderSales', 'minuteTick', 'originOf', 'tagBatch', 'applyTagBatch', 'sbSession'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +
@@ -29,7 +29,7 @@ class El {
 }
 
 // Réponse simulée du site.
-const reply = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body, headers: { get: () => null } });
+const reply = (body, status = 200) => { const r = { ok: status >= 200 && status < 300, status, json: async () => body, headers: { get: () => null } }; r.clone = () => r; return r; };
 
 // reject(texte) : renvoie true pour simuler un navigateur plein au moment d'enregistrer ce texte.
 // fetch(url) : réponse du site simulée (voir reply). fast : les attentes (une requête par seconde) passent tout de suite.
@@ -44,13 +44,14 @@ function load({ reject = () => false, fetch = async () => reply({}), fast = fals
   const requests = [];
   const window = { fetch: async (url, init) => { requests.push(String(url)); return fetch(String(url), init); }, addEventListener() {}, innerWidth: 1000, innerHeight: 800 };
   const document = { readyState: 'loading', visibilityState: 'visible', addEventListener() {}, createElement: t => new El(t), createElementNS: (n, t) => new El(t) };
-  const ctx = { window, document, localStorage, setInterval: () => 0, setTimeout: fast ? (f => setImmediate(f)) : setTimeout, clearTimeout, console, URL, AbortController };
+  const ctx = { window, document, localStorage, setInterval: () => 0, setTimeout: fast ? (f => setImmediate(f)) : setTimeout, clearTimeout, console, URL, AbortController, Headers,
+    location: { href: 'https://www.wiki-masters.com/collection', origin: 'https://www.wiki-masters.com', hash: '', pathname: '/collection' } };
   vm.createContext(ctx);
   vm.runInContext(CODE, ctx);
   const t = window.__t;
   t.ui.el.frStatus = { textContent: '' };
   t.ui.el.status = { textContent: '' };
-  return { t, store, requests, document };
+  return { t, store, requests, document, window };
 }
 // Les objets nés dans le contexte simulé ont leurs propres prototypes : on les compare en JSON.
 const plain = v => JSON.parse(JSON.stringify(v));
