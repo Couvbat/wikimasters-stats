@@ -2782,7 +2782,7 @@
   function renderSales() {
     const e = ui.el;
     const A = Object.values(db.auctions)
-      .map(a => ({ kind: a[0], cardId: a[1], title: a[2], rarity: a[3], list: a[4], base: a[5], final: a[6], t: a[7] }))
+      .map(a => ({ kind: a[0], cardId: a[1], title: a[2], rarity: a[3], list: a[4], base: a[5], final: a[6], t: a[7], shiny: !!a[8] }))
       .sort(byDateDesc);
     const live = renderSelling(A.length > 0);
     if (!A.length) {
@@ -2830,10 +2830,18 @@
         ratios.length + ' ventes).');
     }
     // Profit d'une vente réussie : prix final moins ce que la carte t'avait coûté (origine datée avant la vente).
+    // Mémorisé par vente pour ce rendu (null compris) : le tri par profit compare chaque ligne de nombreuses fois.
+    const profitMemo = new Map();
     const profitOf = a => {
-      if (a.kind !== 's' || a.final == null) return null;
-      const o = originOf(a.cardId, a.rarity, false, Date.parse(a.t) || Date.now());
-      return o ? { d: a.final - o.cost, o } : null;
+      if (profitMemo.has(a)) return profitMemo.get(a);
+      let out = null;
+      if (a.kind === 's' && a.final != null) {
+        // Une shiny ne se compare qu'à un achat shiny (et inversement).
+        const o = originOf(a.cardId, a.rarity, a.shiny, Date.parse(a.t) || Date.now());
+        if (o) out = { d: a.final - o.cost, o };
+      }
+      profitMemo.set(a, out);
+      return out;
     };
     const withProfit = sold.map(profitOf).filter(Boolean);
     if (withProfit.length) {
