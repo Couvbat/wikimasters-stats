@@ -433,7 +433,8 @@
     let added = 0;
     for (const e of list.slice(0, 20000)) {
       if (!Array.isArray(e) || !okKey(e[0]) || !(num(e[1]) > 0) || !Array.isArray(e[2])) continue;
-      const sales = e[2].filter(s => Array.isArray(s) && num(s[0]) > 0 && typeof s[1] === 'string')
+      // Une vente sans date lisible ne compte pas, comme dans mergeObserved.
+      const sales = e[2].filter(s => Array.isArray(s) && num(s[0]) > 0 && typeof s[1] === 'string' && Number.isFinite(Date.parse(s[1])))
         .slice(0, 10).map(s => ({ p: s[0], t: str(s[1], 40) })).sort(byDateDesc);
       if (!sales.length) continue;
       const at = Math.min(e[1], now), cur = db.prices[e[0]];
@@ -1457,11 +1458,11 @@
       db.friends[f.pseudo] = { at: f.at, cards: f.cards, wish: f.wish };
       ui.friend = f.pseudo;
       const prices = mergeObserved(f.seen);
-      saveDb();
-      // Ses relevés Pro passent à part : s'ils ne tiennent pas dans le navigateur, on les retire sans perdre le reste.
-      const before = Object.assign({}, db.prices);
+      // Rien n'a pu être enregistré : on revient à ce qui est rangé dans le navigateur, plutôt qu'à un import qui disparaîtrait au rechargement.
+      if (!saveDb()) { db = loadDb(); priceCache = new Map(); throw new Error('plus assez de place dans le navigateur'); }
+      // Ses relevés Pro passent à part : s'ils ne tiennent pas, on revient à l'état enregistré juste avant (l'ami et ses prix observés, sans eux).
       let pro = mergePro(f.pro, f.pseudo), full = false;
-      if (pro && !saveDb()) { db.prices = before; priceCache = new Map(); saveDb(); pro = 0; full = true; }
+      if (pro && !saveDb()) { db = loadDb(); priceCache = new Map(); pro = 0; full = true; }
       const parts = [plural(Object.keys(f.cards).length, 'carte différente', 'cartes différentes')];
       if (prices) parts.push(plural(prices, 'prix observé ajouté', 'prix observés ajoutés'));
       if (pro) parts.push(plural(pro, 'relevé Pro ajouté', 'relevés Pro ajoutés'));

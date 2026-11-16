@@ -134,6 +134,26 @@ test('mergePro ignore les entrées malformées sans planter', () => {
   assert.equal(t.mergePro('pas une liste', 'Marie'), 0);
 });
 
+test('mergePro refuse les ventes sans date valide et garde alors mon relevé', () => {
+  const { t } = load();
+  t.db.prices = { A: { at: 100, sales: [{ p: 5, t: T1 }] } };
+  assert.equal(t.mergePro([['A', 500, [[999, ''], [998, 'pas une date']]]], 'Marie'), 0);
+  assert.deepEqual(plain(t.db.prices.A), { at: 100, sales: [{ p: 5, t: T1 }] });
+  assert.equal(t.mergePro([['B', 500, [[999, ''], [7, T2]]]], 'Marie'), 1);
+  assert.deepEqual(plain(t.db.prices.B.sales), [{ p: 7, t: T2 }]);
+});
+
+test('navigateur déjà plein avant les relevés Pro : l’import échoue et le dit', async () => {
+  const text = JSON.stringify(jules().friendExport('Jules'));
+  const { t, store } = load({ reject: s => s.includes('"Jules":{') });
+  t.db.me = 'Marie';
+  await t.importFriend(fakeFile(text));
+  assert.equal(t.db.friends.Jules, undefined);
+  assert.equal(t.db.obsSales.E, undefined);
+  assert.match(t.ui.el.frStatus.textContent, /Import impossible : plus assez de place/);
+  assert.equal(store.has('wmstats.v1'), false);
+});
+
 test('navigateur plein : les relevés Pro sont annulés, l’ami reste importé', async () => {
   const text = JSON.stringify(jules().friendExport('Jules'));
   const { t, store } = load({ reject: s => s.includes('"by":"Jules"') });
