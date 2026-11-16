@@ -1,12 +1,15 @@
 // Serveur du pool de prix partagé. Node 24, sans dépendance : node:http et node:sqlite.
 // Variables d'environnement : GROUP_KEY (obligatoire, 24 caractères au moins), DB_PATH, PORT, ALLOWED_ORIGINS.
+// Mode relais (pool local sur ton PC) : UPSTREAM_URL et UPSTREAM_KEY (le pool du NAS), SYNC_MINUTES (5 par défaut).
+// HOST : l'adresse d'écoute. Par défaut toutes les interfaces (le conteneur du NAS) ; 127.0.0.1 pour n'écouter que ce PC.
 'use strict';
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { openDb, applyPush, pullCards, knownAuctions, poolStats } = require('./db');
 const { parsePush, parseIds, httpError } = require('./validate');
+const { syncOnce, syncStatus } = require('./sync');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const MAX_BODY = 2 * 1024 * 1024;
 const MAX_PULL = 500, MAX_KNOWN = 1000;
 
@@ -43,7 +46,7 @@ function readJson(req) {
   });
 }
 
-function createHandler({ db, groupKey, allowedOrigins, now = Date.now, perMinute = 120 }) {
+function createHandler({ db, groupKey, allowedOrigins, now = Date.now, perMinute = 120, upstreamStatus = null }) {
   const allowed = new Set(allowedOrigins);
   const hits = new Map(); // adresse → dates des requêtes de la dernière minute
   const sweep = setInterval(() => {
@@ -78,7 +81,8 @@ function createHandler({ db, groupKey, allowedOrigins, now = Date.now, perMinute
 
       const url = new URL(req.url, 'http://pool');
       const route = req.method + ' ' + url.pathname;
-      if (route === 'GET /v1/health') return send(200, { ok: true, version: VERSION });
+      // En mode relais, l'état de la synchronisation vers le NAS (sans son adresse ni sa clé).
+      if (route === 'GET /v1/health') return send(200, upstreamStatus ? { ok: true, version: VERSION, upstream: upstreamStatus() } : { ok: true, version: VERSION });
       const routes = new Set(['GET /v1/stats', 'POST /v1/push', 'POST /v1/pull', 'POST /v1/known']);
       if (!routes.has(route)) return send(404, { error: 'route inconnue' });
       if (!sameKey(req.headers['x-group-key'], groupKey)) return send(401, { error: 'clé de groupe absente ou fausse' });
@@ -97,13 +101,40 @@ function createHandler({ db, groupKey, allowedOrigins, now = Date.now, perMinute
   return handler;
 }
 
-async function start({ dbPath, port, groupKey, allowedOrigins, perMinute }) {
+// upstream : { url, key, everyMs } pour le mode relais. Ce que ce pool reçoit part tout seul vers le pool d'arrivée, à chaque
+// passage (toutes les 5 min par défaut), dès qu'il est joignable. Rien n'est perdu quand il ne l'est pas.
+async function start({ dbPath, port, host, groupKey, allowedOrigins, perMinute, upstream }) {
   if (typeof groupKey !== 'string' || groupKey.length < 24) throw new Error('GROUP_KEY doit faire au moins 24 caractères');
   const db = openDb(dbPath);
-  const handler = createHandler({ db, groupKey, allowedOrigins, perMinute });
+  const relay = upstream && upstream.url && upstream.key ? upstream : null;
+  const handler = createHandler({ db, groupKey, allowedOrigins, perMinute, upstreamStatus: relay ? () => syncStatus(db) : null });
   const server = http.createServer(handler);
-  server.on('close', () => { handler.close(); db.close(); });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, resolve); });
+  let stopped = false, busy = false, timers = [];
+  if (relay) {
+    const tick = async () => {
+      if (stopped || busy) return;
+      busy = true;
+      try {
+        const r = await syncOnce(db, relay);
+        if (r.sent || r.unsold) console.log('Synchro vers le pool du NAS : ' + r.sent + ' ventes, ' + r.unsold + ' enchères sans vente.');
+      } catch (e) {
+        if (!stopped) console.error('Synchro vers le pool du NAS impossible pour l’instant : ' + e.message);
+      }
+      busy = false;
+    };
+    const every = Math.max(50, Number(relay.everyMs) || 5 * 60e3);
+    timers = [setTimeout(tick, Math.min(every, 10e3)), setInterval(tick, every)];
+    timers.forEach(t => t.unref());
+  }
+  server.on('close', () => {
+    stopped = true;
+    timers.forEach(t => clearTimeout(t));
+    handler.close();
+    // Une synchronisation en cours se termine avant la fermeture de la base.
+    const closeDb = () => (busy ? setTimeout(closeDb, 50) : db.close());
+    closeDb();
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); host ? server.listen(port, host, resolve) : server.listen(port, resolve); });
   return server;
 }
 
@@ -112,9 +143,13 @@ if (require.main === module) {
   start({
     dbPath: env.DB_PATH || '/data/pool.db',
     port: Number(env.PORT) || 8787,
+    host: env.HOST || undefined,
     groupKey: env.GROUP_KEY,
-    allowedOrigins: (env.ALLOWED_ORIGINS || 'https://www.wiki-masters.com,https://wiki-masters.com').split(',').map(s => s.trim()).filter(Boolean)
-  }).then(s => console.log('Pool de prix prêt sur le port ' + s.address().port + ' (version ' + VERSION + ')'))
+    allowedOrigins: (env.ALLOWED_ORIGINS || 'https://www.wiki-masters.com,https://wiki-masters.com').split(',').map(s => s.trim()).filter(Boolean),
+    upstream: env.UPSTREAM_URL && env.UPSTREAM_KEY
+      ? { url: env.UPSTREAM_URL, key: env.UPSTREAM_KEY, everyMs: (Number(env.SYNC_MINUTES) || 5) * 60e3 } : null
+  }).then(s => console.log('Pool de prix prêt sur le port ' + s.address().port + ' (version ' + VERSION + ')' +
+    (env.UPSTREAM_URL && env.UPSTREAM_KEY ? ', synchronisé vers ' + env.UPSTREAM_URL : '')))
     .catch(e => { console.error('Démarrage impossible : ' + e.message); process.exit(1); });
 }
 
