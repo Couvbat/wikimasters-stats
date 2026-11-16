@@ -1,48 +1,9 @@
 // Tests du partage de l'historique Pro dans le fichier ami.
 // Lancer : node --test test/*.test.js
-// Le script est chargé dans un contexte simulé (pas de page, pas de site) ; une ligne ajoutée à la fin
-// expose ses fonctions internes dans window.__t.
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-
-const SRC = fs.readFileSync(path.join(__dirname, '..', 'wikimasters-stats.user.js'), 'utf8');
-const END = SRC.lastIndexOf('})();');
-const CODE = SRC.slice(0, END) +
-  'window.__t = { get db() { return db; }, set db(v) { db = v; }, ui, friendExport, parseFriend, mergePro, importFriend, mergeBackup, priceOf, relCell, badgeFor };\n' +
-  SRC.slice(END);
-
-class El {
-  constructor(tag) { this.tagName = tag; this.title = ''; this.textContent = ''; this.className = ''; this.children = []; this.attrs = {}; this.style = {}; }
-  setAttribute(k, v) { this.attrs[k] = String(v); }
-  addEventListener() {}
-  append(...k) { this.children.push(...k); }
-  replaceChildren(...k) { this.children = k; }
-}
-
-// reject(texte) : renvoie true pour simuler un navigateur plein au moment d'enregistrer ce texte.
-function load({ reject = () => false } = {}) {
-  const store = new Map();
-  const localStorage = {
-    getItem: k => (store.has(k) ? store.get(k) : null),
-    setItem: (k, v) => { if (reject(String(v))) throw new Error('QuotaExceededError'); store.set(k, String(v)); },
-    removeItem: k => store.delete(k)
-  };
-  const window = { fetch: async () => ({}), addEventListener() {}, innerWidth: 1000, innerHeight: 800 };
-  const document = { readyState: 'loading', addEventListener() {}, createElement: t => new El(t), createElementNS: (n, t) => new El(t) };
-  const ctx = { window, document, localStorage, setInterval: () => 0, setTimeout, clearTimeout, console, URL };
-  vm.createContext(ctx);
-  vm.runInContext(CODE, ctx);
-  const t = window.__t;
-  t.ui.el.frStatus = { textContent: '' };
-  return { t, store };
-}
-// Les objets nés dans le contexte simulé ont leurs propres prototypes : on les compare en JSON.
-const plain = v => JSON.parse(JSON.stringify(v));
-const fakeFile = text => ({ size: text.length, text: async () => text });
+const { load, plain, fakeFile } = require('./harness');
 
 const T1 = '2026-11-01T10:00:00.000Z', T2 = '2026-11-02T10:00:00.000Z', T3 = '2026-10-02T10:00:00.000Z';
 

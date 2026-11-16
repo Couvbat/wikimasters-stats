@@ -80,7 +80,7 @@
     e.updBanner.style.display = has ? '' : 'none';
     e.updBanner.textContent = has ?'Version ' + db.latest + ' disponible : mettre à jour ↗' : '';
   }
-  const OV_DEF ={ cmp: true, dim: false, glow: true, outbid: true, tip: true, have: true, trade: true, bidAuto: true };
+  const OV_DEF ={ cmp: true, dim: false, glow: true, outbid: true, tip: true, have: true, trade: true, bidAuto: true, autoObs: false };
   const ov = k => (db.ov && typeof db.ov[k] === 'boolean' ? db.ov[k] : OV_DEF[k]);
   const MAX_AUCTIONS = 3000; // enchères personnelles gardées en mémoire
   const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -377,11 +377,25 @@
     return true;
   }
   // Enchères finies dont le prix final reste à lire, à partir d'une minute après la fin (le temps que le site la règle).
-  // Celles qui avaient une offre d'abord, puis les plus récentes.
+  // On ne peut en lire qu'une par seconde, alors que des centaines finissent chaque minute : l'ordre compte.
+  // D'abord tes cartes et tes souhaits, puis les raretés qui valent le plus, puis celles qui avaient une offre, puis les plus récentes.
+  // Une enchère dont le prix serait écarté de toute façon (la carte a déjà 10 prix, tous plus récents) n'est pas relue.
+  const RAR_RANK = { L: 0, UR: 1, SR: 2, R: 3, PC: 4, C: 5 };
   function finalsToFetch() {
-    const now = Date.now();
-    return Object.keys(db.finQ).filter(id => now - db.finQ[id][2] > 6e4)
-      .sort((x, y) => (db.finQ[y][3] - db.finQ[x][3]) || (db.finQ[y][2] - db.finQ[x][2]));
+    const now = Date.now(), mine = myCards(), keys = {};
+    const ids = Object.keys(db.finQ).filter(id => {
+      const q = db.finQ[id], seen = db.obsSales[q[0]];
+      return now - q[2] > 6e4 && !(seen && seen.length >= 10 && Date.parse(seen[seen.length - 1].t) >= q[2]);
+    });
+    for (const id of ids) {
+      const q = db.finQ[id];
+      keys[id] = [mine[q[0]] || db.wish[q[0]] ? 0 : 1, q[1] in RAR_RANK ? RAR_RANK[q[1]] : 6, q[3] ? 0 : 1, -q[2]];
+    }
+    return ids.sort((x, y) => {
+      const a = keys[x], b = keys[y];
+      for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return a[k] - b[k];
+      return 0;
+    });
   }
   // Les fins d'enchères observées, pour le fichier ami et la sauvegarde. L'historique Pro voyage à part (voir proExport).
   function observedExport() {
@@ -779,6 +793,9 @@
   // ou on attend de plus en plus longtemps, puis on reprend au même endroit, plus lentement.
   // On ne cherche pas à contourner ce frein : on l'attend.
   const BUSY = new Set([429, 502, 503, 504]);
+  // Le site répond « automation_limit » quand il estime qu'un compte va trop vite. Ce n'est pas un simple ralentissement :
+  // tout s'arrête, rien n'est retiré des files d'attente, et le relevé automatique se met en pause 24 h.
+  const AUTO_LIMIT = 'automation_limit';
   async function getJSON(path) {
     for (let attempt = 0; ; attempt++) {
       let r = null;
@@ -789,6 +806,12 @@
       }
       if (r && r.ok) return r.json();
       const status = r ? r.status : 0;
+      const body = r ? await r.json().catch(() => null) : null;
+      if (body && body.code === AUTO_LIMIT) {
+        db.autoPauseUntil = Date.now() + DAY;
+        saveDb();
+        throw Object.assign(new Error('le site limite les relevés automatiques, réessaie plus tard'), { status, code: AUTO_LIMIT });
+      }
       if (r && !BUSY.has(status)) throw Object.assign(new Error('HTTP ' + status), { status });
       if (!job.running || job.stop || attempt >= 6) throw Object.assign(new Error(status ? 'HTTP ' + status : 'réseau'), { status });
       const asked = r ? Number(r.headers.get('retry-after')) : NaN;
@@ -851,7 +874,7 @@
       }
       endJob(job.stop ? 'Arrêté à ' + i + ' / ' + ids.length + '.' : 'Prix complétés pour ' + i + ' cartes.');
     } catch (e) {
-      if ([401, 402, 403].includes(e.status)) {
+      if (e.code !== AUTO_LIMIT && [401, 402, 403].includes(e.status)) {
         return endJob('Le site refuse l’historique des ventes pour ce compte (réservé au Pro ?). ' +
           'Le tableau reste utilisable sans les prix : raretés, ATK, DEF, Q-Score, export CSV.');
       }
@@ -862,18 +885,32 @@
   // Lit les premières pages de la page Marché, comme si tu les feuilletais.
   // sort : « recent » pour les dernières annonces, « ending_soon » pour les enchères sur le point de finir,
   // dont l'offre en cours est presque le prix final.
-  async function scanMarket(pages, where, sort) {
+  // rare : pages lues en plus pour chaque rareté de RARE_SWEEP, avec le filtre de rareté du site. Sans lui, les L, UR et SR
+  // se perdent parmi les centaines d'enchères qui finissent chaque minute.
+  const RARE_SWEEP = ['L', 'UR', 'SR'];
+  const RARE_PAGES = 3;
+  function sweepUrls(pages, rare, sort) {
+    const s = sort || 'ending_soon', urls = [];
+    for (let p = 1; p <= pages; p++) urls.push('/api/marketplace?page=' + p + '&limit=50&sort=' + s + (p === 1 ? '&mine=1' : ''));
+    for (const r of rare ? RARE_SWEEP : []) for (let p = 1; p <= rare; p++) urls.push('/api/marketplace?page=' + p + '&limit=50&sort=' + s + '&rarity=' + r);
+    return urls;
+  }
+  const sweepGroup = url => (/&rarity=(\w+)/.exec(url) || [])[1] || '';
+  async function scanMarket(pages, where, sort, rare) {
     if (job.running) return;
     startJob('Lecture du marché…', where);
-    let seen = 0;
+    let seen = 0, n = 0;
+    const done = new Set();
     try {
-      for (let page = 1; page <= pages && !job.stop; page++) {
-        const j = await getJSON('/api/marketplace?page=' + page + '&limit=50&sort=' + (sort || 'recent') + (page === 1 ? '&mine=1' : ''));
+      for (const url of sweepUrls(pages, rare || 0, sort || 'recent')) {
+        if (job.stop) break;
+        if (done.has(sweepGroup(url))) continue; // plus de page dans cette rareté
+        if (n++) await pace();
+        const j = await getJSON(url);
         ingestMarket(j);
         seen += (j.auctions || []).length;
         setStatus('Marché : ' + seen + ' enchères lues…', where);
-        if (!j.hasMore) break;
-        if (page < pages) await pace();
+        if (!j.hasMore) done.add(sweepGroup(url));
       }
       endJob(pages === 1 ? 'Ventes en cours à jour.'
         : seen + ' enchères lues. Leur prix sera enregistré quand elles seront finies, d’ici quelques minutes.', where);
@@ -890,16 +927,22 @@
     const todo = finalsToFetch();
     if (!todo.length) return setStatus('Aucun prix final à relever pour l’instant. « Relever les fins d’enchères » en prépare : leurs prix finaux se relèvent quelques minutes après.', where);
     startJob('Prix finaux : 0 / ' + todo.length, where);
-    let i = 0, sold = 0;
+    const mine = myCards();
+    let i = 0, sold = 0, soldMine = 0;
     try {
       for (const id of todo) {
         if (job.stop) break;
+        const card = db.finQ[id] && db.finQ[id][0];
         try {
           const j = await getJSON('/api/marketplace/' + encodeURIComponent(id));
           ingestFinal(id, j);
-          if (j && j.auction && typeof j.auction.final_price === 'number') sold++;
+          if (j && j.auction && typeof j.auction.final_price === 'number') {
+            sold++;
+            if (mine[card] || db.wish[card]) soldMine++;
+          }
         } catch (e) {
-          if (e.status === 404 || e.status === 403) delete db.finQ[id]; // enchère retirée ou inaccessible : on l'oublie
+          // Enchère retirée ou inaccessible : on l'oublie. Mais une limite du site arrête tout, sans rien oublier.
+          if (e.code !== AUTO_LIMIT && (e.status === 404 || e.status === 403)) delete db.finQ[id];
           else throw e;
         }
         i++;
@@ -909,11 +952,76 @@
       }
       saveDb();
       endJob((job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '. ' : '') + plural(sold, 'prix final relevé', 'prix finaux relevés') +
-        ' sur ' + plural(i, 'enchère lue', 'enchères lues') + '.', where);
+        (soldMine ? ', dont ' + fmt(soldMine) + ' sur tes cartes ou tes souhaits,' : '') + ' sur ' + plural(i, 'enchère lue', 'enchères lues') + '.', where);
     } catch (e) {
       saveDb();
-      endJob('Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + todo.length + '. Réessaie plus tard.', where);
+      endJob(e.code === AUTO_LIMIT
+        ? 'Le site limite les relevés automatiques : arrêt après ' + i + ' / ' + todo.length + '. Réessaie plus tard. Le relevé automatique est en pause 24 h.'
+        : 'Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + todo.length + '. Réessaie plus tard.', where);
     }
+  }
+
+  // ---------- relevé automatique (option, désactivé par défaut) ----------
+  // Tant qu'un onglet du site est affiché, un petit relevé toutes les 30 min : d'abord les prix finaux les plus utiles,
+  // puis une lecture des fins d'enchères qui prépare le suivant. Une requête par seconde, un seul onglet à la fois,
+  // il ne bloque pas les boutons et s'efface dès qu'un relevé manuel démarre. Les amis sans Pro accumulent ainsi des prix sans rien cliquer.
+  const AUTO_KEY = 'wmstats.auto';   // verrou et horloge partagés entre les onglets, à part de la base
+  const AUTO_EVERY = 30 * 6e4;       // un passage au plus toutes les 30 min
+  const AUTO_WARMUP = 2 * 6e4;       // pas avant 2 min après l'ouverture de la page
+  const AUTO_MAX = 60;               // prix finaux par passage : le site détecte l'automatisation, on reste modeste
+  const auto = { busy: false, loadedAt: Date.now(), tab: Math.random().toString(36).slice(2) };
+  const readAuto = () => { try { return JSON.parse(localStorage.getItem(AUTO_KEY)) || {}; } catch (e) { return {}; } };
+  const writeAuto = o => { try { localStorage.setItem(AUTO_KEY, JSON.stringify(o)); } catch (e) {} };
+  const autoSleep = () => sleep(PRICE_DELAY + Math.random() * 500);
+  function autoDue(now) {
+    if (!ov('autoObs') || auto.busy || job.running) return false;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (now - auto.loadedAt < AUTO_WARMUP || db.autoPauseUntil > now) return false;
+    const a = readAuto();
+    if (num(a.until) > now && a.tab !== auto.tab) return false; // un autre onglet relève en ce moment
+    return now - num(a.at) >= AUTO_EVERY;
+  }
+  async function autoRun() {
+    if (auto.busy || job.running) return;
+    auto.busy = true;
+    const prev = readAuto();
+    let read = 0, finals = 0;
+    try {
+      const todo = finalsToFetch().slice(0, AUTO_MAX);
+      writeAuto({ tab: auto.tab, until: Date.now() + (todo.length + 20) * (PRICE_DELAY + 500), at: num(prev.at) });
+      for (const id of todo) {
+        if (job.running || job.stop) break;
+        const card = db.finQ[id] && db.finQ[id][0];
+        try {
+          const j = await getJSON('/api/marketplace/' + encodeURIComponent(id));
+          ingestFinal(id, j);
+          read++;
+          if (j && j.auction && typeof j.auction.final_price === 'number') finals++;
+        } catch (e) {
+          if (e.code === AUTO_LIMIT) throw e;
+          if (e.status === 404 || e.status === 403) { delete db.finQ[id]; read++; }
+          else throw e;
+        }
+        await autoSleep();
+      }
+      // Prépare le passage suivant : lit les fins d'enchères (seulement si aucun relevé manuel n'a démarré entre-temps).
+      if (!job.running && !job.stop) {
+        const done = new Set();
+        for (const url of sweepUrls(MARKET_PAGES, RARE_PAGES, 'ending_soon')) {
+          if (job.running || job.stop) break;
+          if (done.has(sweepGroup(url))) continue;
+          const j = await getJSON(url);
+          ingestMarket(j);
+          if (!j.hasMore) done.add(sweepGroup(url));
+          await autoSleep();
+        }
+      }
+    } catch (e) { /* limite du site, réseau : on s'arrête et on reprendra au prochain passage */ }
+    db.autoLast = { finals, read, at: Date.now() };
+    writeAuto({ tab: auto.tab, until: 0, at: Date.now() });
+    saveDb();
+    auto.busy = false;
+    refresh();
   }
 
   // Les cartes passées dans tes échanges dont l'historique de ventes manque ou date.
@@ -1767,9 +1875,10 @@
     e.colRefresh = btn('Rafraîchir les annonces',
       'Ne relit que les cartes qui ont déjà une annonce connue, pour mettre à jour leur prix et leur fin. Plus rapide que « Trouver les annonces ».', refreshCol);
     e.scan = btn('Relever les fins d’enchères',
-      'Lit les 500 enchères du marché qui se terminent bientôt, toutes cartes confondues (pas seulement les tiennes). ' +
+      'Lit les 500 enchères du marché qui se terminent bientôt, toutes cartes confondues (pas seulement les tiennes), ' +
+      'plus 150 de chaque rareté L, UR et SR, qui sinon se perdent dans la masse. ' +
       'À leur fin, leur dernière offre devient un « prix observé » : utile sans compte Pro, et pour le niveau de prix par rareté.',
-      () => scanMarket(MARKET_PAGES, 'status', 'ending_soon'));
+      () => scanMarket(MARKET_PAGES, 'status', 'ending_soon', RARE_PAGES));
     e.finals = btn('Relever les prix finaux',
       'Pour tous les comptes, Pro ou non. Relit la page de chaque enchère suivie qui vient de finir, celle qu’on ouvre en cliquant sur une annonce : ' +
       'elle donne le prix final exact, qui remplace la dernière offre vue. Une enchère par seconde. ' +
@@ -1978,6 +2087,13 @@
           chk('Prix des cartes tirées après chaque booster', 'Après chaque paquet que tu ouvres toi-même, un petit panneau donne la valeur de chaque carte tirée.',
             db.autoPull !== false, ev => { db.autoPull = ev.target.checked; saveDb(); }),
           ovChk('bidAuto', 'Prix des cartes de Mes enchères', 'Quand le site affiche l’onglet Mes enchères, relève le prix des cartes où tu enchéris qui n’en ont pas de récent.')),
+        group('Relevé automatique des prix (tous comptes)', 'Sans compte Pro, les prix viennent des fins d’enchères. Cette option les relève toute seule, pour que l’extension reste utile.',
+          ovChk('autoObs', 'Relever les prix en arrière-plan',
+            'Quand un onglet du site est affiché, un petit relevé toutes les 30 min : d’abord les prix finaux de tes cartes et souhaits, puis une lecture des fins d’enchères. ' +
+            'Une requête par seconde, un seul onglet à la fois, et il s’arrête dès que tu lances un relevé toi-même ou que le site demande de ralentir.'),
+          h('span', { class: 'sub' }, db.autoLast && db.autoLast.at
+            ? 'Dernier relevé automatique : ' + ago(db.autoLast.at) + ', ' + plural(num(db.autoLast.finals), 'prix final', 'prix finaux') + '.'
+            : (db.autoPauseUntil > Date.now() ? 'En pause : le site a limité les relevés automatiques. Reprise plus tard.' : 'Pas encore de relevé automatique.'))),
         group('Mise à jour', 'Tampermonkey met le script à jour tout seul, une fois par jour. Ces boutons servent à ne pas attendre.',
           h('span', { class: 'sub' }, 'Version installée : ' + VERSION),
           btn('Vérifier', 'Compare ta version à la dernière publiée sur GitHub.', () => checkUpdate(true)),
@@ -3119,6 +3235,7 @@
 
   // Chaque minute, les enchères observées qui viennent de finir deviennent des prix.
   setInterval(() => { if (!job.running && settleObserved()) { saveDb(); refresh(); } }, 60000);
+  setInterval(() => { if (autoDue(Date.now())) autoRun(); }, 60000);
 
   // ---------- valeur affichée sur les cartes du site ----------
   // Une pastille sur chaque carte que le site affiche : Collection, Marché, Toutes les cartes, boosters…
