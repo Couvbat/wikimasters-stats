@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.23.0
+// @version      1.23.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.1';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -2777,7 +2777,9 @@
   // D'où vient une carte : sa dernière acquisition à cette rareté (ou à rareté inconnue), datée avant `before` (la mise en vente).
   // Achetée aux enchères : le prix payé (une shiny ne compte que pour une shiny). Tirée d'un booster : 0 ₩.
   // Reçue par échange accepté : ≈ ce que tu as donné (valeur actuelle des cartes données, plus les wikibidous donnés, moins ceux
-  // reçus), réparti entre les cartes reçues. Rien de connu : null.
+  // reçus), réparti entre les cartes reçues.
+  // Rien de connu : « booster probable » (0 ₩, approximatif). Les achats et les échanges viennent d'historiques que le site
+  // renvoie, alors qu'un booster n'est vu qu'au moment où tu ouvres le paquet avec le script actif sur la page.
   function originOf(cardId, rarity, shiny, before) {
     const lim = before || Infinity;
     const sameRar = r => !rarOk(rarity) || !rarOk(r) || r === rarity;
@@ -2798,11 +2800,14 @@
       const given = (tr.g || []).reduce((sum, c) => sum + valueOf(c[0], c[2]), 0) + num(tr.wg) - num(tr.wr);
       keep({ kind: 'trade', t, cost: Math.max(0, Math.round(given / Math.max(1, tr.r.length))), approx: true, who: tr.w || '?' });
     }
-    return best;
+    return best || { kind: 'guess', t: 0, cost: 0, approx: true };
   }
   // Ce que dit la colonne « Origine ».
   const originText = o => (!o ? 'origine inconnue' : o.kind === 'buy' ? 'achetée ' + fmt(o.cost) + ' ₩ le ' + fmtDate(o.t)
-    : o.kind === 'pull' ? 'booster du ' + fmtDate(o.t) : 'échange avec ' + o.who + ' (≈ ' + fmt(o.cost) + ' ₩)');
+    : o.kind === 'pull' ? 'booster du ' + fmtDate(o.t) : o.kind === 'guess' ? 'booster probable'
+      : 'échange avec ' + o.who + ' (≈ ' + fmt(o.cost) + ' ₩)');
+  const GUESS_TIP = 'Ni achat ni échange connu pour cette carte : elle vient très probablement d’un booster ouvert pendant que le script ' +
+    'ne tournait pas sur la page (bouton 📊 absent). Comptée à 0 ₩.';
   // Un profit, signé, en vert ou en rouge.
   const profitTag = (d, approx, tip) => h('span', { class: 'tag ' + (d >= 0 ? 'deal' : 'bad'), title: tip || '' },
     (approx ? '≈ ' : '') + (d >= 0 ? '+' : '−') + fmt(Math.abs(d)) + ' ₩');
@@ -2824,7 +2829,8 @@
       revenue: withOffer.reduce((a, r) => a + r.o, 0),
       value: priced.reduce((a, r) => a + r.value, 0), unknown: live.filter(r => !r.s && r.value == null).length,
       below: priced.filter(r => r.cur < r.value), highBase: priced.filter(r => !r.b && r.base > r.value),
-      profit: live.reduce((a, r) => a + (r.profit == null ? 0 : r.profit), 0), unknownOrigin: live.filter(r => r.profit == null).length,
+      profit: live.reduce((a, r) => a + (r.profit == null ? 0 : r.profit), 0),
+      guessed: live.filter(r => r.origin && r.origin.kind === 'guess').length,
       max, free: max ? Math.max(0, max - live.length) : null
     };
   }
@@ -2839,7 +2845,7 @@
       if (r.value == null) return '—';
       // Pas d'arrondi avant de choisir le signe : avec une valeur de 100,5 ₩, une offre à 100 ₩ est bien en dessous (−0,5 ₩).
       const d = r.cur - r.value;
-      return [h('span', { class: 'tag ' + (d >= 0 ? 'deal' : 'bad'), title: (r.b ? 'Offre actuelle' : 'Mise de départ') + ' moins la valeur médiane de la carte' },
+      return [h('span', { class: 'tag' + (d < 0 ? ' bad' : r.b ? ' deal' : ''), title: (r.b ? 'Offre actuelle' : 'Mise de départ') + ' moins la valeur médiane de la carte' },
         (d >= 0 ? '+' : '−') + fmt(Math.abs(d)) + ' ₩'),
         !r.b && r.base > r.value ? [' ', h('span', { class: 'tag bad', title: 'Mise de départ au-dessus de la valeur médiane : l’annonce risque de rester invendue.' }, 'mise > valeur')] : null];
     };
@@ -2854,10 +2860,11 @@
         tile('Valeur de ces cartes', fmt(Math.round(s.value)) + ' ₩', s.unknown ? plural(s.unknown, 'carte sans prix', 'cartes sans prix') : 'valeur médiane',
           'Somme des valeurs médianes, chacune à la rareté de son exemplaire. Les shiny ne sont pas comptées.'),
         tile('Profit si tout part maintenant', (s.profit > 0 ? '+' : s.profit < 0 ? '−' : '') + fmt(Math.abs(s.profit)) + ' ₩',
-          s.unknownOrigin ? plural(s.unknownOrigin, 'annonce d’origine inconnue, non comptée', 'annonces d’origine inconnue, non comptées')
+          s.guessed ? 'dont ' + plural(s.guessed, 'origine devinée (booster probable)', 'origines devinées (booster probable)')
             : 'prix actuel moins ce que les cartes t’ont coûté',
           'Pour chaque annonce : le prix actuel (l’offre, sinon la mise de départ) moins ce que la carte t’a coûté. Achetée : le prix payé. Booster : 0 ₩. ' +
-          'Échange : ≈ ce que tu as donné, réparti entre les cartes reçues. Aucune commission n’est connue sur le Marché.'),
+          'Échange : ≈ ce que tu as donné, réparti entre les cartes reçues. Ni achat ni échange connu : booster probable, 0 ₩. ' +
+          'Aucune commission n’est connue sur le Marché.'),
         tile('Sous la valeur', fmt(s.below.length), s.below.length ? s.below.slice(0, 2).map(r => r.t).join(', ') + (s.below.length > 2 ? '…' : '') : 'aucune',
           'Annonces dont le prix actuel (l’offre, sinon la mise de départ) est encore sous la valeur médiane : elles risquent de partir en dessous de leur prix.')),
       h('div', { class: 'scroll', style: 'margin-bottom:18px' }, sortTable('selling', [
@@ -2868,8 +2875,7 @@
         { t: 'Valeur', get: r => r.value, cell: r => (r.value == null ? '—' : (r.price.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(r.value)) + ' ₩') },
         { t: 'Écart', get: r => (r.value == null || r.s ? null : r.cur - r.value), cell: gapCell },
         { t: 'Origine', asc: true, get: r => (r.origin ? r.origin.t : null),
-          cell: r => (r.origin ? originText(r.origin)
-            : h('span', { class: 'est', title: 'Booster ouvert avant la version 1.3, achat trop ancien pour être en mémoire, ou échange non lu.' }, 'origine inconnue')) },
+          cell: r => (r.origin && r.origin.kind !== 'guess' ? originText(r.origin) : h('span', { class: 'est', title: GUESS_TIP }, 'booster probable')) },
         { t: 'Profit', get: r => r.profit, cell: r => (r.profit == null ? '—' : profitTag(r.profit, r.origin.approx, 'Prix actuel moins coût : ' + originText(r.origin))) },
         { t: 'Fin', asc: true, get: r => r.e || null, cell: r => (!r.live ? 'terminée' : r.e ? 'dans ' + leftTime(r.e - now) : '—') }
       ], rows.sort((a, b) => (b.live - a.live) || ((a.e || Infinity) - (b.e || Infinity))), renderSales))
