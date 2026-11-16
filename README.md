@@ -4,6 +4,8 @@ Un bouton « 📊 Stats » ajouté sur wiki-masters.com : valeur de ta collectio
 
 Le script ne fait que lire. Il n'ouvre pas de paquet, ne met rien aux enchères, n'échange rien et ne défausse rien. Seule exception, à ta demande et après ton clic : l'étiquetage par lots, qui ajoute une de tes étiquettes à des cartes. Les données restent dans ton navigateur.
 
+**Pas développeur ?** Suis le **[guide pas à pas](GUIDE.md)** : du téléchargement à l'utilisation, avec le pool de prix du groupe.
+
 ## Installer
 
 Testé avec Tampermonkey sur Chrome et sur Zen.
@@ -60,8 +62,8 @@ L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres cl�
 
 ### Collection
 
-- **Charger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
-- **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées (jusqu'à 200 ventes par carte, dont le script garde les 10 dernières de chaque rareté), une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
+- **Recharger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
+- **Relever les prix** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées (jusqu'à 200 ventes par carte, dont le script garde les 10 dernières de chaque rareté), une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
 - **Relever les fins d'enchères** : lit les 500 enchères sur le point de se terminer, plus 150 de chaque rareté L, UR et SR (qui sinon se perdent parmi les centaines d'enchères qui finissent chaque minute), pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
 - **Relever les prix finaux** : quelques minutes plus tard, lit le prix final exact de ces enchères. Pour tous les comptes, Pro ou non. Comme il n'en lit qu'une par seconde, il commence par tes cartes et tes souhaits, puis les raretés qui valent le plus (L, UR, SR…), puis les enchères qui avaient reçu une offre. Une carte qui a déjà dix prix exacts plus récents n'est pas relue.
 - **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite toutes les cartes d'un coup, une par seconde, et saute celles cherchées depuis moins d'une heure.

@@ -18,7 +18,7 @@ Pour chaque vente, il garde aussi le pseudo du membre qui l'a envoyée. Il ne re
 
 Tant que le pool du NAS n'est pas en ligne, tu peux le faire tourner sur ton PC. Tes navigateurs de ce PC (Chrome, Zen) et tes comptes partagent alors leurs prix, sans NAS ni tunnel. Le jour où le NAS est prêt, tout ce que ce pool a reçu y part tout seul, et tu n'as plus besoin de lui.
 
-Il faut Node 24 ou plus récent ([nodejs.org](https://nodejs.org)).
+Il faut Node 24 ou plus récent ([nodejs.org](https://nodejs.org)). Pour tes potes, la même chose expliquée pas à pas est dans le [guide](../GUIDE.md#cas-b--en-attendant-le-nas-le-pool-sur-ton-pc-temporaire).
 
 **Démarrer**
 

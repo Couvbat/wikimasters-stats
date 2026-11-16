@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.23.1
+// @version      1.23.2
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.1';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.2';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -1452,7 +1452,7 @@
   }
 
   // Les cartes passées dans tes échanges dont l'historique de ventes manque ou date.
-  // Une carte donnée n'est plus dans ta collection : « Compléter les prix manquants » ne la voit donc jamais.
+  // Une carte donnée n'est plus dans ta collection : « Relever les prix » ne la voit donc jamais.
   const TRADE_BATCH = Infinity; // plus de plafond : tout est traité, au rythme du site
   function tradeCardsToPrice() {
     const out = [], seen = new Set();
@@ -3453,7 +3453,7 @@
     const e = ui.el;
     if (!rowsCache.length) {
       e.table.replaceChildren(h('div', { class: 'empty' },
-        'Aucune carte en mémoire. Clique sur « Charger ma collection », ou ouvre simplement la page Collection du site.'));
+        'Aucune carte en mémoire. Clique sur « Recharger ma collection », ou ouvre simplement la page Collection du site.'));
       return;
     }
     const rows = visibleRows();
