@@ -52,7 +52,7 @@ Une carte **shiny** en vente porte « ✦ » au lieu d'une comparaison : l'histo
 
 ### Réglages
 
-Tout ce que le script ajoute aux pages du site se règle dans l'onglet Réglages : afficher la valeur, comparer au prix de l'annonce, conseil quand tu es surenchéri, ✓ sur les cartes que tu as, bulle détaillée (ou la bulle simple du navigateur), contour vert des bonnes affaires, cartes trop chères grisées (désactivé par défaut ; elles redeviennent normales au survol, et tes propres enchères ne sont jamais grisées), valeur des échanges, et les deux relevés automatiques (cartes tirées d'un booster, cartes de Mes enchères). On y trouve aussi la version installée et le bouton de mise à jour.
+Tout ce que le script ajoute aux pages du site se règle dans l'onglet Réglages : afficher la valeur, comparer au prix de l'annonce, conseil quand tu es surenchéri, ✓ sur les cartes que tu as, bulle détaillée (ou la bulle simple du navigateur), contour vert des bonnes affaires, cartes trop chères grisées (désactivé par défaut ; elles redeviennent normales au survol, et tes propres enchères ne sont jamais grisées), valeur des échanges, les relevés automatiques réservés au Pro (cartes tirées d'un booster, cartes de Mes enchères), et le relevé automatique des prix en arrière-plan (tous comptes, désactivé par défaut ; voir « Prix observés »). On y trouve aussi la version installée et le bouton de mise à jour.
 
 ### Accueil
 
@@ -62,8 +62,8 @@ L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres cl�
 
 - **Charger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
 - **Compléter les prix manquants** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
-- **Relever les fins d'enchères** : lit les 500 enchères sur le point de se terminer, pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
-- **Relever les prix finaux** : quelques minutes plus tard, lit le prix final exact de ces enchères. Pour tous les comptes, Pro ou non.
+- **Relever les fins d'enchères** : lit les 500 enchères sur le point de se terminer, plus 150 de chaque rareté L, UR et SR (qui sinon se perdent parmi les centaines d'enchères qui finissent chaque minute), pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
+- **Relever les prix finaux** : quelques minutes plus tard, lit le prix final exact de ces enchères. Pour tous les comptes, Pro ou non. Comme il n'en lit qu'une par seconde, il commence par tes cartes et tes souhaits, puis les raretés qui valent le plus (L, UR, SR…), puis les enchères qui avaient reçu une offre. Une carte qui a déjà dix prix exacts plus récents n'est pas relue.
 - **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite toutes les cartes d'un coup, une par seconde, et saute celles cherchées depuis moins d'une heure.
 - **Rafraîchir les annonces** : relit le prix et la fin des annonces déjà affichées dans cette colonne, sans attendre.
 - **Exporter en CSV** : le tableau tel qu'il est filtré et trié, à ouvrir dans Excel ou LibreOffice.
@@ -137,7 +137,11 @@ Si vos listes de souhaits sont chargées, l'onglet montre aussi les cartes que t
 
 Avec plusieurs amis, un tableau « Tous mes amis » résume pour chacun ce que tu peux lui donner, ce qu'il peut te donner et la valeur de l'échange équilibré. Un clic sur une ligne ouvre cet ami.
 
-Le fichier contient la liste des cartes, leur nombre d'exemplaires, la liste de souhaits et les prix observés. Il ne contient jamais l'historique réservé au Pro, et il fonctionne avec ou sans compte Pro.
+Le fichier contient la liste des cartes, leur nombre d'exemplaires, la liste de souhaits et tous les prix que tu as accumulés : ton historique Pro, les prix observés, et tes propres ventes et achats. Il fonctionne avec ou sans compte Pro.
+
+**Les prix de ton ami remplissent tes tableaux.** À l'import, ses prix s'ajoutent aux tiens : la valeur de tes cartes dans Collection, À vendre, Souhaits et les pastilles du site en profite tout de suite, même sans compte Pro. Pour chaque carte, le relevé le plus récent est gardé, le tien ou le sien. Au survol de la fiabilité ou d'une pastille, « relevé partagé par … » dit d'où vient le prix. Les relevés Pro que tu as reçus d'un ami repartent dans ton propre fichier avec son nom, donc les prix circulent dans tout le groupe. Retirer un ami ne retire pas les prix qu'il a apportés. Les relevés « aucune vente » ne sont pas partagés, car le site en renvoie parfois à tort.
+
+Si le navigateur n'a plus assez de place pour les relevés Pro de ton ami, ils ne sont pas gardés, mais sa collection et ses prix observés le sont : un message le dit.
 
 ### Sauvegarde
 
@@ -166,9 +170,11 @@ L'historique des ventes d'une carte est une fonction Pro du site. Pour que tout 
 
 **Sans compte Pro, la marche à suivre** : « Relever les fins d'enchères », attendre quelques minutes que ces enchères se terminent, puis « Relever les prix finaux ». À refaire de temps en temps : les prix s'accumulent.
 
+**Relevé automatique (option, désactivée par défaut).** Dans l'onglet Réglages, « Relever les prix en arrière-plan » fait ce travail tout seul : tant qu'un onglet du site est affiché, un petit relevé toutes les 30 minutes, d'abord les prix finaux les plus utiles (tes cartes et tes souhaits), puis une lecture des fins d'enchères qui prépare le passage suivant. Une requête par seconde, un seul onglet à la fois ; il s'arrête dès que tu lances un relevé toi-même ou que le site demande de ralentir. Pensée pour tes amis sans compte Pro : les prix s'accumulent sans rien cliquer. Le site repère les outils trop actifs : s'il le signale, le relevé automatique se met en pause 24 h.
+
 Ces prix servent de valeur pour une carte quand il n'y a ni historique Pro ni vente personnelle. Ils donnent aussi un niveau de prix par rareté, affiché en haut de l'onglet Collection.
 
-Les prix observés partent dans le fichier que tu exportes pour tes amis, et ceux de tes amis s'ajoutent aux tiens à l'import : à plusieurs, l'historique se remplit plus vite. L'historique réservé au Pro, lui, n'est jamais partagé.
+Les prix observés partent dans le fichier que tu exportes pour tes amis, avec ton historique Pro et tes ventes et achats, et ceux de tes amis s'ajoutent aux tiens à l'import : à plusieurs, l'historique se remplit plus vite (voir « Amis »).
 
 La couverture reste partielle. Il existe près de trois millions de cartes, et le script ne connaît que les enchères qu'il a vues passer : ne compte pas dessus pour avoir le prix de chaque carte.
 
@@ -177,6 +183,7 @@ La couverture reste partielle. Il existe près de trois millions de cartes, et l
 L'historique des ventes de chaque carte est une fonction Pro du site, et le script n'y touche pas sans compte Pro. Il reste :
 
 - les prix observés décrits ci-dessus, précisés par leur prix final exact avec « Relever les prix finaux » ;
+- l'historique Pro d'un ami qui a un compte Pro, quand tu importes son fichier dans l'onglet Amis ;
 
 - le tableau (rareté, ATK, DEF, Q-Score, vues, exemplaires) et l'export CSV ;
 - les stats de boosters, le bilan de tes ventes, la liste de souhaits, l'évolution, la comparaison entre amis et la sauvegarde ;

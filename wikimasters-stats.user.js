@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.18.0
+// @version      1.19.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -46,7 +46,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.18.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.19.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -80,7 +80,7 @@
     e.updBanner.style.display = has ? '' : 'none';
     e.updBanner.textContent = has ?'Version ' + db.latest + ' disponible : mettre à jour ↗' : '';
   }
-  const OV_DEF ={ cmp: true, dim: false, glow: true, outbid: true, tip: true, have: true, trade: true, bidAuto: true };
+  const OV_DEF ={ cmp: true, dim: false, glow: true, outbid: true, tip: true, have: true, trade: true, bidAuto: true, autoObs: false };
   const ov = k => (db.ov && typeof db.ov[k] === 'boolean' ? db.ov[k] : OV_DEF[k]);
   const MAX_AUCTIONS = 3000; // enchères personnelles gardées en mémoire
   const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -117,11 +117,13 @@
   window.addEventListener('storage', ev => {
     if (ev.key === KEY && !job.running) { db = loadDb(); refresh(); }
   });
+  // Renvoie false si rien n'a pu être enregistré, faute de place.
   function saveDb() {
     try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {
       // Plus de place : on sacrifie le relevé du marché, qui se refait en un clic.
-      try { db.market.asks = {}; localStorage.setItem(KEY, JSON.stringify(db)); } catch (e2) {}
+      try { db.market.asks = {}; localStorage.setItem(KEY, JSON.stringify(db)); } catch (e2) { return false; }
     }
+    return true;
   }
   const byDateDesc = (a, b) => (a.t < b.t ? 1 : a.t > b.t ? -1 : 0);
   const rarOf = r => (typeof r === 'string' && /^[A-Z]{1,3}$/.test(r) ? r : '?');
@@ -375,13 +377,27 @@
     return true;
   }
   // Enchères finies dont le prix final reste à lire, à partir d'une minute après la fin (le temps que le site la règle).
-  // Celles qui avaient une offre d'abord, puis les plus récentes.
+  // On ne peut en lire qu'une par seconde, alors que des centaines finissent chaque minute : l'ordre compte.
+  // D'abord tes cartes et tes souhaits, puis les raretés qui valent le plus, puis celles qui avaient une offre, puis les plus récentes.
+  // Une enchère dont le prix serait écarté de toute façon (la carte a déjà 10 prix, tous plus récents) n'est pas relue.
+  const RAR_RANK = { L: 0, UR: 1, SR: 2, R: 3, PC: 4, C: 5 };
   function finalsToFetch() {
-    const now = Date.now();
-    return Object.keys(db.finQ).filter(id => now - db.finQ[id][2] > 6e4)
-      .sort((x, y) => (db.finQ[y][3] - db.finQ[x][3]) || (db.finQ[y][2] - db.finQ[x][2]));
+    const now = Date.now(), mine = myCards(), keys = {};
+    const ids = Object.keys(db.finQ).filter(id => {
+      const q = db.finQ[id], seen = db.obsSales[q[0]];
+      return now - q[2] > 6e4 && !(seen && seen.length >= 10 && Date.parse(seen[seen.length - 1].t) >= q[2]);
+    });
+    for (const id of ids) {
+      const q = db.finQ[id];
+      keys[id] = [mine[q[0]] || db.wish[q[0]] ? 0 : 1, q[1] in RAR_RANK ? RAR_RANK[q[1]] : 6, q[3] ? 0 : 1, -q[2]];
+    }
+    return ids.sort((x, y) => {
+      const a = keys[x], b = keys[y];
+      for (let k = 0; k < a.length; k++) if (a[k] !== b[k]) return a[k] - b[k];
+      return 0;
+    });
   }
-  // Ce qu'on peut partager : uniquement des observations d'enchères publiques, jamais l'historique réservé au Pro.
+  // Les fins d'enchères observées, pour le fichier ami et la sauvegarde. L'historique Pro voyage à part (voir proExport).
   function observedExport() {
     const sales = [];
     for (const id in db.obsSales) for (const s of db.obsSales[id]) sales.push([id, s.p, s.t, s.g, s.x ? 1 : 0, s.i || '']);
@@ -412,6 +428,37 @@
       cards.sort((x, y) => (db.obsSales[x][0].t < db.obsSales[y][0].t ? -1 : 1))
         .slice(0, cards.length - MAX_OBS_CARDS).forEach(id => delete db.obsSales[id]);
     }
+    return added;
+  }
+  // ---------- historique Pro partagé avec les amis ----------
+  // Chaque relevé : [carte, date du relevé, [[prix, date de vente], …], origine]. Les relevés « aucune vente » restent
+  // chez soi : le site en renvoie parfois à tort pour des L, UR et SR. Un relevé reçu d'un ami garde son origine.
+  const MAX_PRO_SHARE = 8000;
+  function proExport(pseudo) {
+    return Object.keys(db.prices).filter(id => okKey(id) && isObj(db.prices[id]) && Array.isArray(db.prices[id].sales) && db.prices[id].sales.length)
+      .sort((x, y) => num(db.prices[y].at) - num(db.prices[x].at)).slice(0, MAX_PRO_SHARE)
+      .map(id => { const p = db.prices[id]; return [id, num(p.at), p.sales.map(s => [s.p, s.t]), p.by || pseudo]; });
+  }
+  // Fusionne les relevés Pro d'un ami : pour chaque carte, le relevé le plus récent gagne, comme pour une sauvegarde.
+  // Une date dans le futur est ramenée à maintenant, sinon ce prix ne serait jamais remplacé. Renvoie le nombre de relevés ajoutés.
+  function mergePro(list, from) {
+    if (!Array.isArray(list)) return 0;
+    const now = Date.now();
+    let added = 0;
+    for (const e of list.slice(0, 20000)) {
+      if (!Array.isArray(e) || !okKey(e[0]) || !(num(e[1]) > 0) || !Array.isArray(e[2])) continue;
+      // Une vente sans date lisible ne compte pas, comme dans mergeObserved.
+      const sales = e[2].filter(s => Array.isArray(s) && num(s[0]) > 0 && typeof s[1] === 'string' && Number.isFinite(Date.parse(s[1])))
+        .slice(0, 10).map(s => ({ p: s[0], t: str(s[1], 40) })).sort(byDateDesc);
+      if (!sales.length) continue;
+      const at = Math.min(e[1], now), cur = db.prices[e[0]];
+      if (cur && num(cur.at) >= at) continue;
+      // Tes propres prix revenus par un ami ne sont pas « partagés ».
+      const by = (typeof e[3] === 'string' && e[3].trim().slice(0, 40)) || from;
+      db.prices[e[0]] = by && by !== db.me ? { at, sales, by } : { at, sales };
+      added++;
+    }
+    if (added) priceCache = new Map();
     return added;
   }
   // Niveau de prix par rareté, d'après les fins d'enchères observées ces 7 derniers jours.
@@ -621,6 +668,8 @@
       // Des prix finaux tous relus sur la page des enchères valent l'historique Pro.
       out.exact = obs && sales.every(s => s.x);
       if (obs && !out.exact && out.rel.level > 1) out.rel.level = 1;
+      // Relevé Pro reçu d'un ami : son pseudo, pour le dire au survol.
+      out.by = (!own && !obs && rec && rec.by) || '';
     }
     priceCache.set(cardId, out);
     return out;
@@ -744,6 +793,9 @@
   // ou on attend de plus en plus longtemps, puis on reprend au même endroit, plus lentement.
   // On ne cherche pas à contourner ce frein : on l'attend.
   const BUSY = new Set([429, 502, 503, 504]);
+  // Le site répond « automation_limit » quand il estime qu'un compte va trop vite. Ce n'est pas un simple ralentissement :
+  // tout s'arrête, rien n'est retiré des files d'attente, et le relevé automatique se met en pause 24 h.
+  const AUTO_LIMIT = 'automation_limit';
   async function getJSON(path) {
     for (let attempt = 0; ; attempt++) {
       let r = null;
@@ -754,6 +806,12 @@
       }
       if (r && r.ok) return r.json();
       const status = r ? r.status : 0;
+      const body = r ? await r.json().catch(() => null) : null;
+      if (body && body.code === AUTO_LIMIT) {
+        db.autoPauseUntil = Date.now() + DAY;
+        saveDb();
+        throw Object.assign(new Error('le site limite les relevés automatiques, réessaie plus tard'), { status, code: AUTO_LIMIT });
+      }
       if (r && !BUSY.has(status)) throw Object.assign(new Error('HTTP ' + status), { status });
       if (!job.running || job.stop || attempt >= 6) throw Object.assign(new Error(status ? 'HTTP ' + status : 'réseau'), { status });
       const asked = r ? Number(r.headers.get('retry-after')) : NaN;
@@ -816,7 +874,7 @@
       }
       endJob(job.stop ? 'Arrêté à ' + i + ' / ' + ids.length + '.' : 'Prix complétés pour ' + i + ' cartes.');
     } catch (e) {
-      if ([401, 402, 403].includes(e.status)) {
+      if (e.code !== AUTO_LIMIT && [401, 402, 403].includes(e.status)) {
         return endJob('Le site refuse l’historique des ventes pour ce compte (réservé au Pro ?). ' +
           'Le tableau reste utilisable sans les prix : raretés, ATK, DEF, Q-Score, export CSV.');
       }
@@ -827,18 +885,32 @@
   // Lit les premières pages de la page Marché, comme si tu les feuilletais.
   // sort : « recent » pour les dernières annonces, « ending_soon » pour les enchères sur le point de finir,
   // dont l'offre en cours est presque le prix final.
-  async function scanMarket(pages, where, sort) {
+  // rare : pages lues en plus pour chaque rareté de RARE_SWEEP, avec le filtre de rareté du site. Sans lui, les L, UR et SR
+  // se perdent parmi les centaines d'enchères qui finissent chaque minute.
+  const RARE_SWEEP = ['L', 'UR', 'SR'];
+  const RARE_PAGES = 3;
+  function sweepUrls(pages, rare, sort) {
+    const s = sort || 'ending_soon', urls = [];
+    for (let p = 1; p <= pages; p++) urls.push('/api/marketplace?page=' + p + '&limit=50&sort=' + s + (p === 1 ? '&mine=1' : ''));
+    for (const r of rare ? RARE_SWEEP : []) for (let p = 1; p <= rare; p++) urls.push('/api/marketplace?page=' + p + '&limit=50&sort=' + s + '&rarity=' + r);
+    return urls;
+  }
+  const sweepGroup = url => (/&rarity=(\w+)/.exec(url) || [])[1] || '';
+  async function scanMarket(pages, where, sort, rare) {
     if (job.running) return;
     startJob('Lecture du marché…', where);
-    let seen = 0;
+    let seen = 0, n = 0;
+    const done = new Set();
     try {
-      for (let page = 1; page <= pages && !job.stop; page++) {
-        const j = await getJSON('/api/marketplace?page=' + page + '&limit=50&sort=' + (sort || 'recent') + (page === 1 ? '&mine=1' : ''));
+      for (const url of sweepUrls(pages, rare || 0, sort || 'recent')) {
+        if (job.stop) break;
+        if (done.has(sweepGroup(url))) continue; // plus de page dans cette rareté
+        if (n++) await pace();
+        const j = await getJSON(url);
         ingestMarket(j);
         seen += (j.auctions || []).length;
         setStatus('Marché : ' + seen + ' enchères lues…', where);
-        if (!j.hasMore) break;
-        if (page < pages) await pace();
+        if (!j.hasMore) done.add(sweepGroup(url));
       }
       endJob(pages === 1 ? 'Ventes en cours à jour.'
         : seen + ' enchères lues. Leur prix sera enregistré quand elles seront finies, d’ici quelques minutes.', where);
@@ -855,16 +927,22 @@
     const todo = finalsToFetch();
     if (!todo.length) return setStatus('Aucun prix final à relever pour l’instant. « Relever les fins d’enchères » en prépare : leurs prix finaux se relèvent quelques minutes après.', where);
     startJob('Prix finaux : 0 / ' + todo.length, where);
-    let i = 0, sold = 0;
+    const mine = myCards();
+    let i = 0, sold = 0, soldMine = 0;
     try {
       for (const id of todo) {
         if (job.stop) break;
+        const card = db.finQ[id] && db.finQ[id][0];
         try {
           const j = await getJSON('/api/marketplace/' + encodeURIComponent(id));
           ingestFinal(id, j);
-          if (j && j.auction && typeof j.auction.final_price === 'number') sold++;
+          if (j && j.auction && typeof j.auction.final_price === 'number') {
+            sold++;
+            if (mine[card] || db.wish[card]) soldMine++;
+          }
         } catch (e) {
-          if (e.status === 404 || e.status === 403) delete db.finQ[id]; // enchère retirée ou inaccessible : on l'oublie
+          // Enchère retirée ou inaccessible : on l'oublie. Mais une limite du site arrête tout, sans rien oublier.
+          if (e.code !== AUTO_LIMIT && (e.status === 404 || e.status === 403)) delete db.finQ[id];
           else throw e;
         }
         i++;
@@ -874,11 +952,76 @@
       }
       saveDb();
       endJob((job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '. ' : '') + plural(sold, 'prix final relevé', 'prix finaux relevés') +
-        ' sur ' + plural(i, 'enchère lue', 'enchères lues') + '.', where);
+        (soldMine ? ', dont ' + fmt(soldMine) + ' sur tes cartes ou tes souhaits,' : '') + ' sur ' + plural(i, 'enchère lue', 'enchères lues') + '.', where);
     } catch (e) {
       saveDb();
-      endJob('Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + todo.length + '. Réessaie plus tard.', where);
+      endJob(e.code === AUTO_LIMIT
+        ? 'Le site limite les relevés automatiques : arrêt après ' + i + ' / ' + todo.length + '. Réessaie plus tard. Le relevé automatique est en pause 24 h.'
+        : 'Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + todo.length + '. Réessaie plus tard.', where);
     }
+  }
+
+  // ---------- relevé automatique (option, désactivé par défaut) ----------
+  // Tant qu'un onglet du site est affiché, un petit relevé toutes les 30 min : d'abord les prix finaux les plus utiles,
+  // puis une lecture des fins d'enchères qui prépare le suivant. Une requête par seconde, un seul onglet à la fois,
+  // il ne bloque pas les boutons et s'efface dès qu'un relevé manuel démarre. Les amis sans Pro accumulent ainsi des prix sans rien cliquer.
+  const AUTO_KEY = 'wmstats.auto';   // verrou et horloge partagés entre les onglets, à part de la base
+  const AUTO_EVERY = 30 * 6e4;       // un passage au plus toutes les 30 min
+  const AUTO_WARMUP = 2 * 6e4;       // pas avant 2 min après l'ouverture de la page
+  const AUTO_MAX = 60;               // prix finaux par passage : le site détecte l'automatisation, on reste modeste
+  const auto = { busy: false, loadedAt: Date.now(), tab: Math.random().toString(36).slice(2) };
+  const readAuto = () => { try { return JSON.parse(localStorage.getItem(AUTO_KEY)) || {}; } catch (e) { return {}; } };
+  const writeAuto = o => { try { localStorage.setItem(AUTO_KEY, JSON.stringify(o)); } catch (e) {} };
+  const autoSleep = () => sleep(PRICE_DELAY + Math.random() * 500);
+  function autoDue(now) {
+    if (!ov('autoObs') || auto.busy || job.running) return false;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (now - auto.loadedAt < AUTO_WARMUP || db.autoPauseUntil > now) return false;
+    const a = readAuto();
+    if (num(a.until) > now && a.tab !== auto.tab) return false; // un autre onglet relève en ce moment
+    return now - num(a.at) >= AUTO_EVERY;
+  }
+  async function autoRun() {
+    if (auto.busy || job.running) return;
+    auto.busy = true;
+    const prev = readAuto();
+    let read = 0, finals = 0;
+    try {
+      const todo = finalsToFetch().slice(0, AUTO_MAX);
+      writeAuto({ tab: auto.tab, until: Date.now() + (todo.length + 20) * (PRICE_DELAY + 500), at: num(prev.at) });
+      for (const id of todo) {
+        if (job.running || job.stop) break;
+        const card = db.finQ[id] && db.finQ[id][0];
+        try {
+          const j = await getJSON('/api/marketplace/' + encodeURIComponent(id));
+          ingestFinal(id, j);
+          read++;
+          if (j && j.auction && typeof j.auction.final_price === 'number') finals++;
+        } catch (e) {
+          if (e.code === AUTO_LIMIT) throw e;
+          if (e.status === 404 || e.status === 403) { delete db.finQ[id]; read++; }
+          else throw e;
+        }
+        await autoSleep();
+      }
+      // Prépare le passage suivant : lit les fins d'enchères (seulement si aucun relevé manuel n'a démarré entre-temps).
+      if (!job.running && !job.stop) {
+        const done = new Set();
+        for (const url of sweepUrls(MARKET_PAGES, RARE_PAGES, 'ending_soon')) {
+          if (job.running || job.stop) break;
+          if (done.has(sweepGroup(url))) continue;
+          const j = await getJSON(url);
+          ingestMarket(j);
+          if (!j.hasMore) done.add(sweepGroup(url));
+          await autoSleep();
+        }
+      }
+    } catch (e) { /* limite du site, réseau : on s'arrête et on reprendra au prochain passage */ }
+    db.autoLast = { finals, read, at: Date.now() };
+    writeAuto({ tab: auto.tab, until: 0, at: Date.now() });
+    saveDb();
+    auto.busy = false;
+    refresh();
   }
 
   // Les cartes passées dans tes échanges dont l'historique de ventes manque ou date.
@@ -1258,21 +1401,30 @@
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   }
+  // Le fichier pour tes amis : ta collection, tes souhaits, et tous les prix que tu as accumulés.
+  function friendExport(pseudo) {
+    const mine = myCards();
+    const seen = observedExport();
+    // Tes ventes et achats : des prix finaux exacts, que tout compte peut lire sur la page de l'enchère.
+    // Pas dans la sauvegarde, qui a déjà tes enchères.
+    for (const id in db.auctions) {
+      const a = db.auctions[id];
+      if (Array.isArray(a) && typeof a[6] === 'number' && a[6] > 0 && !a[8] && okKey(a[1])) seen.sales.push([a[1], a[6], a[7], 0, 1, id]);
+    }
+    return {
+      wmstats: 1, pseudo, at: Date.now(),
+      cards: Object.keys(mine).map(id => [id, mine[id].title, mine[id].rarity, mine[id].count]),
+      wish: Object.entries(db.wish).map(([id, w]) => [id, w[0], w[1]]),
+      seen, pro: proExport(pseudo)
+    };
+  }
   function exportMine() {
     const pseudo = (db.me || '').trim();
     if (!pseudo) return setStatus('Écris d’abord ton pseudo.', 'frStatus');
-    const mine = myCards();
-    const ids = Object.keys(mine);
-    if (!ids.length) return setStatus('Charge d’abord ta collection dans l’onglet Collection.', 'frStatus');
-    // Volontairement sans les prix : seulement ce que chacun voit de sa propre collection.
-    const data = {
-      wmstats: 1, pseudo, at: Date.now(),
-      cards: ids.map(id => [id, mine[id].title, mine[id].rarity, mine[id].count]),
-      wish: Object.entries(db.wish).map(([id, w]) => [id, w[0], w[1]]),
-      seen: observedExport()
-    };
+    if (!Object.keys(db.cards).length) return setStatus('Charge d’abord ta collection dans l’onglet Collection.', 'frStatus');
+    const data = friendExport(pseudo);
     download('wikimasters-collection-' + pseudo.replace(/[^\w-]+/g, '_') + '.json', JSON.stringify(data), 'application/json');
-    setStatus('Fichier créé : envoie-le à tes amis.', 'frStatus');
+    setStatus('Fichier créé : envoie-le à tes amis.' + (data.pro.length ? ' Il contient ' + plural(data.pro.length, 'relevé Pro', 'relevés Pro') + '.' : ''), 'frStatus');
   }
   // Le fichier d'un ami est une donnée extérieure : on ne garde que des champs simples, bornés.
   function parseFriend(text) {
@@ -1292,7 +1444,7 @@
     for (const c of (Array.isArray(j.wish) ? j.wish : []).slice(0, 5000)) {
       if (Array.isArray(c) && okKey(c[0]) && typeof c[1] === 'string') wish[c[0].slice(0, 64)] = [c[1].slice(0, 200), rarOf(c[2])];
     }
-    return { pseudo, at: typeof j.at === 'number' ? j.at : Date.now(), cards, wish, seen: isObj(j.seen) ? j.seen : null };
+    return { pseudo, at: typeof j.at === 'number' ? j.at : Date.now(), cards, wish, seen: isObj(j.seen) ? j.seen : null, pro: Array.isArray(j.pro) ? j.pro : null };
   }
 
   // ---------- sauvegarde : passer ses données d'un navigateur à l'autre ----------
@@ -1323,7 +1475,12 @@
     if (isObj(b.prices)) for (const id in b.prices) {
       const p = b.prices[id], cur = db.prices[id];
       if (!okKey(id) || !isObj(p)) continue;
-      if (!cur || num(p.at) > cur.at) { db.prices[id] = { at: num(p.at), sales: cleanSales(p.sales) }; n.prix++; }
+      if (!cur || num(p.at) > cur.at) {
+        db.prices[id] = { at: num(p.at), sales: cleanSales(p.sales) };
+        // Un relevé reçu d'un ami garde son origine.
+        if (typeof p.by === 'string' && p.by.trim()) db.prices[id].by = p.by.trim().slice(0, 40);
+        n.prix++;
+      }
     }
     if (Array.isArray(b.pulls)) {
       const seen = new Set(db.pulls.map(p => p.t));
@@ -1403,15 +1560,22 @@
   async function importFriend(file) {
     if (!file) return;
     try {
-      if (file.size > 5e6) throw new Error('fichier trop gros');
+      if (file.size > 2e7) throw new Error('fichier trop gros');
       const f = parseFriend(await file.text());
       if (!db.friends[f.pseudo] && Object.keys(db.friends).length >= 10) throw new Error('10 amis au maximum, retire-en un');
       db.friends[f.pseudo] = { at: f.at, cards: f.cards, wish: f.wish };
       ui.friend = f.pseudo;
       const prices = mergeObserved(f.seen);
-      saveDb();
-      setStatus('Collection de ' + f.pseudo + ' importée : ' + plural(Object.keys(f.cards).length, 'carte différente', 'cartes différentes') +
-        (prices ? ', et ' + plural(prices, 'prix observé ajouté', 'prix observés ajoutés') : '') + '.', 'frStatus');
+      // Rien n'a pu être enregistré : on revient à ce qui est rangé dans le navigateur, plutôt qu'à un import qui disparaîtrait au rechargement.
+      if (!saveDb()) { db = loadDb(); priceCache = new Map(); throw new Error('plus assez de place dans le navigateur'); }
+      // Ses relevés Pro passent à part : s'ils ne tiennent pas, on revient à l'état enregistré juste avant (l'ami et ses prix observés, sans eux).
+      let pro = mergePro(f.pro, f.pseudo), full = false;
+      if (pro && !saveDb()) { db = loadDb(); priceCache = new Map(); pro = 0; full = true; }
+      const parts = [plural(Object.keys(f.cards).length, 'carte différente', 'cartes différentes')];
+      if (prices) parts.push(plural(prices, 'prix observé ajouté', 'prix observés ajoutés'));
+      if (pro) parts.push(plural(pro, 'relevé Pro ajouté', 'relevés Pro ajoutés'));
+      setStatus('Collection de ' + f.pseudo + ' importée : ' + parts.slice(0, -1).join(', ') + (parts.length > 1 ? ' et ' : '') + parts[parts.length - 1] + '.' +
+        (full ? ' Ses relevés Pro n’ont pas été gardés : plus assez de place dans le navigateur.' : ''), 'frStatus');
     } catch (e) {
       setStatus('Import impossible : ' + e.message + '.', 'frStatus');
     }
@@ -1597,7 +1761,8 @@
     const title = p.n + ' vente' + (p.n > 1 ? 's' : '') + ', ' + age + ', écart ×' + fmt(p.rel.spread) +
       (p.trend ? (p.trend > 0 ? ', prix en hausse' : ', prix en baisse') : '') + (p.own ? ', d’après tes propres ventes et achats' : '') +
       (p.obs ? (p.exact ? ', d’après les prix finaux d’enchères relevés sur le marché'
-        : ', d’après des fins d’enchères observées (en partie la dernière offre vue, donc un minimum : « Relever les prix finaux » les précise)') : '');
+        : ', d’après des fins d’enchères observées (en partie la dernière offre vue, donc un minimum : « Relever les prix finaux » les précise)') : '') +
+      (p.by ? ', relevé partagé par ' + p.by : '');
     return h('span', { class: 'rel l' + p.rel.level, title }, REL[p.rel.level] + ARROW[p.trend]);
   }
   const rarBadge = r => h('span', { class: 'r r-' + r }, r);
@@ -1678,7 +1843,7 @@
       : pro === false
         ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Pour avoir des prix quand même : « Relever les fins d’enchères », ' +
           'puis quelques minutes plus tard « Relever les prix finaux », qui lit le prix exact de chaque enchère terminée. ' +
-          'S’y ajoutent tes propres ventes et achats, et les prix que tes amis partagent. Refais-le de temps en temps : les prix s’accumulent.'
+          'S’y ajoutent tes propres ventes et achats, et les prix que tes amis partagent, y compris leur historique Pro. Refais-le de temps en temps : les prix s’accumulent.'
         : 'Statut Pro pas encore détecté : recharge la page (F5).';
   }
 
@@ -1710,9 +1875,10 @@
     e.colRefresh = btn('Rafraîchir les annonces',
       'Ne relit que les cartes qui ont déjà une annonce connue, pour mettre à jour leur prix et leur fin. Plus rapide que « Trouver les annonces ».', refreshCol);
     e.scan = btn('Relever les fins d’enchères',
-      'Lit les 500 enchères du marché qui se terminent bientôt, toutes cartes confondues (pas seulement les tiennes). ' +
+      'Lit les 500 enchères du marché qui se terminent bientôt, toutes cartes confondues (pas seulement les tiennes), ' +
+      'plus 150 de chaque rareté L, UR et SR, qui sinon se perdent dans la masse. ' +
       'À leur fin, leur dernière offre devient un « prix observé » : utile sans compte Pro, et pour le niveau de prix par rareté.',
-      () => scanMarket(MARKET_PAGES, 'status', 'ending_soon'));
+      () => scanMarket(MARKET_PAGES, 'status', 'ending_soon', RARE_PAGES));
     e.finals = btn('Relever les prix finaux',
       'Pour tous les comptes, Pro ou non. Relit la page de chaque enchère suivie qui vient de finir, celle qu’on ouvre en cliquant sur une annonce : ' +
       'elle donne le prix final exact, qui remplace la dernière offre vue. Une enchère par seconde. ' +
@@ -1829,11 +1995,13 @@
     e.frSelect = h('select', { onchange: ev => { ui.friend = ev.target.value; renderFriends(); }, 'data-tip': 'L’ami dont tu veux comparer la collection avec la tienne.' });
     e.view_friends = h('div', null,
       h('div', { class: 'tools' },
-        group('Partager ma collection', 'Le fichier contient tes cartes, leur nombre d’exemplaires, ta liste de souhaits et les prix observés. Jamais l’historique réservé au Pro.',
+        group('Partager ma collection', 'Le fichier contient tes cartes, leur nombre d’exemplaires, ta liste de souhaits et tous les prix que tu as accumulés : ' +
+          'ton historique Pro, les prix observés, tes ventes et achats. Chez ton ami, ils s’ajoutent à ses prix.',
           h('input', { type: 'text', value: db.me || '', style: 'min-width:140px', placeholder: 'ton pseudo', 'data-tip': 'Le nom sous lequel tes amis verront ta collection.',
             oninput: ev => { db.me = ev.target.value.slice(0, 40); saveDb(); } }),
           btn('Exporter pour mes amis', 'Télécharge un fichier à envoyer à tes amis.', exportMine, 'pri')),
-        group('Ajouter un ami', null,
+        group('Ajouter un ami', 'Ses cartes et ses souhaits servent à la comparaison. Ses prix (historique Pro, prix observés, ventes et achats) ' +
+          's’ajoutent aux tiens et remplissent tes tableaux : pour chaque carte, le relevé le plus récent est gardé.',
           h('input', { type: 'file', accept: '.json,application/json', 'data-tip': 'Choisis le fichier que ton ami t’a envoyé.',
             onchange: ev => { importFriend(ev.target.files[0]); ev.target.value = ''; } })),
         group('Comparer', null, e.frSelect,
@@ -1919,6 +2087,13 @@
           chk('Prix des cartes tirées après chaque booster', 'Après chaque paquet que tu ouvres toi-même, un petit panneau donne la valeur de chaque carte tirée.',
             db.autoPull !== false, ev => { db.autoPull = ev.target.checked; saveDb(); }),
           ovChk('bidAuto', 'Prix des cartes de Mes enchères', 'Quand le site affiche l’onglet Mes enchères, relève le prix des cartes où tu enchéris qui n’en ont pas de récent.')),
+        group('Relevé automatique des prix (tous comptes)', 'Sans compte Pro, les prix viennent des fins d’enchères. Cette option les relève toute seule, pour que l’extension reste utile.',
+          ovChk('autoObs', 'Relever les prix en arrière-plan',
+            'Quand un onglet du site est affiché, un petit relevé toutes les 30 min : d’abord les prix finaux de tes cartes et souhaits, puis une lecture des fins d’enchères. ' +
+            'Une requête par seconde, un seul onglet à la fois, et il s’arrête dès que tu lances un relevé toi-même ou que le site demande de ralentir.'),
+          h('span', { class: 'sub' }, db.autoLast && db.autoLast.at
+            ? 'Dernier relevé automatique : ' + ago(db.autoLast.at) + ', ' + plural(num(db.autoLast.finals), 'prix final', 'prix finaux') + '.'
+            : (db.autoPauseUntil > Date.now() ? 'En pause : le site a limité les relevés automatiques. Reprise plus tard.' : 'Pas encore de relevé automatique.'))),
         group('Mise à jour', 'Tampermonkey met le script à jour tout seul, une fois par jour. Ces boutons servent à ne pas attendre.',
           h('span', { class: 'sub' }, 'Version installée : ' + VERSION),
           btn('Vérifier', 'Compare ta version à la dernière publiée sur GitHub.', () => checkUpdate(true)),
@@ -3060,6 +3235,7 @@
 
   // Chaque minute, les enchères observées qui viennent de finir deviennent des prix.
   setInterval(() => { if (!job.running && settleObserved()) { saveDb(); refresh(); } }, 60000);
+  setInterval(() => { if (autoDue(Date.now())) autoRun(); }, 60000);
 
   // ---------- valeur affichée sur les cartes du site ----------
   // Une pastille sur chaque carte que le site affiche : Collection, Marché, Toutes les cartes, boosters…
@@ -3115,7 +3291,7 @@
       const med = Math.max(p.med, DISCARD), mx = maxBid(p);
       text = (p.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(med)) + ' ₩';
       border = ['#6b7280', '#f59e0b', '#10b981'][p.rel.level];
-      lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
+      lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
         if (au.s) {
