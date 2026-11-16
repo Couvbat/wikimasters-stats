@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.23.2
+// @version      1.23.3
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.2';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.3';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -153,20 +153,27 @@
     return { shared, mine };
   }
   // Enregistre la partie personnelle (d'abord : si elle ne tient pas, rien ne change) puis la partie commune.
-  // Plus de place : on sacrifie le relevé du marché, qui se refait en un clic, puis on raccourcit l'historique des ventes
-  // à 10 par rareté (le pool, lui, garde tout). Renvoie false si rien n'a pu être enregistré.
+  // Plus de place : le relevé du marché, qui se refait en un clic, n'est plus enregistré qu'en partie (les annonces des cartes
+  // souhaitées), puis plus du tout ; en dernier recours, l'historique des ventes revient à 10 par rareté (le pool, lui, garde tout).
+  // Le relevé reste affiché jusqu'au rechargement de la page : on le retire de l'enregistrement, jamais de la mémoire.
+  // Renvoie false si rien n'a pu être enregistré.
   function saveDb() {
-    const write = () => {
+    const write = asks => {
       const { shared, mine } = splitDb();
+      if (asks) shared.market = { at: db.market.at, asks };
       localStorage.setItem(acctKey(db.userId), JSON.stringify(mine));
       localStorage.setItem(KEY, JSON.stringify(shared));
     };
-    try { write(); } catch (e) {
-      try { db.market.asks = {}; write(); } catch (e2) {
-        try { trimHistory(); write(); } catch (e3) { return false; }
-      }
+    const wishAsks = () => {
+      const o = {};
+      for (const id in db.market.asks) if (db.wish[id]) o[id] = db.market.asks[id];
+      return o;
+    };
+    const tries = [() => write(), () => write(wishAsks()), () => write({}), () => { trimHistory(); write(wishAsks()); }, () => write({})];
+    for (const tryIt of tries) {
+      try { tryIt(); return true; } catch (e) {}
     }
-    return true;
+    return false;
   }
   // Le compte connecté vient d'être reconnu, ou il a changé : on range les données de l'ancien, on charge celles du nouveau.
   // Renvoie true si l'on a changé de compte.
