@@ -36,8 +36,12 @@ function openDb(path) {
     dropProv: db.prepare("DELETE FROM sales WHERE auction = ? AND kind = 'prov'"),
     proFetch: db.prepare('INSERT INTO pro_fetch (card, at, member) VALUES (?, ?, ?) ON CONFLICT(card) DO UPDATE SET at = excluded.at, member = excluded.member WHERE excluded.at > pro_fetch.at'),
     getProFetch: db.prepare('SELECT at, member FROM pro_fetch WHERE card = ?'),
-    proRows: db.prepare("SELECT price, sold_at FROM sales WHERE card = ? AND kind = 'pro' ORDER BY sold_at DESC LIMIT 10"),
-    obsRows: db.prepare("SELECT price, sold_at, gap, kind, auction FROM sales WHERE card = ? AND kind IN ('exact', 'prov') ORDER BY sold_at DESC LIMIT 10")
+    // Les 20 dernières ventes de chaque rareté (60 au plus) : chaque rareté a son propre historique.
+    proRows: db.prepare("SELECT price, sold_at, rarity FROM (SELECT price, sold_at, rarity, ROW_NUMBER() OVER (PARTITION BY COALESCE(rarity, '') ORDER BY sold_at DESC) AS rn " +
+      "FROM sales WHERE card = ? AND kind = 'pro') WHERE rn <= 20 ORDER BY sold_at DESC LIMIT 60"),
+    obsRows: db.prepare("SELECT price, sold_at, gap, kind, auction, rarity FROM (SELECT price, sold_at, gap, kind, auction, rarity, " +
+      "ROW_NUMBER() OVER (PARTITION BY COALESCE(rarity, '') ORDER BY sold_at DESC) AS rn FROM sales WHERE card = ? AND kind IN ('exact', 'prov')) " +
+      'WHERE rn <= 20 ORDER BY sold_at DESC LIMIT 60')
   };
   return db;
 }
@@ -77,7 +81,7 @@ function applyPush(db, push, now) {
   db.exec('BEGIN');
   try {
     for (const e of push.pro) {
-      for (const s of e.sales) count(upsertSale(db, { card: e.card, price: s.price, t: s.t, kind: 'pro', auction: null, rarity: e.rarity }, push.member, now));
+      for (const s of e.sales) count(upsertSale(db, { card: e.card, price: s.price, t: s.t, kind: 'pro', auction: null, rarity: s.rarity || e.rarity }, push.member, now));
       db.q.proFetch.run(e.card, Math.min(e.at, now), push.member);
     }
     for (const s of push.sales) count(upsertSale(db, { ...s, kind: s.x ? 'exact' : 'prov' }, push.member, now));
@@ -99,8 +103,8 @@ function pullCards(db, ids) {
     const obsRows = db.q.obsRows.all(id);
     if (!pf && !proRows.length && !obsRows.length) continue;
     cards[id] = {
-      pro: pf || proRows.length ? { at: pf ? pf.at : 0, by: pf ? pf.member : null, sales: proRows.map(r => [r.price, r.sold_at]) } : null,
-      sales: obsRows.map(r => [r.price, r.sold_at, r.gap, r.kind === 'exact' ? 1 : 0, r.auction || ''])
+      pro: pf || proRows.length ? { at: pf ? pf.at : 0, by: pf ? pf.member : null, sales: proRows.map(r => [r.price, r.sold_at, r.rarity || null]) } : null,
+      sales: obsRows.map(r => [r.price, r.sold_at, r.gap, r.kind === 'exact' ? 1 : 0, r.auction || '', r.rarity || null])
     };
   }
   return { cards };

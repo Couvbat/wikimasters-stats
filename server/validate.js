@@ -32,7 +32,8 @@ function parsePush(body, now) {
     const sales = [];
     for (const s of e[2].slice(0, LIMITS.proSales)) {
       const t = Array.isArray(s) ? isoDate(s[1]) : null;
-      if (t && okPrice(s[0])) sales.push({ price: s[0], t });
+      // Chaque vente a sa propre rareté (une même carte se vend à plusieurs raretés) ; à défaut, celle de l'entrée.
+      if (t && okPrice(s[0])) sales.push({ price: s[0], t, rarity: rarity(s[2]) });
     }
     if (sales.length) pro.push({ card: e[0], at: Math.min(e[1], now), sales, rarity: rarity(e[3]) });
   }

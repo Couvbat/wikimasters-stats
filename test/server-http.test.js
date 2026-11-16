@@ -47,7 +47,7 @@ test('push : sans clé ou mauvaise clé, 401 ; bonne clé, 200', async () => {
   assert.equal(ok.status, 200);
   assert.equal(ok.json.added, 1);
   const pull = await req('POST', '/v1/pull', { body: { cards: ['C1'] }, headers: auth });
-  assert.deepEqual(pull.json.cards.C1.sales, [[10, '2026-11-15T10:00:00.000Z', 0, 1, 'A1']]);
+  assert.deepEqual(pull.json.cards.C1.sales, [[10, '2026-11-15T10:00:00.000Z', 0, 1, 'A1', null]]);
   const known = await req('POST', '/v1/known', { body: { auctions: ['A1', 'A2'] }, headers: auth });
   assert.deepEqual(known.json.exact, { A1: ['C1', 10, '2026-11-15T10:00:00.000Z'] });
   const stats = await req('GET', '/v1/stats', { headers: auth });

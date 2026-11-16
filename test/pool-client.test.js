@@ -46,7 +46,7 @@ test('un relevé Pro part en file avec sa rareté', () => {
   const { t } = setup();
   enable(t);
   t.ingestSales('C1', { recent: [{ final_price: 50, settled_at: T }] }, 'SR');
-  assert.deepEqual(plain(t.db.poolQ), [['p', ['C1', t.db.prices.C1.at, [[50, T]], 'SR']]]);
+  assert.deepEqual(plain(t.db.poolQ), [['p', ['C1', t.db.prices.C1.at, [[50, T, null]], 'SR']]]);
 });
 
 test('prix final lu et enchère invendue partent en file', () => {
@@ -90,7 +90,7 @@ test('activer le partage envoie mes propres relevés déjà accumulés, pas ceux
   t.db.prices = { MINE: { at: 100, sales: [{ p: 5, t: T }] }, FRIEND: { at: 200, sales: [{ p: 6, t: T }], by: 'Paul' }, EMPTY: { at: 300, sales: [] } };
   t.db.auctions = { H2: ['b', 'C7', 'Y', 'L', 5, 5, 300, T2, 0], H3: ['u', 'C8', 'Z', 'R', 5, 5, null, T2, 0], H4: ['s', 'C9', 'W', 'R', 5, 5, 99, T2, 1] };
   t.poolBackfill();
-  assert.deepEqual(plain(t.db.poolQ), [['p', ['MINE', 100, [[5, T]], null]], ['s', ['C7', 300, T2, 0, 1, 'H2', 'L']]]);
+  assert.deepEqual(plain(t.db.poolQ), [['p', ['MINE', 100, [[5, T, null]], null]], ['s', ['C7', 300, T2, 0, 1, 'H2', 'L']]]);
 });
 
 test('poolFlush envoie le lot avec la clé et vide la file', async () => {
@@ -222,4 +222,23 @@ test('la clé du groupe n’est ni dans la sauvegarde ni dans le fichier ami', (
   t.db.cards = { x1: { cardId: 'C1', title: 'A', rarity: 'R', count: 1 } };
   assert.equal(JSON.stringify(t.backupData()).includes(KEY), false);
   assert.equal(JSON.stringify(t.friendExport('Jules')).includes(KEY), false);
+});
+
+test('pool qui ne répond pas : l’appel abandonne, et les prix finaux sont quand même lus sur le site', { timeout: 5000 }, async () => {
+  const now = Date.now();
+  const site = [];
+  const fetch = (url, init) => {
+    if (url.startsWith(POOL)) {
+      // Ne répond jamais, sauf à abandonner quand on le lui demande.
+      return new Promise((_, reject) => { if (init && init.signal) init.signal.addEventListener('abort', () => reject(new Error('délai dépassé'))); });
+    }
+    site.push(url);
+    return Promise.resolve(reply({ auction: { card_id: 'C1', final_price: 9, settled_at: T } }));
+  };
+  const { t } = load({ fast: true, fetch });
+  enable(t);
+  t.db.finQ = { A1: ['C1', 'R', now - 10 * MIN, 1] };
+  await t.fetchFinals('status');
+  assert.deepEqual(site, ['/api/marketplace/A1']);
+  assert.ok(t.db.pool.err);
 });

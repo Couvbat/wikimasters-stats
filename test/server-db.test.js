@@ -15,7 +15,7 @@ test('insertion puis pull : relevé Pro', () => {
   const r = push(db, { member: 'Jules', pro: [['C1', now - 1000, [[50, '2026-11-10T00:00:00.000Z'], [40, '2026-11-09T00:00:00.000Z']]]] });
   assert.equal(r.added, 2);
   const c = pullCards(db, ['C1']).cards.C1;
-  assert.deepEqual(c.pro, { at: now - 1000, by: 'Jules', sales: [[50, '2026-11-10T00:00:00.000Z'], [40, '2026-11-09T00:00:00.000Z']] });
+  assert.deepEqual(c.pro, { at: now - 1000, by: 'Jules', sales: [[50, '2026-11-10T00:00:00.000Z', null], [40, '2026-11-09T00:00:00.000Z', null]] });
   assert.deepEqual(c.sales, []);
 });
 
@@ -24,7 +24,7 @@ test('règle 1 : un prix provisoire devient final sur la même enchère', () => 
   push(db, { member: 'A', sales: [['C1', 30, T, 10, 0, 'A1']] });
   const r = push(db, { member: 'B', sales: [['C1', 45, T2, 0, 1, 'A1']] });
   assert.deepEqual(r, { added: 0, upgraded: 1, dropped: 0 });
-  assert.deepEqual(pullCards(db, ['C1']).cards.C1.sales, [[45, T2, 0, 1, 'A1']]);
+  assert.deepEqual(pullCards(db, ['C1']).cards.C1.sales, [[45, T2, 0, 1, 'A1', null]]);
 });
 
 test('règle 2 : la même vente reçue par l’historique Pro puis comme prix exact reste une seule ligne Pro', () => {
@@ -34,7 +34,7 @@ test('règle 2 : la même vente reçue par l’historique Pro puis comme prix ex
   assert.equal(r.added, 0);
   assert.equal(r.upgraded, 1);
   const c = pullCards(db, ['C1']).cards.C1;
-  assert.deepEqual(c.pro.sales, [[60, T3]]);
+  assert.deepEqual(c.pro.sales, [[60, T3, null]]);
   assert.deepEqual(c.sales, []);
   assert.deepEqual(knownAuctions(db, ['A2']).exact, { A2: ['C1', 60, T3] });
   assert.equal(poolStats(db).sales, 1);
@@ -77,14 +77,14 @@ test('idempotence : le même envoi reçu deux fois n’ajoute rien', () => {
   assert.equal(poolStats(db).sales, before);
 });
 
-test('pull : les 10 ventes les plus récentes', () => {
+test('pull : les 20 ventes les plus récentes d’une rareté', () => {
   const db = openDb(':memory:');
-  const sales = Array.from({ length: 12 }, (_, i) => ['C1', 10 + i, new Date(now - (12 - i) * 3600e3).toISOString(), 0, 1, 'X' + i]);
+  const sales = Array.from({ length: 25 }, (_, i) => ['C1', 10 + i, new Date(now - (25 - i) * 3600e3).toISOString(), 0, 1, 'X' + i]);
   push(db, { member: 'A', sales });
   const got = pullCards(db, ['C1']).cards.C1.sales;
-  assert.equal(got.length, 10);
-  assert.equal(got[0][0], 21);
-  assert.equal(got[9][0], 12);
+  assert.equal(got.length, 20);
+  assert.equal(got[0][0], 34);
+  assert.equal(got[19][0], 15);
 });
 
 test('parsePush : plafonds, forme, entrées invalides, membre', () => {
@@ -105,4 +105,23 @@ test('purgeMember supprime les lignes du membre', () => {
   assert.equal(purgeMember(db, 'Troll'), 3);
   assert.equal(poolStats(db).sales, 1);
   assert.equal(pullCards(db, ['C3']).cards.C3, undefined);
+});
+
+test('rareté de chaque vente : gardée à l’envoi, rendue au pull, 20 dernières par rareté', () => {
+  const db = openDb(':memory:');
+  push(db, { member: 'A', pro: [['C1', now - 10, [[50, T, 'L'], [7, T2, 'UR']]]] });
+  assert.deepEqual(pullCards(db, ['C1']).cards.C1.pro.sales, [[7, T2, 'UR'], [50, T, 'L']]);
+  const sales = [];
+  for (let i = 0; i < 25; i++) sales.push(['C2', 100 + i, new Date(now - (30 - i) * 3600e3).toISOString(), 0, 1, 'L' + i, 'L']);
+  for (let i = 0; i < 3; i++) sales.push(['C2', 10 + i, new Date(now - (40 - i) * 3600e3).toISOString(), 0, 1, 'U' + i, 'UR']);
+  push(db, { member: 'A', sales });
+  const got = pullCards(db, ['C2']).cards.C2.sales;
+  assert.equal(got.filter(s => s[5] === 'L').length, 20);
+  assert.equal(got.filter(s => s[5] === 'UR').length, 3);
+});
+
+test('une vente Pro sans rareté prend celle de l’entrée', () => {
+  const db = openDb(':memory:');
+  push(db, { member: 'A', pro: [['C1', now - 10, [[50, T]], 'SR']] });
+  assert.deepEqual(pullCards(db, ['C1']).cards.C1.pro.sales, [[50, T, 'SR']]);
 });
