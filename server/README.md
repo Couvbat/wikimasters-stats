@@ -22,21 +22,21 @@ Il faut Node 24 ou plus récent ([nodejs.org](https://nodejs.org)). Pour tes pot
 
 **Démarrer**
 
-1. Double-clique sur `server/start-local.cmd`. La fenêtre affiche l'adresse (`http://localhost:8787`) et la clé. La clé est créée la première fois, dans `Documents\wm-pool\cle.txt`, à côté de la base `pool.db`.
+1. Double-clique sur `server/start-local.cmd`. La fenêtre affiche l'adresse (`http://127.0.0.1:8787`) et la clé. La clé est créée la première fois, dans `Documents\wm-pool\cle.txt`, à côté de la base `pool.db`.
 2. Dans le script, onglet Réglages, groupe « Pool partagé du groupe » :
    1. colle l'adresse et la clé ;
    2. clique « Tester » ;
    3. coche « Partager et recevoir les prix ».
 3. Laisse la fenêtre ouverte (ou réduis-la) pendant que tu joues.
 
-Chrome peut te demander si wiki-masters.com a le droit d'accéder aux applications de cet appareil : accepte, c'est le pool local. Seuls les navigateurs de ce PC peuvent l'atteindre : tes potes devront attendre le NAS.
+Chrome peut te demander si wiki-masters.com a le droit d'accéder aux applications de cet appareil : accepte, c'est le pool local. Il n'écoute que ce PC (adresse `127.0.0.1`) : les autres machines du réseau ne peuvent pas l'atteindre, et tes potes devront attendre le NAS.
 
 **Quand le pool du NAS est en ligne**
 
 1. Dans `Documents\wm-pool`, crée un fichier `amont.txt` avec, sur une seule ligne, l'adresse du NAS et sa clé, séparées par un espace :
    `https://pool.ton-domaine.fr la-cle-du-nas`
 2. Ferme la fenêtre du pool local et relance `start-local.cmd`. Elle affiche « Synchro : vers https://pool… ». Le pool local envoie tout ce qu'il a reçu, puis il continue toutes les 5 minutes.
-3. Vérifie que c'est passé : `http://localhost:8787/v1/health` affiche `"upstream":{"at":…,"err":"","sent":…}`, avec un `err` vide.
+3. Vérifie que c'est passé : `http://127.0.0.1:8787/v1/health` affiche `"upstream":{"at":…,"err":"","sent":…}`, avec un `err` vide.
 4. Dans le script, remplace l'adresse et la clé par celles du NAS, puis clique « Tester ».
 5. Ferme la fenêtre du pool local. Tu peux garder `Documents\wm-pool` quelque temps par sécurité, puis le supprimer.
 

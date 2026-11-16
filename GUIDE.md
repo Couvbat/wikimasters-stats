@@ -102,13 +102,13 @@ Tant que le pool du NAS n'est pas en ligne, tu peux en faire tourner un **sur to
 
 1. Ouvre le dossier `wikimasters-stats-main`, puis le dossier `server`, et **double-clique** sur `start-local.cmd`.
 2. Si Windows affiche **« Windows a protégé votre ordinateur »**, clique **« Informations complémentaires »**, puis **« Exécuter quand même »**. C'est normal pour un fichier téléchargé depuis Internet.
-3. Une **fenêtre noire** s'ouvre et affiche `Pool local : http://localhost:8787`. **Laisse-la ouverte** pendant que tu joues. Tu peux la réduire, mais pas la fermer.
+3. Une **fenêtre noire** s'ouvre et affiche `Pool local : http://127.0.0.1:8787`. **Laisse-la ouverte** pendant que tu joues. Tu peux la réduire, mais pas la fermer.
 
 **c. Le relier au script**
 
 1. Ouvre **Documents**, puis le dossier **`wm-pool`**, et **double-clique** sur `cle.txt`. Il s'ouvre dans le Bloc-notes. Fais **Ctrl+A**, puis **Ctrl+C** : la clé est copiée.
 2. Sur le site : **📊 Stats**, puis **Réglages**, puis **« Pool partagé du groupe »**.
-3. Adresse : `http://localhost:8787`. Clé : colle-la avec **Ctrl+V**.
+3. Adresse : `http://127.0.0.1:8787`. Clé : colle-la avec **Ctrl+V**.
 4. Clique **« Tester »**, puis coche **« Partager et recevoir les prix »**.
 5. Si Chrome te demande si wiki-masters.com peut accéder à d'autres applications de cet appareil, clique **« Autoriser »**. C'est ton pool local.
 
@@ -127,7 +127,7 @@ Jules t'envoie l'adresse et la clé du pool du NAS. Il faut alors envoyer ce que
    - **Nom** : `amont.txt`.
    - Clique **Enregistrer**.
 3. Ferme la fenêtre noire du pool, puis **relance** `start-local.cmd`. Elle affiche maintenant `Synchro : vers https://…`.
-4. Attends quelques minutes, puis ouvre <http://localhost:8787/v1/health> dans ton navigateur. Si tu vois `"err":""` (rien entre les guillemets), c'est envoyé.
+4. Attends quelques minutes, puis ouvre <http://127.0.0.1:8787/v1/health> dans ton navigateur. Si tu vois `"err":""` (rien entre les guillemets), c'est envoyé.
 5. Dans le script (**Réglages**, puis **« Pool partagé du groupe »**), remplace l'adresse et la clé par **celles du NAS**, puis clique **« Tester »**.
 6. Ferme la fenêtre noire : tu n'as plus besoin du pool local, ni de relancer `start-local.cmd`.
 

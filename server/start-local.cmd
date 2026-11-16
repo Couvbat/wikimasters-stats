@@ -1,7 +1,8 @@
 @echo off
 setlocal EnableExtensions
 rem Pool de prix partage, mode local : sur ce PC, sans NAS ni tunnel.
-rem Double-clic : cree son dossier, une cle la premiere fois, puis demarre le pool sur http://localhost:8787.
+rem Double-clic : cree son dossier, une cle la premiere fois, puis demarre le pool sur http://127.0.0.1:8787.
+rem Il n'ecoute que ce PC : les autres machines du reseau ne peuvent pas l'atteindre.
 rem Synchro vers le pool du NAS : ecris "adresse cle" sur une ligne dans amont.txt, dans le dossier du pool, puis relance.
 rem Dossier par defaut : Documents\wm-pool. Variables facultatives : WM_POOL_DIR, WM_POOL_PORT.
 set "HERE=%~dp0"
@@ -18,12 +19,16 @@ if not exist "%WM_POOL_DIR%\cle.txt" node -e "require('fs').writeFileSync(proces
 set /p GROUP_KEY=<"%WM_POOL_DIR%\cle.txt"
 set "DB_PATH=%WM_POOL_DIR%\pool.db"
 set "PORT=%WM_POOL_PORT%"
+set "HOST=127.0.0.1"
 set "UPSTREAM_URL="
 set "UPSTREAM_KEY="
-if exist "%WM_POOL_DIR%\amont.txt" for /f "usebackq tokens=1,2" %%a in ("%WM_POOL_DIR%\amont.txt") do set "UPSTREAM_URL=%%a" & set "UPSTREAM_KEY=%%b"
+if exist "%WM_POOL_DIR%\amont.txt" for /f "usebackq tokens=1,2" %%a in ("%WM_POOL_DIR%\amont.txt") do (
+  set "UPSTREAM_URL=%%a"
+  set "UPSTREAM_KEY=%%b"
+)
 
 echo.
-echo   Pool local : http://localhost:%PORT%
+echo   Pool local : http://127.0.0.1:%PORT%  - ce PC seulement
 echo   Cle        : %GROUP_KEY%
 echo   Donnees    : %DB_PATH%
 if defined UPSTREAM_URL goto :withsync

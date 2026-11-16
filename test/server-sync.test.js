@@ -144,3 +144,73 @@ test('serveur local en mode relais : ce qu’il reçoit arrive tout seul sur le 
     nasSrv.close();
   }
 });
+
+// ----- Remarques de relecture -----
+test('une vente Pro qui reçoit son numéro d’enchère : le NAS l’apprend aussi', async () => {
+  const local = openDb(':memory:');
+  push(local, { member: 'Jules', pro: [['C1', now - 10, [[60, T3, 'L']]]] });
+  const nas = fakeNas();
+  await syncOnce(local, opts(nas));
+  push(local, { member: 'Marie', sales: [['C1', 60, T3, 0, 1, 'A2', 'L']] }); // même vente, lue sur la page de l'enchère
+  await syncOnce(local, opts(nas));
+  assert.deepEqual(knownAuctions(nas.up, ['A2']).exact, { A2: ['C1', 60, T3] });
+  assert.equal(poolStats(nas.up).sales, 1);
+});
+
+test('le relevé Pro le plus récent arrive sur le NAS avec son vrai auteur, même sans vente nouvelle', async () => {
+  const local = openDb(':memory:');
+  push(local, { member: 'Marie', pro: [['C1', now - 9000, [[50, T, 'L']]]] });
+  const nas = fakeNas();
+  await syncOnce(local, opts(nas));
+  assert.equal(pullCards(nas.up, ['C1']).cards.C1.pro.by, 'Marie');
+  push(local, { member: 'Jules', pro: [['C1', now - 10, [[50, T, 'L']]]] }); // relevé plus récent, aucune vente nouvelle
+  await syncOnce(local, opts(nas));
+  const pro = pullCards(nas.up, ['C1']).cards.C1.pro;
+  assert.equal(pro.by, 'Jules');
+  assert.equal(pro.at, now - 10);
+});
+
+test('une vente modifiée pendant un envoi repart au passage suivant', async () => {
+  const local = openDb(':memory:');
+  push(local, { member: 'Jules', sales: [['C1', 20, T, 8, 0, 'A9', 'R']] });
+  const nas = fakeNas();
+  const inner = nas.fetch;
+  let first = true;
+  const racing = async (url, init) => {
+    if (first) { first = false; push(local, { member: 'Jules', sales: [['C1', 25, T, 0, 1, 'A9', 'R']] }); } // devient final pendant l'envoi
+    return inner(url, init);
+  };
+  await syncOnce(local, { url: 'https://pool.exemple.fr', key: KEY, fetch: racing });
+  await syncOnce(local, { url: 'https://pool.exemple.fr', key: KEY, fetch: racing });
+  assert.deepEqual(knownAuctions(nas.up, ['A9']).exact, { A9: ['C1', 25, T] });
+});
+
+test('une base créée par une version précédente est mise à niveau sans rien perdre', async () => {
+  const path = require('node:path').join(require('node:os').tmpdir(), 'wm-pool-migration-' + process.pid + '.db');
+  try { require('node:fs').unlinkSync(path); } catch (e) {}
+  const { DatabaseSync } = require('node:sqlite');
+  const old = new DatabaseSync(path);
+  old.exec(`CREATE TABLE sales (id INTEGER PRIMARY KEY, card TEXT NOT NULL, price INTEGER NOT NULL, sold_at TEXT NOT NULL, kind TEXT NOT NULL,
+    auction TEXT, gap INTEGER NOT NULL DEFAULT 0, rarity TEXT, member TEXT, received_at INTEGER NOT NULL);
+    CREATE TABLE pro_fetch (card TEXT PRIMARY KEY, at INTEGER NOT NULL, member TEXT);
+    INSERT INTO sales (card, price, sold_at, kind, auction, member, received_at) VALUES ('C1', 10, '${T}', 'exact', 'A1', 'Jules', 1);
+    INSERT INTO pro_fetch VALUES ('C2', 5, 'Marie');`);
+  old.close();
+  const db = openDb(path);
+  try {
+    const nas = fakeNas();
+    const r = await syncOnce(db, opts(nas));
+    assert.equal(r.sent, 1);
+    assert.deepEqual(knownAuctions(nas.up, ['A1']).exact, { A1: ['C1', 10, T] });
+    push(db, { member: 'Jules', sales: [['C3', 7, T2, 0, 1, 'A3', 'C']] });
+    assert.equal((await syncOnce(db, opts(nas))).sent, 1);
+  } finally {
+    db.close();
+    try { require('node:fs').unlinkSync(path); } catch (e) {}
+  }
+});
+
+test('le pool local peut n’écouter que ce PC', async () => {
+  const s = await start({ dbPath: ':memory:', port: 0, host: '127.0.0.1', groupKey: KEY, allowedOrigins: [] });
+  try { assert.equal(s.address().address, '127.0.0.1'); } finally { s.close(); }
+});

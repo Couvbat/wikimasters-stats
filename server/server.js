@@ -1,6 +1,7 @@
 // Serveur du pool de prix partagé. Node 24, sans dépendance : node:http et node:sqlite.
 // Variables d'environnement : GROUP_KEY (obligatoire, 24 caractères au moins), DB_PATH, PORT, ALLOWED_ORIGINS.
 // Mode relais (pool local sur ton PC) : UPSTREAM_URL et UPSTREAM_KEY (le pool du NAS), SYNC_MINUTES (5 par défaut).
+// HOST : l'adresse d'écoute. Par défaut toutes les interfaces (le conteneur du NAS) ; 127.0.0.1 pour n'écouter que ce PC.
 'use strict';
 const http = require('node:http');
 const crypto = require('node:crypto');
@@ -102,7 +103,7 @@ function createHandler({ db, groupKey, allowedOrigins, now = Date.now, perMinute
 
 // upstream : { url, key, everyMs } pour le mode relais. Ce que ce pool reçoit part tout seul vers le pool d'arrivée, à chaque
 // passage (toutes les 5 min par défaut), dès qu'il est joignable. Rien n'est perdu quand il ne l'est pas.
-async function start({ dbPath, port, groupKey, allowedOrigins, perMinute, upstream }) {
+async function start({ dbPath, port, host, groupKey, allowedOrigins, perMinute, upstream }) {
   if (typeof groupKey !== 'string' || groupKey.length < 24) throw new Error('GROUP_KEY doit faire au moins 24 caractères');
   const db = openDb(dbPath);
   const relay = upstream && upstream.url && upstream.key ? upstream : null;
@@ -133,7 +134,7 @@ async function start({ dbPath, port, groupKey, allowedOrigins, perMinute, upstre
     const closeDb = () => (busy ? setTimeout(closeDb, 50) : db.close());
     closeDb();
   });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, resolve); });
+  await new Promise((resolve, reject) => { server.once('error', reject); host ? server.listen(port, host, resolve) : server.listen(port, resolve); });
   return server;
 }
 
@@ -142,6 +143,7 @@ if (require.main === module) {
   start({
     dbPath: env.DB_PATH || '/data/pool.db',
     port: Number(env.PORT) || 8787,
+    host: env.HOST || undefined,
     groupKey: env.GROUP_KEY,
     allowedOrigins: (env.ALLOWED_ORIGINS || 'https://www.wiki-masters.com,https://wiki-masters.com').split(',').map(s => s.trim()).filter(Boolean),
     upstream: env.UPSTREAM_URL && env.UPSTREAM_KEY
