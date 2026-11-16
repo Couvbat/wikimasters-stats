@@ -99,8 +99,9 @@ Un clic sur le nom d'une carte ouvre, dans un nouvel onglet, la page Collection 
   - Achetée aux enchères : le prix que tu as payé.
   - Tirée d'un booster : 0 ₩.
   - Reçue par échange : « ≈ » ce que tu as donné, réparti entre les cartes reçues.
+  - Ni achat ni échange connu : « booster probable », comptée à 0 ₩. Les achats et les échanges viennent d'historiques que le site renvoie, mais un booster n'est vu qu'au moment où tu ouvres le paquet avec le script actif sur la page (bouton 📊 présent). Si le bouton manque parfois sur la page Paquets, voir « Si le bouton n'apparaît pas ».
   - Le script retient la dernière acquisition de cette carte, à la même rareté, avant la mise en vente.
-  - La tuile « Profit si tout part maintenant » fait le total. Une carte d'origine inconnue (booster ouvert avant la version 1.3, achat trop ancien) n'y est pas comptée.
+  - La tuile « Profit si tout part maintenant » fait le total, et dit combien d'origines sont devinées.
   - Aucune commission du Marché n'est connue, donc le profit est calculé sans commission.
 
 Le bilan de tes enchères terminées : ventes réussies et invendus, revenus, achats, solde, détail par rareté, comparaison entre mise de départ et prix obtenu, et profit de chaque vente réussie quand l'origine de la carte est connue. Le site ne donne que tes enchères les plus récentes ; le script les garde en mémoire à chaque passage sur la page Marché, donc le bilan s'allonge avec le temps.

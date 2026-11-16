@@ -40,7 +40,7 @@ test('origine : la plus récente gagne, à la bonne rareté ; booster = 0 ₩', 
 test('origine : un achat shiny ne compte pas pour un exemplaire normal', () => {
   const { t } = load();
   t.db.auctions = { B1: ['b', 'C1', 'X', 'SR', 300, 300, 999, iso(now - D), 1] };
-  assert.equal(t.originOf('C1', 'SR', false, now), null);
+  assert.equal(t.originOf('C1', 'SR', false, now).kind, 'guess', 'pas d’achat normal connu : booster probable');
   assert.equal(t.originOf('C1', 'SR', true, now).cost, 999);
 });
 
@@ -58,9 +58,12 @@ test('origine : un échange accepté coûte ≈ ce qu’on a donné, réparti en
   assert.equal(o.approx, true);
 });
 
-test('origine inconnue quand rien ne correspond', () => {
+test('sans achat, échange ni booster connu : booster probable, 0 ₩, marqué ≈', () => {
   const { t } = load();
-  assert.equal(t.originOf('NADA', 'SR', false, now), null);
+  const o = plain(t.originOf('NADA', 'SR', false, now));
+  assert.equal(o.kind, 'guess');
+  assert.equal(o.cost, 0);
+  assert.equal(o.approx, true);
 });
 
 test('ventes en cours : profit = prix actuel − coût, et total sur les annonces d’origine connue', () => {
@@ -76,10 +79,10 @@ test('ventes en cours : profit = prix actuel − coût, et total sur les annonce
   const rows = t.sellingRows();
   assert.equal(rows[0].profit, 130);
   assert.equal(rows[1].profit, 80);
-  assert.equal(rows[2].profit, null);
+  assert.equal(rows[2].profit, 50, 'origine devinée : booster probable, 0 ₩');
   const s = t.sellingStats(rows);
-  assert.equal(s.profit, 210);
-  assert.equal(s.unknownOrigin, 1);
+  assert.equal(s.profit, 260);
+  assert.equal(s.guessed, 1);
 });
 
 test('affichage : colonnes Origine et Profit dans les ventes en cours et les ventes terminées', () => {
@@ -140,4 +143,27 @@ test('trier par profit ne recalcule pas l’origine à chaque comparaison', () =
   t.ui.sorts.sales = { i: 7, dir: -1 };
   t.renderSales();
   assert.ok(walks <= K, 'origine calculée ' + walks + ' fois pour ' + K + ' ventes');
+});
+
+// Le nœud dont le texte vaut exactement `text` (éléments simulés du harnais).
+const findNode = (n, text) => {
+  if (!n || typeof n !== 'object') return null;
+  if ((n.children || []).length === 1 && n.children[0] === text) return n;
+  for (const c of [...(n.children || []), ...(n.k || [])]) { const f = findNode(c, text); if (f) return f; }
+  return null;
+};
+
+test('annonce sans offre au-dessus de la valeur : l’écart n’est pas en vert, et « mise > valeur » le signale', () => {
+  const { t } = load();
+  const out = {};
+  t.ui.el.salesTiles = { replaceChildren() {} };
+  t.ui.el.salesBody = { replaceChildren() {} };
+  t.ui.el.sellingBody = { replaceChildren(...k) { out.selling = k; } };
+  t.db.prices = { C1: { at: now, sales: [0, 1, 2].map(() => ({ p: 496, t: iso(now), r: 'L' })) } };
+  t.ingestMarket({ selling: [listing('A1', 'C1', { base: 500, rarity: 'L', title: 'Thierry' })] });
+  t.renderSales();
+  const gap = findNode({ k: out.selling }, '+4 ₩');
+  assert.ok(gap, 'écart affiché');
+  assert.doesNotMatch(gap.className, /deal/);
+  assert.match(textOf({ k: out.selling }), /mise > valeur/);
 });
