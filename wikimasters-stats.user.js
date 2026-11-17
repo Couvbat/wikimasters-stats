@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.24.0
+// @version      1.25.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -36,7 +36,7 @@
     return {
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
-      auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
+      auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
       pool: { url: '', key: '', on: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.24.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.25.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -93,7 +93,7 @@
   // Ce qui est personnel (collection, ventes, échanges, boosters, souhaits…) est rangé à part pour chaque compte, sous
   // wmstats.v1.u.<compte> ; les prix du marché et les réglages d'affichage sont communs à tous, sous wmstats.v1.
   // Tant que le compte n'est pas reconnu, sa partie personnelle est sous wmstats.v1.u._.
-  const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt',
+  const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt', 'wishFullAt',
     'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'selling', 'sellingAt', 'tagCat', 'friends', 'me', 'sell', 'wishHideOwned'];
   const PERSONAL_SET = new Set(PERSONAL);
   const acctKey = uid => KEY + '.u.' + (uid || '_');
@@ -448,7 +448,7 @@
   // Liste de souhaits : les cartes pour lesquelles tu as demandé une alerte sur la page « Toutes les cartes ».
   function ingestWish(j, replace) {
     if (!j || !Array.isArray(j.cards)) return;
-    if (replace) db.wish = {};
+    if (replace) { db.wish = {}; db.wishFullAt = Date.now(); }
     for (const c of j.cards) if (c && okKey(c.id)) db.wish[c.id] = [str(c.wikipedia_title || '?', 200), rarOf(c.rarity)];
     db.wishAt = Date.now();
     saveDb();
@@ -1381,17 +1381,54 @@
   // Pour les raretés où « jamais vendue » est rare, une réponse vide est donc redemandée une fois,
   // et n'est gardée qu'une heure au lieu de 24.
   const DOUBT_EMPTY = new Set(['L', 'UR', 'SR', 'R']);
-  function priceStale(cardId, rarity) {
+  // Quand relire le prix d'une carte : selon ce qu'elle pèse dans la valeur. Chaque jour pour une carte qui vaut plus de 50 ₩,
+  // une L, une UR ou une carte en vente ; les autres selon leur rareté ; une carte sans prix, tout de suite.
+  const DUE_DAYS = { L: 1, UR: 1, SR: 2, R: 4, PC: 7, C: 7 };
+  const DUE_VALUE = 50;
+  function dueDays(cardId, rarity) {
+    const p = priceOf(cardId, rarity);
+    if (p && p.n && p.med > DUE_VALUE) return 1;
+    if (db.selling.some(x => x && x.c === cardId)) return 1;
+    return DUE_DAYS[rarity] || 7;
+  }
+  function priceDue(cardId, rarity) {
     const p = db.prices[cardId];
     if (!p) return true;
     const age = Date.now() - p.at;
-    return age > DAY || (!p.sales.length && DOUBT_EMPTY.has(rarity) && age > 36e5);
+    return age > dueDays(cardId, rarity) * DAY || (!(p.sales || []).length && DOUBT_EMPTY.has(rarity) && age > 36e5);
   }
-  async function fetchSales(cardId, rarity) {
+  // Les prix à relire (collection et souhaits en vente), de celui qui pèse le plus dans la valeur à celui qui pèse le moins.
+  // Poids = valeur × exemplaires possédés. Sans prix, la valeur est la médiane des valeurs connues de la même rareté dans
+  // la collection, sinon 1. Renvoie [carte, rareté, poids].
+  function dueCards() {
+    const by = new Map();
+    for (const c of Object.values(db.cards)) {
+      if (!c || !okKey(c.cardId)) continue;
+      const k = c.cardId + '|' + c.rarity, e = by.get(k), n = Math.max(1, num(c.count));
+      if (e) e[2] += n; else by.set(k, [c.cardId, c.rarity, n]);
+    }
+    const known = {};
+    for (const [id, r] of by.values()) { const p = priceOf(id, r); if (p && p.n) (known[r] = known[r] || []).push(Math.max(p.med, DISCARD)); }
+    for (const r in known) known[r] = median(known[r]); // une fois par rareté
+    for (const id in db.wish) {
+      const r = db.wish[id][1];
+      if (okKey(id) && !by.has(id + '|' + r) && askOf(id, r)) by.set(id + '|' + r, [id, r, 1]);
+    }
+    const out = [];
+    for (const [id, r, n] of by.values()) {
+      if (!priceDue(id, r)) continue;
+      const p = priceOf(id, r);
+      out.push([id, r, (p && p.n ? Math.max(p.med, DISCARD) : known[r] || 1) * n]);
+    }
+    return out.sort((a, b) => b[2] - a[2]);
+  }
+  // retryOk() : la seconde lecture d'un historique vide est-elle permise (budget) ; onRetry() la compte.
+  async function fetchSales(cardId, rarity, retryOk = () => true, onRetry = () => {}) {
     const url = '/api/marketplace/cards/' + encodeURIComponent(cardId) + '/sales';
     const empty = j => !j || !((Array.isArray(j.recent) && j.recent.length) || (Array.isArray(j.sales) && j.sales.length));
     let j = await getJSON(url);
-    if (empty(j) && DOUBT_EMPTY.has(rarity)) {
+    if (empty(j) && DOUBT_EMPTY.has(rarity) && retryOk()) {
+      onRetry();
       await sleep(1500);
       j = await getJSON(url);
     }
@@ -1401,7 +1438,7 @@
     const ids = new Set();
     for (const c of Object.values(db.cards)) {
       if (!ui.chosen.has(c.rarity)) continue;
-      if (priceStale(c.cardId, c.rarity)) ids.add(c.cardId);
+      if (priceDue(c.cardId, c.rarity)) ids.add(c.cardId);
     }
     return [...ids];
   }
@@ -1461,20 +1498,26 @@
   }
   function endJob(msg, where) { job.running = false; setStatus(msg, where); syncButtons(); refresh(); }
 
+  // Lit toute la collection, page après page. hit(f) fait la requête f (et l'attente qui suit) ; onPage(n) suit la progression.
+  // Renvoie null si stop() devient vrai avant la fin : une collection lue à moitié ne doit rien remplacer.
+  async function readCollection(stop, hit, onPage) {
+    const all = [];
+    for (let page = 0; page < 400; page++) {
+      if (stop()) return null;
+      const j = await hit(() => getJSON('/api/my-collection?sort=rarity&page=' + page + '&stats=0'));
+      const items = (j && j.collection) || [];
+      all.push(...items);
+      if (onPage) onPage(all.length);
+      if (items.length < PAGE_SIZE) return all;
+    }
+    return all;
+  }
   async function loadCollection() {
     if (job.running) return;
     startJob('Chargement de la collection…');
     try {
-      const all = [];
-      for (let page = 0; page < 400 && !job.stop; page++) {
-        const j = await getJSON('/api/my-collection?sort=rarity&page=' + page + '&stats=0');
-        const items = j.collection || [];
-        all.push(...items);
-        setStatus('Collection : ' + all.length + ' cartes…');
-        if (items.length < PAGE_SIZE) break;
-        await sleep(400);
-      }
-      if (job.stop) return endJob('Arrêté, collection inchangée.');
+      const all = await readCollection(() => job.stop, f => f().then(r => sleep(400).then(() => r)), n => setStatus('Collection : ' + n + ' cartes…'));
+      if (!all) return endJob('Arrêté, collection inchangée.');
       ingestCollection(all, true);
       endJob('Collection chargée : ' + all.length + ' cartes.');
     } catch (e) {
@@ -1609,61 +1652,158 @@
   const AUTO_KEY = 'wmstats.auto';   // verrou et horloge partagés entre les onglets, à part de la base
   const AUTO_EVERY = 30 * 6e4;       // un passage au plus toutes les 30 min
   const AUTO_WARMUP = 2 * 6e4;       // pas avant 2 min après l'ouverture de la page
-  const AUTO_MAX = 60;               // prix finaux par passage : le site détecte l'automatisation, on reste modeste
   const auto = { busy: false, loadedAt: Date.now(), tab: Math.random().toString(36).slice(2) };
   const readAuto = () => { try { return JSON.parse(localStorage.getItem(AUTO_KEY)) || {}; } catch (e) { return {}; } };
   const writeAuto = o => { try { localStorage.setItem(AUTO_KEY, JSON.stringify(o)); } catch (e) {} };
   const autoSleep = () => sleep(PRICE_DELAY + Math.random() * 500);
+  // Le verrou est à cet onglet, ou libre. Un onglet qui l'a perdu (attente plus longue que le verrou) s'arrête, et ne le rend pas.
+  const ownsAuto = () => { const a = readAuto(); return !(num(a.until) > Date.now() && a.tab !== auto.tab); };
+  const holdAuto = () => writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });
+  const releaseAuto = () => { if (ownsAuto()) writeAuto({ tab: auto.tab, until: 0, at: Date.now() }); };
   function autoDue(now) {
     if (!ov('autoObs') || auto.busy || job.running) return false;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    // En arrière-plan aussi : le navigateur ralentit alors les minuteries, et le passage avec.
     if (now - auto.loadedAt < AUTO_WARMUP || db.autoPauseUntil > now) return false;
     const a = readAuto();
     if (num(a.until) > now && a.tab !== auto.tab) return false; // un autre onglet relève en ce moment
     return now - num(a.at) >= AUTO_EVERY;
   }
-  async function autoRun() {
-    if (auto.busy || job.running) return;
-    auto.busy = true;
-    const prev = readAuto();
-    let read = 0, finals = 0;
+  const AUTO_BUDGET = 60;     // requêtes au site par passage automatique : le site détecte l'automatisation, on reste modeste
+  const ALERTS_PER_PASS = 20;
+  const routineCounts = () => ({ prices: 0, alerts: 0, finals: 0, collection: false, wish: false });
+  // Un passage de la routine, étape par étape, de la plus utile à la moins utile :
+  //   1. la collection, relue en entier une fois par jour (en automatique, le passage s'arrête ensuite) ;
+  //   2. la liste de souhaits, relue en entier une fois par jour ;
+  //   3. les souhaits que le site a signalés en vente ;
+  //   4. les prix à relire (priceDue), du plus lourd au plus léger : le pool d'abord, puis le site (compte Pro) ;
+  //   5. les prix finaux, puis la lecture des fins d'enchères qui prépare le passage suivant (hors budget, comme avant).
+  // manual (bouton) : pas de budget, rythme des boutons, Stop. Sinon : 60 requêtes, et arrêt dès qu'un relevé manuel démarre.
+  // Le verrou entre onglets est renouvelé à chaque requête. out reçoit les compteurs au fil de l'eau.
+  async function routinePass({ manual, out = routineCounts() }) {
+    const stop = manual ? () => job.stop || !ownsAuto() : () => job.running || job.stop || !ownsAuto();
+    // Le verrou reste tenu pendant les attentes longues (le site peut demander jusqu'à 10 min de pause).
+    const beat = setInterval(() => { if (ownsAuto()) holdAuto(); }, 30e3);
     try {
-      if (poolOn()) { try { await poolKnown(); } catch (e) { poolNote(e); } }
-      const todo = finalsToFetch().slice(0, AUTO_MAX);
-      writeAuto({ tab: auto.tab, until: Date.now() + (todo.length + 20) * (PRICE_DELAY + 500), at: num(prev.at) });
-      for (const id of todo) {
-        if (job.running || job.stop) break;
-        const card = db.finQ[id] && db.finQ[id][0];
-        try {
-          const j = await getJSON('/api/marketplace/' + encodeURIComponent(id));
-          ingestFinal(id, j);
-          read++;
-          if (j && j.auction && typeof j.auction.final_price === 'number') finals++;
-        } catch (e) {
-          if (e.code === AUTO_LIMIT) throw e;
-          if (e.status === 404 || e.status === 403) { delete db.finQ[id]; read++; }
-          else throw e;
-        }
-        await autoSleep();
+      return await routineSteps(manual, out, stop);
+    } finally {
+      clearInterval(beat);
+    }
+  }
+  async function routineSteps(manual, out, stop) {
+    let used = 0;
+    const left = () => (manual ? Infinity : AUTO_BUDGET - used);
+    const hit = async (f, counted = true) => {
+      if (counted) used++;
+      holdAuto();
+      const r = await f();
+      if (manual) setStatus('Mise à jour en cours : ' + routineSummary(out) + '…');
+      await (manual ? pace() : autoSleep());
+      return r;
+    };
+    if (Date.now() - num(db.collectionFullAt) > DAY) {
+      const all = await readCollection(stop, hit);
+      if (!all) return out;
+      ingestCollection(all, true);
+      out.collection = true;
+      if (!manual) return out;
+    }
+    if (Date.now() - num(db.wishFullAt) > DAY && !stop()) {
+      const all = await readWishlist(stop, hit);
+      if (all) { ingestWish({ cards: all }, true); out.wish = true; }
+    }
+    for (const [, a] of alertsToCheck().slice(0, manual ? Infinity : ALERTS_PER_PASS)) {
+      if (stop() || left() <= 0) break;
+      await hit(() => searchCard(a[0], a[1]));
+      out.alerts++;
+    }
+    let due = dueCards();
+    if (due.length && poolOn() && !stop()) {
+      await poolPrefetch(due.map(x => x[0]));
+      due = due.filter(([id, r]) => priceDue(id, r));
+    }
+    if (proState() === true) {
+      for (const [id, r] of due) {
+        if (stop() || left() <= 0) break;
+        await hit(() => fetchSales(id, r, () => left() > 0 && !stop(), () => { used++; holdAuto(); }));
+        out.prices++;
       }
-      // Prépare le passage suivant : lit les fins d'enchères (seulement si aucun relevé manuel n'a démarré entre-temps).
-      if (!job.running && !job.stop) {
-        const done = new Set();
-        for (const url of sweepUrls(MARKET_PAGES, RARE_PAGES, 'ending_soon')) {
-          if (job.running || job.stop) break;
-          if (done.has(sweepGroup(url))) continue;
-          const j = await getJSON(url);
-          ingestMarket(j);
-          if (!j.hasMore) done.add(sweepGroup(url));
-          await autoSleep();
-        }
+    }
+    if (poolOn() && !stop()) { try { await poolKnown(); } catch (e) { poolNote(e); } }
+    for (const id of finalsToFetch()) {
+      if (stop() || left() <= 0) break;
+      try {
+        const j = await hit(() => getJSON('/api/marketplace/' + encodeURIComponent(id)));
+        ingestFinal(id, j);
+        if (j && j.auction && typeof j.auction.final_price === 'number') out.finals++;
+      } catch (e) {
+        if (e.code === AUTO_LIMIT) throw e;
+        if (e.status === 404 || e.status === 403) delete db.finQ[id];
+        else throw e;
       }
-    } catch (e) { /* limite du site, réseau : on s'arrête et on reprendra au prochain passage */ }
-    db.autoLast = { finals, read, at: Date.now() };
-    writeAuto({ tab: auto.tab, until: 0, at: Date.now() });
+    }
+    if (!stop()) {
+      const done = new Set();
+      for (const url of sweepUrls(MARKET_PAGES, RARE_PAGES, 'ending_soon')) {
+        if (stop()) break;
+        if (done.has(sweepGroup(url))) continue;
+        const j = await hit(() => getJSON(url), false);
+        ingestMarket(j);
+        if (!j.hasMore) done.add(sweepGroup(url));
+      }
+    }
+    return out;
+  }
+  const routineSummary = o => plural(num(o.prices), 'prix relu', 'prix relus') + ', ' + plural(num(o.alerts), 'annonce vérifiée', 'annonces vérifiées') +
+    ', ' + plural(num(o.finals), 'prix final', 'prix finaux');
+  // Bouton « Tout mettre à jour maintenant » : la même routine, sans budget, au rythme des boutons, avec Stop.
+  async function updateAll() {
+    if (job.running) return;
+    // Un autre onglet fait déjà un passage : on ne lit pas le site en double.
+    const lock = readAuto();
+    if (num(lock.until) > Date.now() && lock.tab !== auto.tab) {
+      return setStatus('Une mise à jour tourne déjà dans un autre onglet du site. Réessaie dans quelques minutes.');
+    }
+    startJob('Mise à jour en cours…');
+    // La progression et le bouton Stop sont dans l'onglet Collection.
+    if (ui.el.view_col && ui.tab !== 'col') setTab('col');
+    // Un passage automatique de cet onglet voit job.running et s'arrête à sa prochaine requête : on l'attend, pour ne pas lire le site à deux.
+    if (auto.done) await auto.done;
+    const out = routineCounts();
+    holdAuto();
+    let err = null;
+    try { await routinePass({ manual: true, out }); } catch (e) { err = e; }
+    db.autoLast = Object.assign({ at: Date.now() }, out);
+    releaseAuto();
     saveDb();
-    auto.busy = false;
-    refresh();
+    endJob(err ? 'Mise à jour interrompue (' + err.message + ') : ' + routineSummary(out) + '.'
+      : (job.stop ? 'Arrêtée : ' : 'Mise à jour terminée : ') + routineSummary(out) + '.');
+  }
+  // État de la mise à jour automatique (Accueil et Réglages).
+  function autoLine() {
+    if (db.autoPauseUntil > Date.now()) return 'En pause : le site a limité les relevés automatiques. Reprise plus tard.';
+    const a = db.autoLast;
+    if (!a || !a.at) return 'Aucune mise à jour automatique pour l’instant.';
+    return 'Dernière mise à jour automatique : ' + ago(a.at) + ' · ' + routineSummary(a) + '.' +
+      (proState() === true ? ' Encore ' + plural(dueCards().length, 'carte à relire', 'cartes à relire') + '.' : '');
+  }
+  // auto.done : la promesse du passage en cours, que le bouton attend avant de démarrer.
+  function autoRun() {
+    if (auto.busy || job.running) return Promise.resolve();
+    auto.busy = true;
+    auto.done = (async () => {
+      const out = routineCounts();
+      holdAuto();
+      try {
+        await routinePass({ manual: false, out });
+      } catch (e) { /* limite du site, réseau : on s'arrête et on reprendra au prochain passage */ }
+      db.autoLast = Object.assign({ at: Date.now() }, out);
+      releaseAuto();
+      saveDb();
+      auto.busy = false;
+      auto.done = null;
+      refresh();
+    })();
+    return auto.done;
   }
 
   // Les cartes passées dans tes échanges dont l'historique de ventes manque ou date.
@@ -1673,7 +1813,7 @@
     const out = [], seen = new Set();
     const list = Object.values(db.trades).sort(byDateDesc).sort((a, b) => (b.s === 'accepted') - (a.s === 'accepted'));
     for (const t of list) for (const c of t.g.concat(t.r)) {
-      if (seen.has(c[0]) || !priceStale(c[0], c[2])) continue;
+      if (seen.has(c[0]) || !priceDue(c[0], c[2])) continue;
       seen.add(c[0]);
       out.push([c[0], c[2]]);
     }
@@ -1686,7 +1826,7 @@
     startJob('Prix : 0 / ' + todo.length, 'tradeStatus');
     if (poolOn()) {
       await poolPrefetch(todo.map(x => x[0]));
-      todo = todo.filter(([id, r]) => priceStale(id, r));
+      todo = todo.filter(([id, r]) => priceDue(id, r));
       if (!todo.length) return endJob('Tous les prix étaient dans le pool du groupe.', 'tradeStatus');
     }
     let i = 0;
@@ -1719,20 +1859,25 @@
   }
 
   // Lit ta liste de souhaits page par page, comme la page « Toutes les cartes » avec son filtre.
+  // Lit toute la liste de souhaits (mêmes règles que readCollection).
+  async function readWishlist(stop, hit, onPage) {
+    const all = [];
+    for (let page = 0; page < 100; page++) {
+      if (stop()) return null;
+      const j = await hit(() => getJSON('/api/cards?page=' + page + '&sort=rarity&wishlist=1'));
+      const cards = (j && j.cards) || [];
+      all.push(...cards);
+      if (onPage) onPage(all.length);
+      if (cards.length < PAGE_SIZE || (j && typeof j.total === 'number' && all.length >= j.total)) return all;
+    }
+    return all;
+  }
   async function loadWish() {
     if (job.running) return;
     startJob('Lecture de la liste de souhaits…', 'wishStatus');
     try {
-      const all = [];
-      for (let page = 0; page < 100 && !job.stop; page++) {
-        const j = await getJSON('/api/cards?page=' + page + '&sort=rarity&wishlist=1');
-        const cards = j.cards || [];
-        all.push(...cards);
-        setStatus('Liste de souhaits : ' + all.length + ' cartes…', 'wishStatus');
-        if (cards.length < PAGE_SIZE || (typeof j.total === 'number' && all.length >= j.total)) break;
-        await pace();
-      }
-      if (job.stop) return endJob('Arrêté, liste inchangée.', 'wishStatus');
+      const all = await readWishlist(() => job.stop, f => f().then(r => pace().then(() => r)), n => setStatus('Liste de souhaits : ' + n + ' cartes…', 'wishStatus'));
+      if (!all) return endJob('Arrêté, liste inchangée.', 'wishStatus');
       ingestWish({ cards: all }, true);
       endJob('Liste de souhaits chargée : ' + all.length + ' cartes.', 'wishStatus');
     } catch (e) {
@@ -1745,6 +1890,17 @@
   const SEARCH_BATCH = Infinity;  // plus de plafond : tout est traité, au rythme du site
   const SEARCH_FRESH = 60 * 6e4;  // une carte cherchée depuis moins d'une heure n'est pas recherchée à nouveau
   // Cherche une liste de cartes [identifiant, titre] sur le marché, une recherche par seconde.
+  // Cherche une carte sur le marché par son titre (une requête). Renvoie vrai si elle est en vente.
+  async function searchCard(cardId, title) {
+    const j = await getJSON('/api/marketplace?page=1&limit=50&sort=recent&q=' + encodeURIComponent(title));
+    // La recherche fait foi pour cette carte : on repart de ce qu'elle renvoie.
+    delete db.market.asks[cardId];
+    ingestMarket(j);
+    const found = ((j && j.auctions) || []).some(x => x && x.card_id === cardId);
+    for (const id in db.alerts) if (db.alerts[id][0] === cardId) db.alerts[id][3] = found ? 1 : 2;
+    db.wishSeen[cardId] = Date.now();
+    return found;
+  }
   async function marketSearch(todo, label, noneText, where) {
     where = where || 'wishStatus';
     startJob(label + ' : 0 / ' + todo.length, where);
@@ -1752,14 +1908,7 @@
     try {
       for (const [cardId, title] of todo) {
         if (job.stop) break;
-        const j = await getJSON('/api/marketplace?page=1&limit=50&sort=recent&q=' + encodeURIComponent(title));
-        // La recherche fait foi pour cette carte : on repart de ce qu'elle renvoie.
-        delete db.market.asks[cardId];
-        ingestMarket(j);
-        const found = (j.auctions || []).some(x => x && x.card_id === cardId);
-        if (found) live++;
-        for (const id in db.alerts) if (db.alerts[id][0] === cardId) db.alerts[id][3] = found ? 1 : 2;
-        db.wishSeen[cardId] = Date.now();
+        if (await searchCard(cardId, title)) live++;
         i++;
         setStatus(label + ' : ' + i + ' / ' + todo.length + ' · ' + plural(live, 'carte en vente', 'cartes en vente') +
           eta(todo.length - i), where);
@@ -1849,7 +1998,7 @@
   // Souhaits en vente dont la valeur médiane manque ou date : il la faut pour juger une bonne affaire.
   function wishPricesToFetch() {
     const out = [];
-    for (const id in db.wish) if (askOf(id) && priceStale(id, db.wish[id][1])) out.push([id, db.wish[id][1]]);
+    for (const id in db.wish) if (askOf(id) && priceDue(id, db.wish[id][1])) out.push([id, db.wish[id][1]]);
     return out;
   }
   // Cartes de la liste À vendre dont les annonces concurrentes n'ont pas été cherchées depuis une heure.
@@ -1865,7 +2014,7 @@
     startJob('Prix : 0 / ' + todo.length, where);
     if (poolOn()) {
       await poolPrefetch(todo.map(x => x[0]));
-      todo = todo.filter(([id, r]) => priceStale(id, r));
+      todo = todo.filter(([id, r]) => priceDue(id, r));
       if (!todo.length) return endJob('Tous les prix étaient dans le pool du groupe.', where);
     }
     let i = 0;
@@ -1930,7 +2079,7 @@
       if (pro === true) {
         const now = Date.now();
         for (const c of cards) {
-          if (priceStale(c.cardId, c.rarity) && !pull.queue.includes(c.cardId)) pull.queue.push(c.cardId);
+          if (priceDue(c.cardId, c.rarity) && !pull.queue.includes(c.cardId)) pull.queue.push(c.cardId);
         }
         runPullQueue();
       }
@@ -1943,7 +2092,7 @@
     try {
       if (poolOn()) {
         await poolPrefetch(pull.queue.slice());
-        pull.queue = pull.queue.filter(id => { const c = pull.cards.find(x => x.cardId === id); return priceStale(id, c ? c.rarity : ''); });
+        pull.queue = pull.queue.filter(id => { const c = pull.cards.find(x => x.cardId === id); return priceDue(id, c ? c.rarity : ''); });
         renderPull();
       }
       while (pull.queue.length) {
@@ -1970,7 +2119,7 @@
       const id = a && a.card_id;
       if (!okKey(id) || bidQ.queue.some(x => x[0] === id)) continue;
       const r = rarOf(a.snapshot_rarity || (a.card && a.card.rarity));
-      if (priceStale(id, r)) bidQ.queue.push([id, r]);
+      if (priceDue(id, r)) bidQ.queue.push([id, r]);
     }
     runBidQueue();
   }
@@ -1981,7 +2130,7 @@
       if (poolOn()) await poolPrefetch(bidQ.queue.map(x => x[0]));
       while (bidQ.queue.length && !job.running && !pull.busy) {
         const [id, r] = bidQ.queue.shift();
-        if (!priceStale(id, r)) continue;
+        if (!priceDue(id, r)) continue;
         await fetchSales(id, r);
         if (bidQ.queue.length) await sleep(900 + Math.random() * 400);
       }
@@ -2510,6 +2659,8 @@
     if (e.poolInfo && !poolUi.testing) e.poolInfo.textContent = poolLine();
     if (e.acctInfo) e.acctInfo.textContent = accountLine();
     if (e.storeInfo) e.storeInfo.textContent = storeLine();
+    for (const el of [e.autoInfo, e.autoInfo2]) if (el) el.textContent = autoLine();
+    for (const b of [e.updAll, e.updAll2]) if (b) b.disabled = job.running;
     if (!e.load) return;
     const pro = proState();
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
@@ -2569,6 +2720,8 @@
     const chk = (label, tip, checked, onchange) => h('label', { class: 'chk', 'data-tip': tip },
       h('input', { type: 'checkbox', checked: !!checked, onchange }), label);
 
+    const UPD_TIP = 'Fait tout de suite, et sans limite, ce que fait la mise à jour automatique : collection et liste de souhaits si elles ont plus d’un jour, ' +
+      'souhaits signalés en vente, prix à relire, prix finaux. Une requête par seconde ; Stop l’arrête.';
     e.load = btn('Recharger ma collection',
       'Relit toute ta collection sur le site (une dizaine de requêtes). Retire aussi les cartes vendues, données ou défaussées depuis la dernière fois.',
       loadCollection, 'pri');
@@ -2678,7 +2831,9 @@
 
     e.homeBody = h('div', { class: 'home' });
     e.homeTiles = h('div', { class: 'tiles' });
-    e.view_home = h('div', null, e.homeTiles, e.homeBody);
+    e.view_home = h('div', null,
+      h('div', { class: 'tools' }, (e.updAll = btn('Tout mettre à jour maintenant', UPD_TIP, updateAll, 'pri')), (e.autoInfo = h('span', { class: 'sub' }, autoLine()))),
+      e.homeTiles, e.homeBody);
 
     // ----- À vendre -----
     e.view_sell = h('div', null,
@@ -2805,13 +2960,15 @@
           chk('Prix des cartes tirées après chaque booster', 'Après chaque paquet que tu ouvres toi-même, un petit panneau donne la valeur de chaque carte tirée.',
             db.autoPull !== false, ev => { db.autoPull = ev.target.checked; saveDb(); }),
           ovChk('bidAuto', 'Prix des cartes de Mes enchères', 'Quand le site affiche l’onglet Mes enchères, relève le prix des cartes où tu enchéris qui n’en ont pas de récent.')),
-        group('Relevé automatique des prix (tous comptes)', 'Sans compte Pro, les prix viennent des fins d’enchères. Cette option les relève toute seule, pour que l’extension reste utile.',
-          ovChk('autoObs', 'Relever les prix en arrière-plan',
-            'Quand un onglet du site est affiché, un petit relevé toutes les 30 min : d’abord les prix finaux de tes cartes et souhaits, puis une lecture des fins d’enchères. ' +
-            'Une requête par seconde, un seul onglet à la fois, et il s’arrête dès que tu lances un relevé toi-même ou que le site demande de ralentir.'),
-          h('span', { class: 'sub' }, db.autoLast && db.autoLast.at
-            ? 'Dernier relevé automatique : ' + ago(db.autoLast.at) + ', ' + plural(num(db.autoLast.finals), 'prix final', 'prix finaux') + '.'
-            : (db.autoPauseUntil > Date.now() ? 'En pause : le site a limité les relevés automatiques. Reprise plus tard.' : 'Pas encore de relevé automatique.'))),
+        group('Mise à jour automatique (tous comptes)', 'Garde à jour la valeur de ta collection et les prix de tes souhaits, sans cliquer bouton après bouton. ' +
+          'Sans compte Pro, les prix viennent du pool et des fins d’enchères.',
+          ovChk('autoObs', 'Mise à jour automatique',
+            'Toutes les 30 min, tant qu’un onglet du site est ouvert (même en arrière-plan) : relit ta collection et ta liste de souhaits une fois par jour, ' +
+            'vérifie les souhaits que le site signale en vente, puis relit les prix à refaire en commençant par ceux qui pèsent le plus dans ta valeur ' +
+            '(chaque jour pour les cartes de plus de 50 ₩, les L et les UR ; tous les 2 jours les SR, 4 jours les R, 7 jours les C et PC), et enfin les prix finaux. ' +
+            '60 requêtes au plus par passage, un seul onglet à la fois. Elle s’arrête dès que tu lances un relevé toi-même, et se met en pause 24 h si le site signale trop d’automatisation.'),
+          (e.updAll2 = btn('Tout mettre à jour maintenant', UPD_TIP, updateAll)),
+          (e.autoInfo2 = h('span', { class: 'sub' }, autoLine()))),
         group('Compte', 'Chaque compte WikiMasters utilisé dans ce navigateur a ses propres données : collection, ventes et achats, échanges, boosters, évolution, souhaits, amis. ' +
           'Les prix du marché sont communs à tous les comptes. Le script reconnaît tout seul le compte connecté.',
           (e.acctInfo = h('span', { class: 'sub' }, accountLine())),
@@ -3202,7 +3359,7 @@
     const known = c => {
       const p = priceOf(c[0], c[2]);
       if (p && p.n) return Math.max(p.med, DISCARD);
-      return db.prices[c[0]] && !priceStale(c[0], c[2]) ? DISCARD : null;
+      return db.prices[c[0]] && !priceDue(c[0], c[2]) ? DISCARD : null;
     };
     const cardsValue = l => l.reduce((a, c) => a + (known(c) || 0), 0);
     const unknown = l => l.filter(c => known(c) == null).length;

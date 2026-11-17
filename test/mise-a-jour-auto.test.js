@@ -1,0 +1,269 @@
+// Tests : mise à jour automatique (prix relus selon leur valeur, routine, bouton « Tout mettre à jour maintenant »).
+// Lancer : node --test test/*.test.js
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { load, reply } = require('./harness');
+
+const H = 36e5, DAY = 24 * H;
+const iso = ms => new Date(ms).toISOString();
+// Un prix relu il y a « age » ms, avec n ventes de la rareté r au prix p.
+const priced = (age, r, p = 10, n = 3) => ({ at: Date.now() - age, sales: Array.from({ length: n }, (_, i) => ({ p, t: iso(Date.now() - age - i * H), r })) });
+const card = (cardId, rarity, count = 1) => ({ cardId, title: 'Carte ' + cardId, rarity, count });
+
+// ----- Tâche 1 : quand relire, dans quel ordre -----
+test('priceDue : délais par rareté', () => {
+  const { t } = load();
+  const due = (r, age) => { t.db.prices = { X: priced(age, r, 5) }; t.resetPrices(); return t.priceDue('X', r); };
+  assert.equal(due('L', 25 * H), true);
+  assert.equal(due('L', 23 * H), false);
+  assert.equal(due('SR', 47 * H), false);
+  assert.equal(due('SR', 49 * H), true);
+  assert.equal(due('R', 3 * DAY), false);
+  assert.equal(due('R', 5 * DAY), true);
+  assert.equal(due('C', 6 * DAY), false);
+  assert.equal(due('C', 8 * DAY), true);
+});
+
+test('priceDue : une carte qui vaut plus de 50 ₩ ou en vente se relit chaque jour', () => {
+  const { t } = load();
+  t.db.prices = { V: priced(25 * H, 'R', 60), W: priced(25 * H, 'R', 40), S: priced(25 * H, 'C', 2) };
+  t.resetPrices();
+  assert.equal(t.priceDue('V', 'R'), true, 'R à 60 ₩');
+  assert.equal(t.priceDue('W', 'R'), false, 'R à 40 ₩ : 4 jours');
+  assert.equal(t.priceDue('S', 'C'), false);
+  t.db.selling = [{ i: 'a1', c: 'S', t: 'S', r: 'C' }];
+  assert.equal(t.priceDue('S', 'C'), true, 'en vente');
+});
+
+test('priceDue : sans prix, et historique vide douteux', () => {
+  const { t } = load();
+  t.db.prices = { E: { at: Date.now() - 2 * H, sales: [] } };
+  assert.equal(t.priceDue('N', 'C'), true, 'jamais relue');
+  assert.equal(t.priceDue('E', 'L'), true, 'L sans vente depuis 2 h');
+});
+
+test('dueCards : de la plus lourde à la plus légère', () => {
+  const { t } = load();
+  t.db.cards = { a: card('A', 'C', 5), b: card('B', 'C'), r: card('R1', 'R'), n: card('N', 'R'), p: card('P', 'PC') };
+  t.db.prices = { A: priced(8 * DAY, 'C', 10), B: priced(8 * DAY, 'C', 100), R1: priced(1 * H, 'R', 30) };
+  t.resetPrices();
+  const list = t.dueCards();
+  const ids = list.map(x => x[0]);
+  assert.ok(ids.indexOf('B') < ids.indexOf('A'), '100 × 1 avant 10 × 5');
+  assert.equal(list.find(x => x[0] === 'N')[2], 30, 'jamais relue : la médiane de sa rareté');
+  assert.equal(list.find(x => x[0] === 'P')[2], 1, 'aucune PC connue : poids 1, mais présente');
+  assert.ok(!ids.includes('R1'), 'relue il y a une heure');
+});
+
+test('dueCards : les souhaits en vente comptent, une seule fois', () => {
+  const { t } = load();
+  const ask = id => ({ a: 5, b: false, e: Date.now() + H, i: 'au' + id, t: Date.now(), r: 'L', list: [{ i: 'au' + id, a: 5, b: false, e: Date.now() + H, r: 'L' }] });
+  t.db.wish = { W1: ['Souhait', 'L'], W2: ['Possédé', 'L'], W3: ['Pas en vente', 'L'] };
+  t.db.market.asks = { W1: ask('W1'), W2: ask('W2') };
+  t.db.cards = { w2: card('W2', 'L') };
+  const ids = t.dueCards().map(x => x[0]);
+  assert.ok(ids.includes('W1'));
+  assert.equal(ids.filter(id => id === 'W2').length, 1);
+  assert.ok(!ids.includes('W3'));
+});
+
+test('Relever les prix suit priceDue', () => {
+  const { t } = load();
+  t.ui.chosen = new Set(['L', 'UR', 'SR', 'R', 'PC', 'C']);
+  t.db.cards = { c: card('C1', 'C'), l: card('L1', 'L') };
+  t.db.prices = { C1: priced(3 * DAY, 'C', 2), L1: priced(25 * H, 'L', 5) };
+  t.resetPrices();
+  assert.deepEqual([...t.missingIds()], ['L1']);
+});
+
+// ----- Tâche 2 : la routine et le passage en arrière-plan -----
+// Site simulé : routes [motif, réponse(url)] d'abord, puis des réponses par défaut. calls garde chaque URL demandée.
+function siteEnv(routes = [], opts = {}) {
+  const calls = [];
+  let env;
+  const fetch = async url => {
+    calls.push(url);
+    for (const [re, fn] of routes) if (re.test(url)) return fn(url, env);
+    if (/\/sales$/.test(url)) return reply({ sales: [{ final_price: 5, settled_at: iso(Date.now() - H), rarity: 'C' }] });
+    if (url.startsWith('/api/marketplace?')) return reply({ auctions: [], hasMore: false });
+    if (url.startsWith('https://pool.test/v1/known')) return reply({ exact: {} });
+    return reply({});
+  };
+  env = load(Object.assign({ fast: true, fetch }, opts));
+  const t = env.t;
+  t.db.userId = 'U1';
+  t.db.pro = { U1: true };
+  t.db.ov.autoObs = true;
+  t.db.collectionFullAt = Date.now();
+  t.db.wishFullAt = Date.now();
+  env.calls = calls;
+  env.sales = () => calls.filter(u => /\/sales$/.test(u));
+  return env;
+}
+const manyCards = n => Object.fromEntries(Array.from({ length: n }, (_, i) => ['e' + i, card('K' + i, 'C', i + 1)]));
+
+test('passage : 60 requêtes au plus, les plus lourdes d’abord', async () => {
+  const env = siteEnv();
+  env.t.db.cards = manyCards(100);
+  await env.t.autoRun();
+  assert.equal(env.sales().length, 60);
+  assert.equal(env.sales()[0], '/api/marketplace/cards/K99/sales', '100 exemplaires : la plus lourde');
+  assert.equal(env.t.db.autoLast.prices, 60);
+});
+
+test('passage : 20 alertes au plus', async () => {
+  const env = siteEnv();
+  env.t.db.pro = { U1: false };
+  for (let i = 0; i < 30; i++) env.t.db.alerts['a' + i] = ['W' + i, 'Souhait ' + i, Date.now() - H, 0];
+  await env.t.autoRun();
+  assert.equal(env.calls.filter(u => u.includes('&q=')).length, 20);
+  assert.equal(env.t.db.autoLast.alerts, 20);
+});
+
+test('passage : le pool d’abord', async () => {
+  const env = siteEnv([[/^https:\/\/pool\.test\/v1\/pull/, () => reply({ cards: { C1: { pro: { at: Date.now(), by: 'Marie', sales: [[50, iso(Date.now() - H), 'C']] }, sales: [] } } })]]);
+  Object.assign(env.t.db.pool, { url: 'https://pool.test', key: 'cle-du-groupe-assez-longue-123', on: true });
+  env.t.db.cards = { a: card('C1', 'C'), b: card('C2', 'C') };
+  await env.t.autoRun();
+  assert.ok(!env.sales().includes('/api/marketplace/cards/C1/sales'), 'le pool avait C1');
+  assert.ok(env.sales().includes('/api/marketplace/cards/C2/sales'));
+});
+
+const collPage = (from, n) => reply({ collection: Array.from({ length: n }, (_, i) => ({ id: 'e' + (from + i), user_id: 'U1',
+  card: { id: 'K' + (from + i), wikipedia_title: 'K' + (from + i), rarity: 'C' } })) });
+
+test('passage : collection de plus de 24 h relue en entier, puis arrêt', async () => {
+  const env = siteEnv([[/^\/api\/my-collection/, url => (/page=0/.test(url) ? collPage(0, 50) : collPage(50, 10))]]);
+  env.t.db.collectionFullAt = 0;
+  await env.t.autoRun();
+  assert.equal(Object.keys(env.t.db.cards).length, 60);
+  assert.equal(env.sales().length, 0, 'le passage s’arrête après la collection');
+  assert.equal(env.t.db.autoLast.collection, true);
+});
+
+test('passage : collection interrompue, rien n’est remplacé', async () => {
+  const env = siteEnv([[/^\/api\/my-collection/, url => (/page=0/.test(url) ? collPage(0, 50) : reply({}, 500))]]);
+  env.t.db.collectionFullAt = 0;
+  env.t.db.cards = { old: card('OLD', 'L') };
+  await env.t.autoRun();
+  assert.deepEqual(Object.keys(env.t.db.cards), ['old']);
+});
+
+test('passage : liste de souhaits de plus de 24 h relue', async () => {
+  const env = siteEnv([[/^\/api\/cards\?.*wishlist=1/, () => reply({ cards: [{ id: 'W1', wikipedia_title: 'Souhait', rarity: 'L' }], total: 1 })]]);
+  env.t.db.wishFullAt = 0;
+  await env.t.autoRun();
+  assert.ok(env.calls.some(u => /wishlist=1/.test(u)));
+  assert.ok(env.t.db.wishFullAt > 0);
+  assert.deepEqual(Object.keys(env.t.db.wish), ['W1']);
+});
+
+test('passage : compte non Pro, aucune requête /sales', async () => {
+  const env = siteEnv();
+  env.t.db.pro = { U1: false };
+  env.t.db.cards = manyCards(5);
+  await env.t.autoRun();
+  assert.equal(env.sales().length, 0);
+});
+
+test('passage : limite du site, arrêt et pause de 24 h', async () => {
+  const env = siteEnv([[/\/sales$/, () => reply({ code: 'automation_limit' }, 403)]]);
+  env.t.db.cards = manyCards(5);
+  await env.t.autoRun();
+  assert.equal(env.sales().length, 1);
+  assert.ok(env.t.db.autoPauseUntil > Date.now() + 23 * H);
+});
+
+test('passage : le verrou est renouvelé à chaque requête', async () => {
+  const locks = [];
+  const env = siteEnv([[/\/sales$/, (url, e) => {
+    locks.push(JSON.parse(e.store.get('wmstats.auto') || '{}').until);
+    return reply({ sales: [] });
+  }]]);
+  env.t.db.cards = manyCards(5);
+  await env.t.autoRun();
+  assert.equal(locks.length, 5);
+  for (const until of locks) assert.ok(until >= Date.now() + 90e3, 'verrou tenu pour au moins 1 min 30');
+  assert.equal(JSON.parse(env.store.get('wmstats.auto')).until, 0, 'libéré à la fin');
+});
+
+// ----- Tâche 3 : le bouton, la ligne d'état -----
+test('bouton : pas de budget', async () => {
+  const env = siteEnv();
+  env.t.db.cards = manyCards(100);
+  await env.t.updateAll();
+  assert.equal(env.sales().length, 100);
+  assert.equal(env.t.job.running, false);
+  assert.equal(env.t.db.autoLast.prices, 100);
+});
+
+test('bouton : Stop arrête', async () => {
+  let n = 0;
+  const env = siteEnv([[/\/sales$/, (url, e) => { if (++n === 5) e.t.job.stop = true; return reply({ sales: [] }); }]]);
+  env.t.db.cards = manyCards(100);
+  await env.t.updateAll();
+  assert.ok(env.sales().length <= 6, env.sales().length + ' requêtes');
+  assert.equal(env.t.job.running, false);
+});
+
+test('bouton : compte non Pro, aucune requête /sales', async () => {
+  const env = siteEnv();
+  env.t.db.pro = { U1: false };
+  env.t.db.cards = manyCards(5);
+  await env.t.updateAll();
+  assert.equal(env.sales().length, 0);
+});
+
+test('ligne d’état', () => {
+  const env = siteEnv();
+  const t = env.t;
+  assert.equal(t.autoLine(), 'Aucune mise à jour automatique pour l’instant.');
+  t.db.cards = Object.fromEntries(Array.from({ length: 420 }, (_, i) => ['e' + i, card('K' + i, 'C')]));
+  t.db.autoLast = { at: Date.now() - 12 * 6e4, prices: 34, alerts: 5, finals: 18 };
+  assert.match(t.autoLine(), /^Dernière mise à jour automatique : il y a 12 min · 34 prix relus, 5 annonces vérifiées, 18 prix finaux\. Encore 420 cartes à relire\.$/);
+  t.db.pro = { U1: false };
+  assert.match(t.autoLine(), /^Dernière mise à jour automatique : il y a 12 min · 34 prix relus, 5 annonces vérifiées, 18 prix finaux\.$/);
+});
+
+test('bouton : un autre onglet met déjà à jour, rien ne part en double', async () => {
+  const env = siteEnv();
+  env.t.db.cards = manyCards(5);
+  env.store.set('wmstats.auto', JSON.stringify({ tab: 'autre', until: Date.now() + 5 * 6e4, at: Date.now() - 40 * 6e4 }));
+  await env.t.updateAll();
+  assert.equal(env.calls.length, 0, 'aucune requête');
+  assert.match(env.t.ui.el.status.textContent, /autre onglet/);
+  assert.equal(JSON.parse(env.store.get('wmstats.auto')).tab, 'autre', 'le verrou de l’autre onglet est laissé');
+});
+
+// ----- Relecture Copilot (PR #12) -----
+test('verrou pris par un autre onglet pendant la mise à jour : arrêt, et son verrou est laissé', async () => {
+  let n = 0;
+  const env = siteEnv([[/\/sales$/, (url, e) => {
+    if (++n === 3) e.store.set('wmstats.auto', JSON.stringify({ tab: 'autre', until: Date.now() + 5 * 6e4, at: 0 }));
+    return reply({ sales: [] });
+  }]]);
+  env.t.db.cards = manyCards(10);
+  await env.t.updateAll();
+  assert.equal(env.sales().length, 3, 'plus de requête une fois le verrou perdu');
+  assert.equal(JSON.parse(env.store.get('wmstats.auto')).tab, 'autre', 'le verrou de l’autre onglet n’est ni écrasé ni libéré');
+});
+
+test('passage : la relecture d’un historique vide compte dans le budget', async () => {
+  const env = siteEnv([[/\/sales$/, () => reply({ sales: [] })]]);
+  env.t.db.cards = Object.fromEntries(Array.from({ length: 50 }, (_, i) => ['e' + i, card('L' + i, 'L')]));
+  await env.t.autoRun();
+  assert.ok(env.sales().length <= 60, env.sales().length + ' requêtes');
+});
+
+test('bouton pendant un passage automatique du même onglet : pas de chevauchement', async () => {
+  const both = [];
+  const env = siteEnv([[/\/sales$/, (url, e) => { both.push(e.t.auto.busy && e.t.job.running); return reply({ sales: [] }); }]]);
+  env.t.db.cards = manyCards(10);
+  const pass = env.t.autoRun();
+  await env.t.updateAll();
+  await pass;
+  assert.ok(!both.includes(true), 'aucune requête pendant que les deux tournent');
+  assert.equal(env.t.auto.busy, false);
+  assert.equal(JSON.parse(env.store.get('wmstats.auto')).until, 0);
+});

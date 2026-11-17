@@ -78,7 +78,7 @@ test('autoDue : seulement si activé, onglet affiché, aucun autre onglet, pas d
   t.db.ov.autoObs = true;
   assert.equal(t.autoDue(now), true);
   document.visibilityState = 'hidden';
-  assert.equal(t.autoDue(now), false, 'onglet en arrière-plan');
+  assert.equal(t.autoDue(now), true, 'en arrière-plan aussi (1.25) : le navigateur la ralentit tout seul');
   document.visibilityState = 'visible';
   t.auto.loadedAt = now - 30 * 1000;
   assert.equal(t.autoDue(now), false, 'page ouverte il y a moins de 2 min');
@@ -102,7 +102,9 @@ test('autoRun : 60 prix finaux au plus, les plus utiles d’abord, puis le relev
       : reply({ auctions: [], hasMore: true }))
   });
   t.db.ov.autoObs = true;
+  t.db.collectionFullAt = t.db.wishFullAt = Date.now(); // collection et liste à jour : sinon le passage les relirait d'abord
   t.db.cards = { x1: { cardId: 'K', title: 'Ma carte', rarity: 'C', count: 1 } };
+  t.db.prices = { K: { at: Date.now(), sales: [] } };
   t.db.finQ = {};
   for (let i = 0; i < 70; i++) t.db.finQ['f' + i] = ['C' + i, 'C', now - 10 * MIN, 1];
   t.db.finQ.mine = ['K', 'C', now - 10 * MIN, 0];
@@ -124,8 +126,9 @@ test('autoRun s’arrête dès qu’un relevé manuel démarre', async () => {
     fetch: async () => { t.job.running = true; return reply({ auction: { card_id: 'K', final_price: 3, settled_at: iso(now) } }); }
   }));
   t.db.ov.autoObs = true;
+  t.db.collectionFullAt = t.db.wishFullAt = Date.now();
   t.db.finQ = { g1: ['A', 'C', now - 10 * MIN, 1], g2: ['B', 'C', now - 10 * MIN, 1] };
   await t.autoRun();
-  assert.equal(t.db.autoLast.read, 1);
+  assert.equal(t.db.autoLast.finals, 1);
   assert.equal(t.auto.busy, false);
 });
