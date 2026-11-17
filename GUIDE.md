@@ -139,7 +139,7 @@ Jules t'envoie l'adresse et la clé du pool du NAS. Il faut alors envoyer ce que
 2. **Ta collection** : onglet **Collection**, bouton **« Recharger ma collection »**. Ça prend une dizaine de secondes.
 3. **Les prix** :
    - **avec un compte Pro** : bouton **« Relever les prix »** ;
-   - **sans compte Pro** : clique **« Relever les fins d'enchères »**, attends quelques minutes, puis clique **« Relever les prix finaux »**. Pour que ça se fasse tout seul : **Réglages**, puis coche **« Relever les prix en arrière-plan »**.
+   - **sans compte Pro** : clique **« Relever les fins d'enchères »**, attends quelques minutes, puis clique **« Relever les prix finaux »**. Pour que ça se fasse tout seul : **Réglages**, puis coche **« Mise à jour automatique »**.
 4. **Fais le tour des onglets** :
 
    | Onglet | À quoi il sert |
@@ -162,7 +162,7 @@ Jules t'envoie l'adresse et la clé du pool du NAS. Il faut alors envoyer ce que
 
 - **Avant d'ouvrir tes paquets**, vérifie que le bouton **📊** est là. Sinon, appuie sur **F5**. Le script ne compte un booster que s'il tourne au moment où tu l'ouvres.
 - **Passe sur la page Marché** de temps en temps. Le script y lit tes ventes, tes achats et tes enchères en cours.
-- **Recharge ta collection** une fois par jour : onglet Collection, puis « Recharger ma collection ».
+- **Dans Réglages, coche « Mise à jour automatique »** : le script garde tes prix à jour tout seul tant qu'un onglet du site est ouvert. Pour tout mettre à jour d'un coup, clique « Tout mettre à jour maintenant » dans l'Accueil.
 - **Les mises à jour sont automatiques**, une fois par jour. Pour ne pas attendre : **Réglages**, puis **« Vérifier »**, puis **« Installer la dernière version »**, puis **« Mettre à jour »** sur la page de Tampermonkey. Recharge ensuite le site.
 - **Avec le pool sur ton PC (cas B)** : lance `start-local.cmd` avant de jouer.
 

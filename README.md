@@ -54,7 +54,7 @@ Une carte **shiny** en vente porte « ✦ » au lieu d'une comparaison : l'histo
 
 ### Réglages
 
-Tout ce que le script ajoute aux pages du site se règle dans l'onglet Réglages : afficher la valeur, comparer au prix de l'annonce, conseil quand tu es surenchéri, ✓ sur les cartes que tu as, bulle détaillée (ou la bulle simple du navigateur), contour vert des bonnes affaires, cartes trop chères grisées (désactivé par défaut ; elles redeviennent normales au survol, et tes propres enchères ne sont jamais grisées), valeur des échanges, les relevés automatiques réservés au Pro (cartes tirées d'un booster, cartes de Mes enchères), et le relevé automatique des prix en arrière-plan (tous comptes, désactivé par défaut ; voir « Prix observés »). On y trouve aussi la version installée et le bouton de mise à jour.
+Tout ce que le script ajoute aux pages du site se règle dans l'onglet Réglages : afficher la valeur, comparer au prix de l'annonce, conseil quand tu es surenchéri, ✓ sur les cartes que tu as, bulle détaillée (ou la bulle simple du navigateur), contour vert des bonnes affaires, cartes trop chères grisées (désactivé par défaut ; elles redeviennent normales au survol, et tes propres enchères ne sont jamais grisées), valeur des échanges, les relevés automatiques réservés au Pro (cartes tirées d'un booster, cartes de Mes enchères), et la mise à jour automatique (tous comptes, désactivée par défaut ; voir « Prix observés »), avec le bouton « Tout mettre à jour maintenant ». On y trouve aussi la version installée et le bouton de mise à jour.
 
 ### Accueil
 
@@ -239,7 +239,16 @@ L'historique des ventes d'une carte est une fonction Pro du site. Pour que tout 
 
 **Sans compte Pro, la marche à suivre** : « Relever les fins d'enchères », attendre quelques minutes que ces enchères se terminent, puis « Relever les prix finaux ». À refaire de temps en temps : les prix s'accumulent.
 
-**Relevé automatique (option, désactivée par défaut).** Dans l'onglet Réglages, « Relever les prix en arrière-plan » fait ce travail tout seul : tant qu'un onglet du site est affiché, un petit relevé toutes les 30 minutes, d'abord les prix finaux les plus utiles (tes cartes et tes souhaits), puis une lecture des fins d'enchères qui prépare le passage suivant. Une requête par seconde, un seul onglet à la fois ; il s'arrête dès que tu lances un relevé toi-même ou que le site demande de ralentir. Pensée pour tes amis sans compte Pro : les prix s'accumulent sans rien cliquer. Le site repère les outils trop actifs : s'il le signale, le relevé automatique se met en pause 24 h.
+**Mise à jour automatique (option, désactivée par défaut).** Dans l'onglet Réglages, la case « Mise à jour automatique » garde à jour la valeur de ta collection et les prix de tes souhaits, sans cliquer bouton après bouton. Toutes les 30 minutes, tant qu'un onglet du site est ouvert (même en arrière-plan), un passage fait, dans l'ordre :
+
+1. ta collection et ta liste de souhaits, relues en entier une fois par jour ;
+2. les souhaits que le site t'a signalés en vente ;
+3. les prix à relire, en commençant par les cartes qui pèsent le plus dans ta valeur (valeur × nombre d'exemplaires) : le pool du groupe d'abord, puis l'historique du site (compte Pro) ;
+4. les prix finaux des enchères suivies, puis les fins d'enchères.
+
+Un prix est à relire **chaque jour** pour une carte qui vaut plus de 50 ₩, une L, une UR ou une carte que tu as mise en vente ; tous les 2 jours pour une SR, 4 jours pour une R, 7 jours pour une C ou une PC. « Relever les prix » et « Relever les valeurs » suivent la même règle. Chaque passage fait 60 requêtes au plus, un seul onglet à la fois. Il s'arrête dès que tu lances un relevé toi-même, et la routine se met en pause 24 h si le site signale trop d'automatisation.
+
+**« Tout mettre à jour maintenant »** (Accueil et Réglages) lance la même chose tout de suite, sans limite, à une requête par seconde ; Stop l'arrête. La ligne en dessous dit ce qu'a fait le dernier passage, et combien de cartes restent à relire.
 
 Ces prix servent de valeur pour une carte quand il n'y a ni historique Pro ni vente personnelle. Ils donnent aussi un niveau de prix par rareté, affiché en haut de l'onglet Collection.
 
