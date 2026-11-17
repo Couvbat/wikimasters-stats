@@ -198,6 +198,8 @@ Pour héberger un pool : voir [server/README.md](server/README.md). C'est un pet
 
 ### Sauvegarde
 
+Depuis la 1.24, elles sont rangées dans la base IndexedDB du navigateur, sans la limite d'environ 5 Mo de l'ancien stockage du site. Le passage se fait tout seul au premier chargement : la copie est relue et comparée avant que l'ancien stockage soit effacé. La ligne « Rangées dans IndexedDB : … Mo » de l'onglet Sauvegarde le confirme. Après la mise à jour, recharge tous les onglets du site ouverts. Si le navigateur bloque IndexedDB, le script reste sur l'ancien stockage, et la même ligne le dit.
+
 Tes données sont rangées dans le navigateur, donc Chrome et Zen ont chacun les leurs. « Exporter toutes mes données » crée un fichier à importer dans l'autre navigateur. L'import fusionne : il ajoute ce qui manque et ne remplace un prix ou une collection que par plus récent. Garde ce fichier pour toi, il contient des prix issus de ton compte.
 
 ### Plusieurs comptes

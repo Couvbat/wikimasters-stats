@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.23.5
+// @version      1.24.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.5';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.24.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -130,7 +130,67 @@
     for (const k in base.cards) if (base.cards[k] && k === base.cards[k].cardId && byExemplar.has(k)) delete base.cards[k];
     return base;
   }
-  const readJson = k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
+  // ---------- où les données sont rangées ----------
+  // Deux modes, avec les mêmes clés (wmstats.v1 et wmstats.v1.u.<compte>) : 'idb', la base IndexedDB « wmstats », sans la limite
+  // de 5 Mo ; 'local', le localStorage du site (avant la 1.24, et en secours quand le navigateur bloque IndexedDB).
+  // En mode 'idb', texts garde le dernier texte de chaque clé : les lectures restent synchrones.
+  const localKeys = () => {
+    const out = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && (k === KEY || k.startsWith(KEY + '.u.'))) out.push(k); }
+    } catch (e) {}
+    return out;
+  };
+  const hasIdb = (() => { try { return typeof indexedDB !== 'undefined' && !!indexedDB; } catch (e) { return false; } })();
+  const store = {
+    mode: hasIdb ? 'idb' : 'local', loaded: !hasIdb, texts: new Map(), pending: new Map(), writing: false, idb: null,
+    get: k => (store.mode === 'idb' ? (store.texts.has(k) ? store.texts.get(k) : null) : (() => { try { return localStorage.getItem(k); } catch (e) { return null; } })()),
+    // En mode 'idb', une écriture met le cache à jour tout de suite et part dans la base peu après (flushStore).
+    set: (k, text) => {
+      if (store.mode !== 'idb') return localStorage.setItem(k, text);
+      store.texts.set(k, text); store.pending.set(k, text); scheduleFlush();
+    },
+    del: k => {
+      if (store.mode !== 'idb') { try { localStorage.removeItem(k); } catch (e) {} return; }
+      store.texts.delete(k); store.pending.set(k, null); scheduleFlush();
+    },
+    keys: () => (store.mode === 'idb' ? [...store.texts.keys()] : localKeys()),
+    size: () => store.keys().reduce((n, k) => n + k.length + (store.get(k) || '').length, 0),
+    // Résolue quand rien n'est en cours d'écriture ni prévu.
+    idle: () => new Promise(r => { idleWaiters.push(r); settleIdle(); })
+  };
+  const flushState = { scheduled: false }, idleWaiters = [];
+  const settleIdle = () => { if (!store.writing && !flushState.scheduled) while (idleWaiters.length) idleWaiters.shift()(); };
+  // Plusieurs saveDb dans la même tâche : une seule écriture.
+  const scheduleFlush = () => {
+    if (flushState.scheduled) return;
+    flushState.scheduled = true;
+    Promise.resolve().then(() => { flushState.scheduled = false; flushStore(); });
+  };
+  const TAB = Math.random().toString(36).slice(2);
+  const channel = (() => { try { return typeof BroadcastChannel === 'function' ? new BroadcastChannel('wmstats') : null; } catch (e) { return null; } })();
+  // Une seule transaction à la fois. Réussie : on prévient les autres onglets, et on écrit ce qui est arrivé entre-temps.
+  // Ratée : l'en-tête le dit, et ce qui n'a pas été écrit repart au prochain enregistrement.
+  function flushStore() {
+    if (store.writing || !store.pending.size || !store.idb) { settleIdle(); return; }
+    const batch = store.pending, wasFailed = !!saveState.failed;
+    store.pending = new Map();
+    store.writing = true;
+    idbWrite(store.idb, batch).then(() => {
+      saveState.failed = 0;
+      if (channel) { try { channel.postMessage({ saved: TAB }); } catch (e) {} }
+      store.writing = false;
+      if (wasFailed) refresh();
+      if (store.pending.size) flushStore(); else settleIdle();
+    }, () => {
+      for (const [k, v] of batch) if (!store.pending.has(k)) store.pending.set(k, v);
+      saveState.failed = Date.now();
+      store.writing = false;
+      if (!wasFailed) refresh();
+      settleIdle();
+    });
+  }
+  const readJson = k => { try { return JSON.parse(store.get(k)); } catch (e) { return null; } };
   let db = loadDb();
   function loadDb() {
     const base = defaults();
@@ -141,10 +201,99 @@
     if (isObj(mine)) applyPersonal(base, mine);
     return cleanDb(base);
   }
+  // ---------- base IndexedDB ----------
+  const IDB_NAME = 'wmstats', IDB_STORE = 'kv', IDB_VERSION = 1;
+  function idbOpen() {
+    return new Promise((resolve, reject) => {
+      const r = indexedDB.open(IDB_NAME, IDB_VERSION);
+      r.onupgradeneeded = () => { const d = r.result; if (!d.objectStoreNames.contains(IDB_STORE)) d.createObjectStore(IDB_STORE); };
+      // Une future version de la base ne doit pas rester bloquée par cet onglet.
+      r.onsuccess = () => { const d = r.result; d.onversionchange = () => d.close(); resolve(d); };
+      r.onerror = () => reject(r.error || new Error('IndexedDB indisponible'));
+    });
+  }
+  function idbReadAll(idb) {
+    return new Promise((resolve, reject) => {
+      const tx = idb.transaction(IDB_STORE, 'readonly'), os = tx.objectStore(IDB_STORE);
+      const keys = os.getAllKeys(), vals = os.getAll();
+      tx.oncomplete = () => { const m = new Map(); keys.result.forEach((k, i) => m.set(String(k), String(vals.result[i]))); resolve(m); };
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('lecture impossible'));
+    });
+  }
+  // Une seule transaction : tout est écrit, ou rien. null efface la clé.
+  function idbWrite(idb, entries) {
+    return new Promise((resolve, reject) => {
+      const tx = idb.transaction(IDB_STORE, 'readwrite'), os = tx.objectStore(IDB_STORE);
+      for (const [k, v] of entries) { if (v == null) os.delete(k); else os.put(v, k); }
+      tx.oncomplete = () => resolve();
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('écriture impossible'));
+    });
+  }
+  // Efface du localStorage les clés de la base (jamais wmstats.auto, le verrou de la collecte automatique).
+  const dropLocal = () => { for (const k of localKeys()) { try { localStorage.removeItem(k); } catch (e) {} } };
+  // Chargement. La base fait foi seulement si elle porte le marqueur META, posé une fois la migration vérifiée : une copie
+  // interrompue ou non vérifiée ne peut donc jamais faire foi, même si on n'a pas pu la retirer.
+  // Sans marqueur, les données du localStorage y sont copiées telles quelles (ce qui n'en vient pas est retiré), relues et
+  // comparées texte par texte ; puis le marqueur est posé, et seulement alors le localStorage est effacé.
+  // Au moindre problème (base bloquée, lecture ratée, copie différente), on reste sur le localStorage, comme avant la 1.24.
+  const META = 'wmstats.meta';
+  async function loadStore() {
+    try {
+      const idb = await idbOpen();
+      let texts = await idbReadAll(idb);
+      if (!texts.has(META)) {
+        const legacy = new Map();
+        for (const k of localKeys()) { const v = localStorage.getItem(k); if (v != null) legacy.set(k, v); }
+        if (legacy.size) {
+          const copy = new Map(legacy);
+          for (const k of texts.keys()) if (!legacy.has(k)) copy.set(k, null);
+          await idbWrite(idb, copy);
+          texts = await idbReadAll(idb);
+          if ([...legacy].some(([k, v]) => texts.get(k) !== v)) {
+            await idbWrite(idb, new Map([...legacy.keys()].map(k => [k, null]))).catch(() => {});
+            throw new Error('copie différente');
+          }
+        }
+        await idbWrite(idb, new Map([[META, JSON.stringify({ since: Date.now() })]]));
+      }
+      texts.delete(META);
+      dropLocal();
+      store.texts = texts;
+      store.idb = idb;
+      store.mode = 'idb';
+    } catch (e) {
+      store.mode = 'local';
+    }
+    db = loadDb();
+    store.loaded = true;
+  }
+  // Résolue quand les données sont chargées (tout de suite sans IndexedDB).
+  const ready = store.loaded ? Promise.resolve() : loadStore();
+  // Ce qui touche aux données attend qu'elles soient chargées (réponses du site interceptées, panneau, pastilles).
+  const whenReady = f => (store.loaded ? f() : ready.then(f));
   // Un autre onglet du site a enregistré des données : on les reprend pour ne pas les écraser.
+  // Sauf pendant un traitement, ou quand cet onglet a lui-même des écritures en attente : elles seraient perdues.
   window.addEventListener('storage', ev => {
-    if (ev.key === KEY && !job.running) { db = loadDb(); refresh(); }
+    if (store.mode === 'local' && ev.key === KEY && !job.running) { db = loadDb(); refresh(); }
   });
+  // Occupé, l'onglet ne recharge pas ; mais les parties personnelles des autres comptes, qu'il ne modifie pas, sont mises à jour
+  // dans le cache : un changement de compte lira la version récente, et ne l'écrasera pas par une ancienne.
+  const mayReload = () => store.mode === 'idb' && store.loaded && !job.running && !store.pending.size && !store.writing;
+  if (channel) channel.onmessage = ev => {
+    if (!ev || !ev.data || ev.data.saved === TAB || store.mode !== 'idb' || !store.loaded) return;
+    idbReadAll(store.idb).then(texts => {
+      texts.delete(META);
+      if (mayReload()) {
+        store.texts = texts;
+        db = loadDb();
+        resetPrices();
+        refresh();
+        return;
+      }
+      const mine = acctKey(db.userId);
+      for (const [k, v] of texts) if (k.startsWith(KEY + '.u.') && k !== mine && !store.pending.has(k)) store.texts.set(k, v);
+    }).catch(() => {});
+  };
   function splitDb() {
     const shared = {}, mine = {};
     for (const k of Object.keys(db)) (PERSONAL_SET.has(k) ? mine : shared)[k] = db[k];
@@ -158,9 +307,18 @@
   // Le relevé reste affiché jusqu'au rechargement de la page : on le retire de l'enregistrement, jamais de la mémoire.
   // Renvoie false si rien n'a pu être enregistré : l'en-tête du panneau le dit alors (saveWarning), au lieu d'un échec silencieux.
   const saveState = { failed: 0 };
-  const saveWarning = () => (saveState.failed
-    ? ' · ⚠ Navigateur plein : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.' : '');
+  const saveWarning = () => (!saveState.failed ? '' : store.mode === 'idb'
+    ? ' · ⚠ Enregistrement impossible : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.'
+    : ' · ⚠ Navigateur plein : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.');
   function saveDb() {
+    // Rien n'est encore chargé : écrire maintenant remplacerait les données par un db vide.
+    if (!store.loaded) return true;
+    if (store.mode === 'idb') {
+      const { shared, mine } = splitDb();
+      store.set(acctKey(db.userId), JSON.stringify(mine)); // le compte au moment de l'appel (setAccount change db.userId juste après)
+      store.set(KEY, JSON.stringify(shared));
+      return true;
+    }
     const write = asks => {
       const { shared, mine } = splitDb();
       if (asks) shared.market = { at: db.market.at, asks };
@@ -204,7 +362,7 @@
       // Compte pas encore reconnu : les données présentes sont les siennes.
       db.userId = uid;
       saveDb();
-      try { localStorage.removeItem(acctKey('')); } catch (e) {}
+      store.del(acctKey(''));
       return false;
     }
     saveDb();
@@ -1002,34 +1160,34 @@
       if (/\.supabase\.co$/.test(url.hostname)) {
         noteSession(url, input, init);
         // Le site lit tes étiquettes (page Collection) : on retient leur liste, pour l'étiquetage par lots.
-        if (method === 'GET' && url.pathname === '/rest/v1/tags') p.then(r => r.ok && r.clone().json().then(ingestTags)).catch(() => {});
+        if (method === 'GET' && url.pathname === '/rest/v1/tags') p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestTags(j)))).catch(() => {});
       }
       if (method === 'GET' && /\.supabase\.co$/.test(url.hostname) && url.pathname === '/rest/v1/profiles' &&
           url.searchParams.get('select') === 'is_pro') { // la requête que le site fait sur ton propre profil
         const u = /^eq\.(.+)$/.exec(url.searchParams.get('id') || '');
-        if (u) p.then(r => r.ok && r.clone().json().then(j => ingestPro(u[1], j))).catch(() => {});
+        if (u) p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestPro(u[1], j)))).catch(() => {});
       } else if (url.origin === location.origin && method === 'POST' && /^\/api\/packs\//.test(url.pathname)) {
         // Tu viens d'ouvrir un paquet toi-même : on lit juste la liste des cartes tirées.
         const kind = url.pathname.split('/').pop();
-        p.then(r => r.ok && r.clone().json().then(j => j && Array.isArray(j.cards) && onPull(j.cards, kind))).catch(() => {});
+        p.then(r => r.ok && r.clone().json().then(j => j && Array.isArray(j.cards) && whenReady(() => onPull(j.cards, kind)))).catch(() => {});
       } else if (url.origin === location.origin && method === 'GET') {
         const m = url.pathname.match(/^\/api\/marketplace\/cards\/([^/]+)\/sales$/);
         if (m) {
-          p.then(r => r.ok && r.clone().json().then(j => ingestSales(m[1], j))).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestSales(m[1], j)))).catch(() => {});
         } else if (/^\/api\/marketplace\/[0-9a-f-]{36}$/.test(url.pathname)) {
           // Tu ouvres la page d'une enchère : si elle est finie, son prix final exact rejoint les prix observés.
           const id = url.pathname.split('/').pop();
-          p.then(r => r.ok && r.clone().json().then(j => { if (ingestFinal(id, j)) { saveDb(); refresh(); } else overlaySoon(); })).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => { if (ingestFinal(id, j)) { saveDb(); refresh(); } else overlaySoon(); }))).catch(() => {});
         } else if (url.pathname === '/api/my-collection') {
-          p.then(r => r.ok && r.clone().json().then(j => ingestCollection(j.collection, false))).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestCollection(j.collection, false)))).catch(() => {});
         } else if (url.pathname === '/api/marketplace') {
-          p.then(r => r.ok && r.clone().json().then(ingestMarket)).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestMarket(j)))).catch(() => {});
         } else if (url.pathname === '/api/trades') {
-          p.then(r => r.ok && r.clone().json().then(ingestTrades)).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestTrades(j)))).catch(() => {});
         } else if (url.pathname === '/api/notifications') {
-          p.then(r => r.ok && r.clone().json().then(ingestAlerts)).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestAlerts(j)))).catch(() => {});
         } else if (url.pathname === '/api/cards' && url.searchParams.get('wishlist') === '1') {
-          p.then(r => r.ok && r.clone().json().then(j => ingestWish(j, false))).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestWish(j, false)))).catch(() => {});
         } else if (url.pathname === '/api/cards') {
           // Page « Toutes les cartes » : on apprend seulement les titres, pour poser les pastilles de valeur.
           p.then(r => r.ok && r.clone().json().then(j => {
@@ -2308,11 +2466,13 @@
 
   function setStatus(msg, where) { const el = ui.el[where || 'status']; if (el) el.textContent = msg || ''; }
   // Le compte connecté et le nombre de comptes dont ce navigateur garde les données (onglet Réglages).
+  // Où sont rangées les données, et combien de place elles prennent (onglet Sauvegarde).
+  function storeLine() {
+    const mo = (store.size() / 1e6).toFixed(1).replace('.', ',');
+    return (store.mode === 'idb' ? 'Rangées dans IndexedDB : ' : 'Rangées dans le stockage du site (limité à 5 Mo) : ') + mo + ' Mo.';
+  }
   function accountLine() {
-    let n = 0;
-    try {
-      for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(KEY + '.u.') && k !== acctKey('')) n++; }
-    } catch (e) {}
+    const n = store.keys().filter(k => k.startsWith(KEY + '.u.') && k !== acctKey('')).length;
     const who = db.me ? db.me : db.userId ? 'compte ' + db.userId.slice(0, 8) : 'pas encore reconnu (recharge la page du site)';
     return 'Compte connecté : ' + who + ' · ' + plural(Math.max(n, db.userId ? 1 : 0), 'compte connu', 'comptes connus') + ' dans ce navigateur.';
   }
@@ -2349,6 +2509,7 @@
     const e = ui.el;
     if (e.poolInfo && !poolUi.testing) e.poolInfo.textContent = poolLine();
     if (e.acctInfo) e.acctInfo.textContent = accountLine();
+    if (e.storeInfo) e.storeInfo.textContent = storeLine();
     if (!e.load) return;
     const pro = proState();
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
@@ -2691,6 +2852,7 @@
     // ----- Sauvegarde -----
     e.view_data = h('div', null,
       h('p', { class: 'line' }, 'Tes données sont rangées dans ce navigateur. Chrome et Zen ont donc chacun les leurs.'),
+      (e.storeInfo = h('p', { class: 'line' }, storeLine())),
       h('div', { class: 'tools' },
         group('Exporter', null, btn('Exporter toutes mes données',
           'Télécharge un fichier avec ta collection, les prix, tes boosters, tes enchères, l’évolution, tes souhaits et les fichiers de tes amis.', exportBackup, 'pri')),
@@ -4018,9 +4180,10 @@
     if (!job.running && settleObserved()) { saveDb(); refresh(); return; }
     if (ui.open && ui.tab === 'sales' && db.selling && db.selling.length) renderSales();
   }
-  setInterval(minuteTick, 60000);
-  setInterval(() => { if (autoDue(Date.now())) autoRun(); }, 60000);
-  setInterval(() => { poolTick(Date.now()); }, POOL_FLUSH_EVERY);
+  // Rien avant le chargement des données.
+  setInterval(() => { if (store.loaded) minuteTick(); }, 60000);
+  setInterval(() => { if (store.loaded && autoDue(Date.now())) autoRun(); }, 60000);
+  setInterval(() => { if (store.loaded) poolTick(Date.now()); }, POOL_FLUSH_EVERY);
 
   // ---------- valeur affichée sur les cartes du site ----------
   // Une pastille sur chaque carte que le site affiche : Collection, Marché, Toutes les cartes, boosters…
@@ -4327,7 +4490,7 @@
     overlaySoon();
   }
 
-  const start = () => { if (settleObserved()) saveDb(); mount(); openSellForm(); startOverlay(); };
+  const start = () => whenReady(() => { if (settleObserved()) saveDb(); mount(); openSellForm(); startOverlay(); });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();
