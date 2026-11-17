@@ -1381,11 +1381,45 @@
   // Pour les raretés où « jamais vendue » est rare, une réponse vide est donc redemandée une fois,
   // et n'est gardée qu'une heure au lieu de 24.
   const DOUBT_EMPTY = new Set(['L', 'UR', 'SR', 'R']);
-  function priceStale(cardId, rarity) {
+  // Quand relire le prix d'une carte : selon ce qu'elle pèse dans la valeur. Chaque jour pour une carte qui vaut plus de 50 ₩,
+  // une L, une UR ou une carte en vente ; les autres selon leur rareté ; une carte sans prix, tout de suite.
+  const DUE_DAYS = { L: 1, UR: 1, SR: 2, R: 4, PC: 7, C: 7 };
+  const DUE_VALUE = 50;
+  function dueDays(cardId, rarity) {
+    const p = priceOf(cardId, rarity);
+    if (p && p.n && p.med > DUE_VALUE) return 1;
+    if (db.selling.some(x => x && x.c === cardId)) return 1;
+    return DUE_DAYS[rarity] || 7;
+  }
+  function priceDue(cardId, rarity) {
     const p = db.prices[cardId];
     if (!p) return true;
     const age = Date.now() - p.at;
-    return age > DAY || (!p.sales.length && DOUBT_EMPTY.has(rarity) && age > 36e5);
+    return age > dueDays(cardId, rarity) * DAY || (!(p.sales || []).length && DOUBT_EMPTY.has(rarity) && age > 36e5);
+  }
+  // Les prix à relire (collection et souhaits en vente), de celui qui pèse le plus dans la valeur à celui qui pèse le moins.
+  // Poids = valeur × exemplaires possédés. Sans prix, la valeur est la médiane des valeurs connues de la même rareté dans
+  // la collection, sinon 1. Renvoie [carte, rareté, poids].
+  function dueCards() {
+    const by = new Map();
+    for (const c of Object.values(db.cards)) {
+      if (!c || !okKey(c.cardId)) continue;
+      const k = c.cardId + '|' + c.rarity, e = by.get(k), n = Math.max(1, num(c.count));
+      if (e) e[2] += n; else by.set(k, [c.cardId, c.rarity, n]);
+    }
+    const known = {};
+    for (const [id, r] of by.values()) { const p = priceOf(id, r); if (p && p.n) (known[r] = known[r] || []).push(Math.max(p.med, DISCARD)); }
+    for (const id in db.wish) {
+      const r = db.wish[id][1];
+      if (okKey(id) && !by.has(id + '|' + r) && askOf(id, r)) by.set(id + '|' + r, [id, r, 1]);
+    }
+    const out = [];
+    for (const [id, r, n] of by.values()) {
+      if (!priceDue(id, r)) continue;
+      const p = priceOf(id, r);
+      out.push([id, r, (p && p.n ? Math.max(p.med, DISCARD) : known[r] ? median(known[r]) : 1) * n]);
+    }
+    return out.sort((a, b) => b[2] - a[2]);
   }
   async function fetchSales(cardId, rarity) {
     const url = '/api/marketplace/cards/' + encodeURIComponent(cardId) + '/sales';
@@ -1401,7 +1435,7 @@
     const ids = new Set();
     for (const c of Object.values(db.cards)) {
       if (!ui.chosen.has(c.rarity)) continue;
-      if (priceStale(c.cardId, c.rarity)) ids.add(c.cardId);
+      if (priceDue(c.cardId, c.rarity)) ids.add(c.cardId);
     }
     return [...ids];
   }
@@ -1673,7 +1707,7 @@
     const out = [], seen = new Set();
     const list = Object.values(db.trades).sort(byDateDesc).sort((a, b) => (b.s === 'accepted') - (a.s === 'accepted'));
     for (const t of list) for (const c of t.g.concat(t.r)) {
-      if (seen.has(c[0]) || !priceStale(c[0], c[2])) continue;
+      if (seen.has(c[0]) || !priceDue(c[0], c[2])) continue;
       seen.add(c[0]);
       out.push([c[0], c[2]]);
     }
@@ -1686,7 +1720,7 @@
     startJob('Prix : 0 / ' + todo.length, 'tradeStatus');
     if (poolOn()) {
       await poolPrefetch(todo.map(x => x[0]));
-      todo = todo.filter(([id, r]) => priceStale(id, r));
+      todo = todo.filter(([id, r]) => priceDue(id, r));
       if (!todo.length) return endJob('Tous les prix étaient dans le pool du groupe.', 'tradeStatus');
     }
     let i = 0;
@@ -1849,7 +1883,7 @@
   // Souhaits en vente dont la valeur médiane manque ou date : il la faut pour juger une bonne affaire.
   function wishPricesToFetch() {
     const out = [];
-    for (const id in db.wish) if (askOf(id) && priceStale(id, db.wish[id][1])) out.push([id, db.wish[id][1]]);
+    for (const id in db.wish) if (askOf(id) && priceDue(id, db.wish[id][1])) out.push([id, db.wish[id][1]]);
     return out;
   }
   // Cartes de la liste À vendre dont les annonces concurrentes n'ont pas été cherchées depuis une heure.
@@ -1865,7 +1899,7 @@
     startJob('Prix : 0 / ' + todo.length, where);
     if (poolOn()) {
       await poolPrefetch(todo.map(x => x[0]));
-      todo = todo.filter(([id, r]) => priceStale(id, r));
+      todo = todo.filter(([id, r]) => priceDue(id, r));
       if (!todo.length) return endJob('Tous les prix étaient dans le pool du groupe.', where);
     }
     let i = 0;
@@ -1930,7 +1964,7 @@
       if (pro === true) {
         const now = Date.now();
         for (const c of cards) {
-          if (priceStale(c.cardId, c.rarity) && !pull.queue.includes(c.cardId)) pull.queue.push(c.cardId);
+          if (priceDue(c.cardId, c.rarity) && !pull.queue.includes(c.cardId)) pull.queue.push(c.cardId);
         }
         runPullQueue();
       }
@@ -1943,7 +1977,7 @@
     try {
       if (poolOn()) {
         await poolPrefetch(pull.queue.slice());
-        pull.queue = pull.queue.filter(id => { const c = pull.cards.find(x => x.cardId === id); return priceStale(id, c ? c.rarity : ''); });
+        pull.queue = pull.queue.filter(id => { const c = pull.cards.find(x => x.cardId === id); return priceDue(id, c ? c.rarity : ''); });
         renderPull();
       }
       while (pull.queue.length) {
@@ -1970,7 +2004,7 @@
       const id = a && a.card_id;
       if (!okKey(id) || bidQ.queue.some(x => x[0] === id)) continue;
       const r = rarOf(a.snapshot_rarity || (a.card && a.card.rarity));
-      if (priceStale(id, r)) bidQ.queue.push([id, r]);
+      if (priceDue(id, r)) bidQ.queue.push([id, r]);
     }
     runBidQueue();
   }
@@ -1981,7 +2015,7 @@
       if (poolOn()) await poolPrefetch(bidQ.queue.map(x => x[0]));
       while (bidQ.queue.length && !job.running && !pull.busy) {
         const [id, r] = bidQ.queue.shift();
-        if (!priceStale(id, r)) continue;
+        if (!priceDue(id, r)) continue;
         await fetchSales(id, r);
         if (bidQ.queue.length) await sleep(900 + Math.random() * 400);
       }
@@ -3202,7 +3236,7 @@
     const known = c => {
       const p = priceOf(c[0], c[2]);
       if (p && p.n) return Math.max(p.med, DISCARD);
-      return db.prices[c[0]] && !priceStale(c[0], c[2]) ? DISCARD : null;
+      return db.prices[c[0]] && !priceDue(c[0], c[2]) ? DISCARD : null;
     };
     const cardsValue = l => l.reduce((a, c) => a + (known(c) || 0), 0);
     const unknown = l => l.filter(c => known(c) == null).length;
