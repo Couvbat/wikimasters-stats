@@ -1742,6 +1742,11 @@
   // Bouton « Tout mettre à jour maintenant » : la même routine, sans budget, au rythme des boutons, avec Stop.
   async function updateAll() {
     if (job.running) return;
+    // Un autre onglet fait déjà un passage : on ne lit pas le site en double.
+    const lock = readAuto();
+    if (num(lock.until) > Date.now() && lock.tab !== auto.tab) {
+      return setStatus('Une mise à jour tourne déjà dans un autre onglet du site. Réessaie dans quelques minutes.');
+    }
     startJob('Mise à jour en cours…');
     const out = routineCounts();
     writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });

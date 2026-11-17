@@ -225,3 +225,13 @@ test('ligne d’état', () => {
   t.db.pro = { U1: false };
   assert.match(t.autoLine(), /^Dernière mise à jour automatique : il y a 12 min · 34 prix relus, 5 annonces vérifiées, 18 prix finaux\.$/);
 });
+
+test('bouton : un autre onglet met déjà à jour, rien ne part en double', async () => {
+  const env = siteEnv();
+  env.t.db.cards = manyCards(5);
+  env.store.set('wmstats.auto', JSON.stringify({ tab: 'autre', until: Date.now() + 5 * 6e4, at: Date.now() - 40 * 6e4 }));
+  await env.t.updateAll();
+  assert.equal(env.calls.length, 0, 'aucune requête');
+  assert.match(env.t.ui.el.status.textContent, /autre onglet/);
+  assert.equal(JSON.parse(env.store.get('wmstats.auto')).tab, 'autre', 'le verrou de l’autre onglet est laissé');
+});
