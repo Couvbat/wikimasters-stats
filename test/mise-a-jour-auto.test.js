@@ -187,3 +187,41 @@ test('passage : le verrou est renouvelé à chaque requête', async () => {
   for (const until of locks) assert.ok(until >= Date.now() + 90e3, 'verrou tenu pour au moins 1 min 30');
   assert.equal(JSON.parse(env.store.get('wmstats.auto')).until, 0, 'libéré à la fin');
 });
+
+// ----- Tâche 3 : le bouton, la ligne d'état -----
+test('bouton : pas de budget', async () => {
+  const env = siteEnv();
+  env.t.db.cards = manyCards(100);
+  await env.t.updateAll();
+  assert.equal(env.sales().length, 100);
+  assert.equal(env.t.job.running, false);
+  assert.equal(env.t.db.autoLast.prices, 100);
+});
+
+test('bouton : Stop arrête', async () => {
+  let n = 0;
+  const env = siteEnv([[/\/sales$/, (url, e) => { if (++n === 5) e.t.job.stop = true; return reply({ sales: [] }); }]]);
+  env.t.db.cards = manyCards(100);
+  await env.t.updateAll();
+  assert.ok(env.sales().length <= 6, env.sales().length + ' requêtes');
+  assert.equal(env.t.job.running, false);
+});
+
+test('bouton : compte non Pro, aucune requête /sales', async () => {
+  const env = siteEnv();
+  env.t.db.pro = { U1: false };
+  env.t.db.cards = manyCards(5);
+  await env.t.updateAll();
+  assert.equal(env.sales().length, 0);
+});
+
+test('ligne d’état', () => {
+  const env = siteEnv();
+  const t = env.t;
+  assert.equal(t.autoLine(), 'Aucune mise à jour automatique pour l’instant.');
+  t.db.cards = Object.fromEntries(Array.from({ length: 420 }, (_, i) => ['e' + i, card('K' + i, 'C')]));
+  t.db.autoLast = { at: Date.now() - 12 * 6e4, prices: 34, alerts: 5, finals: 18 };
+  assert.match(t.autoLine(), /^Dernière mise à jour automatique : il y a 12 min · 34 prix relus, 5 annonces vérifiées, 18 prix finaux\. Encore 420 cartes à relire\.$/);
+  t.db.pro = { U1: false };
+  assert.match(t.autoLine(), /^Dernière mise à jour automatique : il y a 12 min · 34 prix relus, 5 annonces vérifiées, 18 prix finaux\.$/);
+});

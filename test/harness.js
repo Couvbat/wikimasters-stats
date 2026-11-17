@@ -15,7 +15,7 @@ const EXPOSE = [
   'keepPerRarity', 'rarityOf', 'seenRarity', 'askOf', 'dealPct', 'maxBid', 'tidyAuctions', 'addObserved', 'resetPrices',
   'saveDb', 'loadDb', 'trimHistory', 'setAccount', 'clearAccount', 'ingestCollection', 'ingestPro',
   'sellingRows', 'sellingStats', 'renderSales', 'minuteTick', 'originOf', 'tagBatch', 'applyTagBatch', 'sbSession', 'auctionFor', 'saveWarning',
-  'store', 'ready', 'storeLine', 'whenReady', 'priceDue', 'dueCards', 'missingIds'
+  'store', 'ready', 'storeLine', 'whenReady', 'priceDue', 'dueCards', 'missingIds', 'routinePass', 'updateAll', 'autoLine'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +

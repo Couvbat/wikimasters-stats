@@ -1680,6 +1680,7 @@
       if (counted) used++;
       writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });
       const r = await f();
+      if (manual) setStatus('Mise à jour en cours : ' + routineSummary(out) + '…');
       await (manual ? pace() : autoSleep());
       return r;
     };
@@ -1735,6 +1736,30 @@
       }
     }
     return out;
+  }
+  const routineSummary = o => plural(num(o.prices), 'prix relu', 'prix relus') + ', ' + plural(num(o.alerts), 'annonce vérifiée', 'annonces vérifiées') +
+    ', ' + plural(num(o.finals), 'prix final', 'prix finaux');
+  // Bouton « Tout mettre à jour maintenant » : la même routine, sans budget, au rythme des boutons, avec Stop.
+  async function updateAll() {
+    if (job.running) return;
+    startJob('Mise à jour en cours…');
+    const out = routineCounts();
+    writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });
+    let err = null;
+    try { await routinePass({ manual: true, out }); } catch (e) { err = e; }
+    db.autoLast = Object.assign({ at: Date.now() }, out);
+    writeAuto({ tab: auto.tab, until: 0, at: Date.now() });
+    saveDb();
+    endJob(err ? 'Mise à jour interrompue (' + err.message + ') : ' + routineSummary(out) + '.'
+      : (job.stop ? 'Arrêtée : ' : 'Mise à jour terminée : ') + routineSummary(out) + '.');
+  }
+  // État de la mise à jour automatique (Accueil et Réglages).
+  function autoLine() {
+    if (db.autoPauseUntil > Date.now()) return 'En pause : le site a limité les relevés automatiques. Reprise plus tard.';
+    const a = db.autoLast;
+    if (!a || !a.at) return 'Aucune mise à jour automatique pour l’instant.';
+    return 'Dernière mise à jour automatique : ' + ago(a.at) + ' · ' + routineSummary(a) + '.' +
+      (proState() === true ? ' Encore ' + plural(dueCards().length, 'carte à relire', 'cartes à relire') + '.' : '');
   }
   async function autoRun() {
     if (auto.busy || job.running) return;
@@ -2604,6 +2629,8 @@
     if (e.poolInfo && !poolUi.testing) e.poolInfo.textContent = poolLine();
     if (e.acctInfo) e.acctInfo.textContent = accountLine();
     if (e.storeInfo) e.storeInfo.textContent = storeLine();
+    for (const el of [e.autoInfo, e.autoInfo2]) if (el) el.textContent = autoLine();
+    for (const b of [e.updAll, e.updAll2]) if (b) b.disabled = job.running;
     if (!e.load) return;
     const pro = proState();
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
@@ -2663,6 +2690,8 @@
     const chk = (label, tip, checked, onchange) => h('label', { class: 'chk', 'data-tip': tip },
       h('input', { type: 'checkbox', checked: !!checked, onchange }), label);
 
+    const UPD_TIP = 'Fait tout de suite, et sans limite, ce que fait la mise à jour automatique : collection et liste de souhaits si elles ont plus d’un jour, ' +
+      'souhaits signalés en vente, prix à relire, prix finaux. Une requête par seconde ; Stop l’arrête.';
     e.load = btn('Recharger ma collection',
       'Relit toute ta collection sur le site (une dizaine de requêtes). Retire aussi les cartes vendues, données ou défaussées depuis la dernière fois.',
       loadCollection, 'pri');
@@ -2772,7 +2801,9 @@
 
     e.homeBody = h('div', { class: 'home' });
     e.homeTiles = h('div', { class: 'tiles' });
-    e.view_home = h('div', null, e.homeTiles, e.homeBody);
+    e.view_home = h('div', null,
+      h('div', { class: 'tools' }, (e.updAll = btn('Tout mettre à jour maintenant', UPD_TIP, updateAll, 'pri')), (e.autoInfo = h('span', { class: 'sub' }, autoLine()))),
+      e.homeTiles, e.homeBody);
 
     // ----- À vendre -----
     e.view_sell = h('div', null,
@@ -2899,13 +2930,15 @@
           chk('Prix des cartes tirées après chaque booster', 'Après chaque paquet que tu ouvres toi-même, un petit panneau donne la valeur de chaque carte tirée.',
             db.autoPull !== false, ev => { db.autoPull = ev.target.checked; saveDb(); }),
           ovChk('bidAuto', 'Prix des cartes de Mes enchères', 'Quand le site affiche l’onglet Mes enchères, relève le prix des cartes où tu enchéris qui n’en ont pas de récent.')),
-        group('Relevé automatique des prix (tous comptes)', 'Sans compte Pro, les prix viennent des fins d’enchères. Cette option les relève toute seule, pour que l’extension reste utile.',
-          ovChk('autoObs', 'Relever les prix en arrière-plan',
-            'Quand un onglet du site est affiché, un petit relevé toutes les 30 min : d’abord les prix finaux de tes cartes et souhaits, puis une lecture des fins d’enchères. ' +
-            'Une requête par seconde, un seul onglet à la fois, et il s’arrête dès que tu lances un relevé toi-même ou que le site demande de ralentir.'),
-          h('span', { class: 'sub' }, db.autoLast && db.autoLast.at
-            ? 'Dernier relevé automatique : ' + ago(db.autoLast.at) + ', ' + plural(num(db.autoLast.finals), 'prix final', 'prix finaux') + '.'
-            : (db.autoPauseUntil > Date.now() ? 'En pause : le site a limité les relevés automatiques. Reprise plus tard.' : 'Pas encore de relevé automatique.'))),
+        group('Mise à jour automatique (tous comptes)', 'Garde à jour la valeur de ta collection et les prix de tes souhaits, sans cliquer bouton après bouton. ' +
+          'Sans compte Pro, les prix viennent du pool et des fins d’enchères.',
+          ovChk('autoObs', 'Mise à jour automatique',
+            'Toutes les 30 min, tant qu’un onglet du site est ouvert (même en arrière-plan) : relit ta collection et ta liste de souhaits une fois par jour, ' +
+            'vérifie les souhaits que le site signale en vente, puis relit les prix à refaire en commençant par ceux qui pèsent le plus dans ta valeur ' +
+            '(chaque jour pour les cartes de plus de 50 ₩, les L et les UR ; tous les 2 jours les SR, 4 jours les R, 7 jours les C et PC), et enfin les prix finaux. ' +
+            '60 requêtes au plus par passage, un seul onglet à la fois. Elle s’arrête dès que tu lances un relevé toi-même, et se met en pause 24 h si le site signale trop d’automatisation.'),
+          (e.updAll2 = btn('Tout mettre à jour maintenant', UPD_TIP, updateAll)),
+          (e.autoInfo2 = h('span', { class: 'sub' }, autoLine()))),
         group('Compte', 'Chaque compte WikiMasters utilisé dans ce navigateur a ses propres données : collection, ventes et achats, échanges, boosters, évolution, souhaits, amis. ' +
           'Les prix du marché sont communs à tous les comptes. Le script reconnaît tout seul le compte connecté.',
           (e.acctInfo = h('span', { class: 'sub' }, accountLine())),
