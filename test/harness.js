@@ -127,7 +127,7 @@ function load({ reject = () => false, fetch = async () => reply({}), fast = fals
   const requests = [];
   const window = { fetch: async (url, init) => { requests.push(String(url)); return fetch(String(url), init); }, addEventListener() {}, innerWidth: 1000, innerHeight: 800 };
   const document = { readyState: 'loading', visibilityState: 'visible', addEventListener() {}, createElement: t => new El(t), createElementNS: (n, t) => new El(t) };
-  const ctx = { window, document, localStorage, setInterval: () => 0, setTimeout: fast ? (f => setImmediate(f)) : setTimeout, clearTimeout, console, URL, AbortController, Headers,
+  const ctx = { window, document, localStorage, setInterval: () => 0, clearInterval: () => {}, setTimeout: fast ? (f => setImmediate(f)) : setTimeout, clearTimeout, console, URL, AbortController, Headers,
     location: { href: 'https://www.wiki-masters.com/collection', origin: 'https://www.wiki-masters.com', hash: '', pathname: '/collection' } };
   if (idb) {
     ctx.indexedDB = fakeIndexedDB(idb, idbData, idbStats);

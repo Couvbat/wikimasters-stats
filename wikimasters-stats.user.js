@@ -1409,6 +1409,7 @@
     }
     const known = {};
     for (const [id, r] of by.values()) { const p = priceOf(id, r); if (p && p.n) (known[r] = known[r] || []).push(Math.max(p.med, DISCARD)); }
+    for (const r in known) known[r] = median(known[r]); // une fois par rareté
     for (const id in db.wish) {
       const r = db.wish[id][1];
       if (okKey(id) && !by.has(id + '|' + r) && askOf(id, r)) by.set(id + '|' + r, [id, r, 1]);
@@ -1417,15 +1418,17 @@
     for (const [id, r, n] of by.values()) {
       if (!priceDue(id, r)) continue;
       const p = priceOf(id, r);
-      out.push([id, r, (p && p.n ? Math.max(p.med, DISCARD) : known[r] ? median(known[r]) : 1) * n]);
+      out.push([id, r, (p && p.n ? Math.max(p.med, DISCARD) : known[r] || 1) * n]);
     }
     return out.sort((a, b) => b[2] - a[2]);
   }
-  async function fetchSales(cardId, rarity) {
+  // retryOk() : la seconde lecture d'un historique vide est-elle permise (budget) ; onRetry() la compte.
+  async function fetchSales(cardId, rarity, retryOk = () => true, onRetry = () => {}) {
     const url = '/api/marketplace/cards/' + encodeURIComponent(cardId) + '/sales';
     const empty = j => !j || !((Array.isArray(j.recent) && j.recent.length) || (Array.isArray(j.sales) && j.sales.length));
     let j = await getJSON(url);
-    if (empty(j) && DOUBT_EMPTY.has(rarity)) {
+    if (empty(j) && DOUBT_EMPTY.has(rarity) && retryOk()) {
+      onRetry();
       await sleep(1500);
       j = await getJSON(url);
     }
@@ -1653,6 +1656,10 @@
   const readAuto = () => { try { return JSON.parse(localStorage.getItem(AUTO_KEY)) || {}; } catch (e) { return {}; } };
   const writeAuto = o => { try { localStorage.setItem(AUTO_KEY, JSON.stringify(o)); } catch (e) {} };
   const autoSleep = () => sleep(PRICE_DELAY + Math.random() * 500);
+  // Le verrou est à cet onglet, ou libre. Un onglet qui l'a perdu (attente plus longue que le verrou) s'arrête, et ne le rend pas.
+  const ownsAuto = () => { const a = readAuto(); return !(num(a.until) > Date.now() && a.tab !== auto.tab); };
+  const holdAuto = () => writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });
+  const releaseAuto = () => { if (ownsAuto()) writeAuto({ tab: auto.tab, until: 0, at: Date.now() }); };
   function autoDue(now) {
     if (!ov('autoObs') || auto.busy || job.running) return false;
     // En arrière-plan aussi : le navigateur ralentit alors les minuteries, et le passage avec.
@@ -1673,12 +1680,21 @@
   // manual (bouton) : pas de budget, rythme des boutons, Stop. Sinon : 60 requêtes, et arrêt dès qu'un relevé manuel démarre.
   // Le verrou entre onglets est renouvelé à chaque requête. out reçoit les compteurs au fil de l'eau.
   async function routinePass({ manual, out = routineCounts() }) {
-    const stop = manual ? () => job.stop : () => job.running || job.stop;
+    const stop = manual ? () => job.stop || !ownsAuto() : () => job.running || job.stop || !ownsAuto();
+    // Le verrou reste tenu pendant les attentes longues (le site peut demander jusqu'à 10 min de pause).
+    const beat = setInterval(() => { if (ownsAuto()) holdAuto(); }, 30e3);
+    try {
+      return await routineSteps(manual, out, stop);
+    } finally {
+      clearInterval(beat);
+    }
+  }
+  async function routineSteps(manual, out, stop) {
     let used = 0;
     const left = () => (manual ? Infinity : AUTO_BUDGET - used);
     const hit = async (f, counted = true) => {
       if (counted) used++;
-      writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });
+      holdAuto();
       const r = await f();
       if (manual) setStatus('Mise à jour en cours : ' + routineSummary(out) + '…');
       await (manual ? pace() : autoSleep());
@@ -1708,7 +1724,7 @@
     if (proState() === true) {
       for (const [id, r] of due) {
         if (stop() || left() <= 0) break;
-        await hit(() => fetchSales(id, r));
+        await hit(() => fetchSales(id, r, () => left() > 0 && !stop(), () => { used++; holdAuto(); }));
         out.prices++;
       }
     }
@@ -1748,12 +1764,16 @@
       return setStatus('Une mise à jour tourne déjà dans un autre onglet du site. Réessaie dans quelques minutes.');
     }
     startJob('Mise à jour en cours…');
+    // La progression et le bouton Stop sont dans l'onglet Collection.
+    if (ui.el.view_col && ui.tab !== 'col') setTab('col');
+    // Un passage automatique de cet onglet voit job.running et s'arrête à sa prochaine requête : on l'attend, pour ne pas lire le site à deux.
+    if (auto.done) await auto.done;
     const out = routineCounts();
-    writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });
+    holdAuto();
     let err = null;
     try { await routinePass({ manual: true, out }); } catch (e) { err = e; }
     db.autoLast = Object.assign({ at: Date.now() }, out);
-    writeAuto({ tab: auto.tab, until: 0, at: Date.now() });
+    releaseAuto();
     saveDb();
     endJob(err ? 'Mise à jour interrompue (' + err.message + ') : ' + routineSummary(out) + '.'
       : (job.stop ? 'Arrêtée : ' : 'Mise à jour terminée : ') + routineSummary(out) + '.');
@@ -1766,19 +1786,24 @@
     return 'Dernière mise à jour automatique : ' + ago(a.at) + ' · ' + routineSummary(a) + '.' +
       (proState() === true ? ' Encore ' + plural(dueCards().length, 'carte à relire', 'cartes à relire') + '.' : '');
   }
-  async function autoRun() {
-    if (auto.busy || job.running) return;
+  // auto.done : la promesse du passage en cours, que le bouton attend avant de démarrer.
+  function autoRun() {
+    if (auto.busy || job.running) return Promise.resolve();
     auto.busy = true;
-    const out = routineCounts();
-    writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });
-    try {
-      await routinePass({ manual: false, out });
-    } catch (e) { /* limite du site, réseau : on s'arrête et on reprendra au prochain passage */ }
-    db.autoLast = Object.assign({ at: Date.now() }, out);
-    writeAuto({ tab: auto.tab, until: 0, at: Date.now() });
-    saveDb();
-    auto.busy = false;
-    refresh();
+    auto.done = (async () => {
+      const out = routineCounts();
+      holdAuto();
+      try {
+        await routinePass({ manual: false, out });
+      } catch (e) { /* limite du site, réseau : on s'arrête et on reprendra au prochain passage */ }
+      db.autoLast = Object.assign({ at: Date.now() }, out);
+      releaseAuto();
+      saveDb();
+      auto.busy = false;
+      auto.done = null;
+      refresh();
+    })();
+    return auto.done;
   }
 
   // Les cartes passées dans tes échanges dont l'historique de ventes manque ou date.

@@ -235,3 +235,35 @@ test('bouton : un autre onglet met déjà à jour, rien ne part en double', asyn
   assert.match(env.t.ui.el.status.textContent, /autre onglet/);
   assert.equal(JSON.parse(env.store.get('wmstats.auto')).tab, 'autre', 'le verrou de l’autre onglet est laissé');
 });
+
+// ----- Relecture Copilot (PR #12) -----
+test('verrou pris par un autre onglet pendant la mise à jour : arrêt, et son verrou est laissé', async () => {
+  let n = 0;
+  const env = siteEnv([[/\/sales$/, (url, e) => {
+    if (++n === 3) e.store.set('wmstats.auto', JSON.stringify({ tab: 'autre', until: Date.now() + 5 * 6e4, at: 0 }));
+    return reply({ sales: [] });
+  }]]);
+  env.t.db.cards = manyCards(10);
+  await env.t.updateAll();
+  assert.equal(env.sales().length, 3, 'plus de requête une fois le verrou perdu');
+  assert.equal(JSON.parse(env.store.get('wmstats.auto')).tab, 'autre', 'le verrou de l’autre onglet n’est ni écrasé ni libéré');
+});
+
+test('passage : la relecture d’un historique vide compte dans le budget', async () => {
+  const env = siteEnv([[/\/sales$/, () => reply({ sales: [] })]]);
+  env.t.db.cards = Object.fromEntries(Array.from({ length: 50 }, (_, i) => ['e' + i, card('L' + i, 'L')]));
+  await env.t.autoRun();
+  assert.ok(env.sales().length <= 60, env.sales().length + ' requêtes');
+});
+
+test('bouton pendant un passage automatique du même onglet : pas de chevauchement', async () => {
+  const both = [];
+  const env = siteEnv([[/\/sales$/, (url, e) => { both.push(e.t.auto.busy && e.t.job.running); return reply({ sales: [] }); }]]);
+  env.t.db.cards = manyCards(10);
+  const pass = env.t.autoRun();
+  await env.t.updateAll();
+  await pass;
+  assert.ok(!both.includes(true), 'aucune requête pendant que les deux tournent');
+  assert.equal(env.t.auto.busy, false);
+  assert.equal(JSON.parse(env.store.get('wmstats.auto')).until, 0);
+});
