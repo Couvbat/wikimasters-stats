@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.23.4
+// @version      1.23.5
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.4';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.23.5';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -156,13 +156,33 @@
   // Plus de place : le relevé du marché, qui se refait en un clic, n'est plus enregistré qu'en partie (les annonces des cartes
   // souhaitées), puis plus du tout ; en dernier recours, l'historique des ventes revient à 10 par rareté (le pool, lui, garde tout).
   // Le relevé reste affiché jusqu'au rechargement de la page : on le retire de l'enregistrement, jamais de la mémoire.
-  // Renvoie false si rien n'a pu être enregistré.
+  // Renvoie false si rien n'a pu être enregistré : l'en-tête du panneau le dit alors (saveWarning), au lieu d'un échec silencieux.
+  const saveState = { failed: 0 };
+  const saveWarning = () => (saveState.failed
+    ? ' · ⚠ Navigateur plein : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.' : '');
   function saveDb() {
     const write = asks => {
       const { shared, mine } = splitDb();
       if (asks) shared.market = { at: db.market.at, asks };
-      localStorage.setItem(acctKey(db.userId), JSON.stringify(mine));
-      localStorage.setItem(KEY, JSON.stringify(shared));
+      const mineKey = acctKey(db.userId), sharedText = JSON.stringify(shared), mineText = JSON.stringify(mine);
+      try {
+        localStorage.setItem(mineKey, mineText);
+      } catch (e) {
+        // Pas la place pour la partie personnelle. La partie commune enregistrée prend peut-être plus de place que la nouvelle :
+        // format d'avant la 1.20, où elle contenait aussi la partie personnelle, ou relevé du marché qu'on vient d'en retirer.
+        // On l'écrit d'abord pour libérer cette place, puis on réessaie. Si ça ne tient toujours pas, on la remet telle qu'elle
+        // était : rien ne change. (Sans cela, un navigateur presque plein resté à l'ancien format n'enregistrait plus jamais rien.)
+        const before = localStorage.getItem(KEY);
+        localStorage.setItem(KEY, sharedText);
+        try {
+          localStorage.setItem(mineKey, mineText);
+        } catch (e2) {
+          try { if (before == null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, before); } catch (e3) {}
+          throw e2;
+        }
+        return;
+      }
+      localStorage.setItem(KEY, sharedText);
     };
     const wishAsks = () => {
       const o = {};
@@ -171,8 +191,9 @@
     };
     const tries = [() => write(), () => write(wishAsks()), () => write({}), () => { trimHistory(); write(wishAsks()); }, () => write({})];
     for (const tryIt of tries) {
-      try { tryIt(); return true; } catch (e) {}
+      try { tryIt(); saveState.failed = 0; return true; } catch (e) {}
     }
+    saveState.failed = Date.now();
     return false;
   }
   // Le compte connecté vient d'être reconnu, ou il a changé : on range les données de l'ancien, on charge celles du nouveau.
@@ -2747,9 +2768,9 @@
     if (!ui.open) return;
     rowsCache = buildRows();
     snapshot(rowsCache);
-    ui.el.sub.textContent = db.collectionAt
+    ui.el.sub.textContent = (db.collectionAt
       ? 'Collection vue le ' + new Date(db.collectionAt).toLocaleString('fr-FR')
-      : 'Collection pas encore chargée';
+      : 'Collection pas encore chargée') + saveWarning();
     syncButtons();
     ({ home: renderHome, col: renderCol, sell: renderSell, sales: renderSales, trades: renderTrades, wish: renderWish, pulls: renderPulls,
       trend: renderTrend, friends: renderFriends, opts: () => {}, data: () => {} })[ui.tab]();

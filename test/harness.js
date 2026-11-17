@@ -14,7 +14,7 @@ const EXPOSE = [
   'poolOn', 'poolQueue', 'poolFetch', 'poolFlush', 'poolTick', 'poolBackfill', 'poolPull', 'poolPullMine', 'poolWant', 'poolKnown', 'poolPrefetch',
   'keepPerRarity', 'rarityOf', 'seenRarity', 'askOf', 'dealPct', 'maxBid', 'tidyAuctions', 'addObserved', 'resetPrices',
   'saveDb', 'loadDb', 'trimHistory', 'setAccount', 'clearAccount', 'ingestCollection', 'ingestPro',
-  'sellingRows', 'sellingStats', 'renderSales', 'minuteTick', 'originOf', 'tagBatch', 'applyTagBatch', 'sbSession', 'auctionFor'
+  'sellingRows', 'sellingStats', 'renderSales', 'minuteTick', 'originOf', 'tagBatch', 'applyTagBatch', 'sbSession', 'auctionFor', 'saveWarning'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +
@@ -31,14 +31,14 @@ class El {
 // Réponse simulée du site.
 const reply = (body, status = 200) => { const r = { ok: status >= 200 && status < 300, status, json: async () => body, headers: { get: () => null } }; r.clone = () => r; return r; };
 
-// reject(texte) : renvoie true pour simuler un navigateur plein au moment d'enregistrer ce texte.
+// reject(texte, clé, contenu actuel) : renvoie true pour simuler un navigateur plein au moment d'enregistrer ce texte sous cette clé.
 // fetch(url) : réponse du site simulée (voir reply). fast : les attentes (une requête par seconde) passent tout de suite.
 // storage : contenu du localStorage simulé avant le chargement du script ({ clé: texte }).
 function load({ reject = () => false, fetch = async () => reply({}), fast = false, storage = {} } = {}) {
   const store = new Map(Object.entries(storage));
   const localStorage = {
     getItem: k => (store.has(k) ? store.get(k) : null),
-    setItem: (k, v) => { if (reject(String(v))) throw new Error('QuotaExceededError'); store.set(k, String(v)); },
+    setItem: (k, v) => { if (reject(String(v), k, store)) throw new Error('QuotaExceededError'); store.set(k, String(v)); },
     removeItem: k => store.delete(k)
   };
   const requests = [];
