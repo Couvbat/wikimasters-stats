@@ -141,8 +141,9 @@
     } catch (e) {}
     return out;
   };
+  const hasIdb = (() => { try { return typeof indexedDB !== 'undefined' && !!indexedDB; } catch (e) { return false; } })();
   const store = {
-    mode: 'local', loaded: true, texts: new Map(), pending: new Map(), writing: false, idb: null,
+    mode: hasIdb ? 'idb' : 'local', loaded: !hasIdb, texts: new Map(), pending: new Map(), writing: false, idb: null,
     get: k => (store.mode === 'idb' ? (store.texts.has(k) ? store.texts.get(k) : null) : (() => { try { return localStorage.getItem(k); } catch (e) { return null; } })()),
     set: (k, text) => { localStorage.setItem(k, text); },
     del: k => { try { localStorage.removeItem(k); } catch (e) {} },
@@ -161,6 +162,68 @@
     if (isObj(mine)) applyPersonal(base, mine);
     return cleanDb(base);
   }
+  // ---------- base IndexedDB ----------
+  const IDB_NAME = 'wmstats', IDB_STORE = 'kv', IDB_VERSION = 1;
+  function idbOpen() {
+    return new Promise((resolve, reject) => {
+      const r = indexedDB.open(IDB_NAME, IDB_VERSION);
+      r.onupgradeneeded = () => { const d = r.result; if (!d.objectStoreNames.contains(IDB_STORE)) d.createObjectStore(IDB_STORE); };
+      // Une future version de la base ne doit pas rester bloquée par cet onglet.
+      r.onsuccess = () => { const d = r.result; d.onversionchange = () => d.close(); resolve(d); };
+      r.onerror = () => reject(r.error || new Error('IndexedDB indisponible'));
+    });
+  }
+  function idbReadAll(idb) {
+    return new Promise((resolve, reject) => {
+      const tx = idb.transaction(IDB_STORE, 'readonly'), os = tx.objectStore(IDB_STORE);
+      const keys = os.getAllKeys(), vals = os.getAll();
+      tx.oncomplete = () => { const m = new Map(); keys.result.forEach((k, i) => m.set(String(k), String(vals.result[i]))); resolve(m); };
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('lecture impossible'));
+    });
+  }
+  // Une seule transaction : tout est écrit, ou rien. null efface la clé.
+  function idbWrite(idb, entries) {
+    return new Promise((resolve, reject) => {
+      const tx = idb.transaction(IDB_STORE, 'readwrite'), os = tx.objectStore(IDB_STORE);
+      for (const [k, v] of entries) { if (v == null) os.delete(k); else os.put(v, k); }
+      tx.oncomplete = () => resolve();
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('écriture impossible'));
+    });
+  }
+  // Efface du localStorage les clés de la base (jamais wmstats.auto, le verrou de la collecte automatique).
+  const dropLocal = () => { for (const k of localKeys()) { try { localStorage.removeItem(k); } catch (e) {} } };
+  // Chargement. La base fait foi si elle contient déjà wmstats.v1. Sinon, les données du localStorage y sont copiées telles
+  // quelles, relues et comparées texte par texte ; elles ne sont effacées du localStorage que si tout est identique.
+  // Au moindre problème (base bloquée, copie différente), on reste sur le localStorage, comme avant la 1.24.
+  async function loadStore() {
+    try {
+      const idb = await idbOpen();
+      let texts = await idbReadAll(idb);
+      if (!texts.has(KEY)) {
+        const legacy = new Map();
+        for (const k of localKeys()) { const v = localStorage.getItem(k); if (v != null) legacy.set(k, v); }
+        if (legacy.size) {
+          await idbWrite(idb, legacy);
+          texts = await idbReadAll(idb);
+          if ([...legacy].some(([k, v]) => texts.get(k) !== v)) {
+            // Copie différente : on la retire, pour que la base ne fasse pas foi au prochain chargement.
+            await idbWrite(idb, new Map([...legacy.keys()].map(k => [k, null]))).catch(() => {});
+            throw new Error('copie différente');
+          }
+        }
+      }
+      dropLocal();
+      store.texts = texts;
+      store.idb = idb;
+      store.mode = 'idb';
+    } catch (e) {
+      store.mode = 'local';
+    }
+    db = loadDb();
+    store.loaded = true;
+  }
+  // Résolue quand les données sont chargées (tout de suite sans IndexedDB).
+  const ready = store.loaded ? Promise.resolve() : loadStore();
   // Un autre onglet du site a enregistré des données : on les reprend pour ne pas les écraser.
   window.addEventListener('storage', ev => {
     if (ev.key === KEY && !job.running) { db = loadDb(); refresh(); }

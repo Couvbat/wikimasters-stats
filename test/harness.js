@@ -48,7 +48,8 @@ function fakeIndexedDB(opt, data, stats) {
       if (write) stats.tx++;
       const queue = [];
       const tx = { error: null, oncomplete: null, onerror: null, onabort: null };
-      const op = (fn, args) => { const r = request(); queue.push({ r, fn, args }); if (queue.length === 1 && !tx.started) { tx.started = true; later(run); } return r; };
+      const op = (fn, args) => { const r = request(); queue.push({ r, fn, args }); return r; };
+      later(run);
       tx.objectStore = () => ({
         get: k => op('get', [k]), put: (v, k) => op('put', [v, k]), delete: k => op('delete', [k]),
         getAll: () => op('getAll', []), getAllKeys: () => op('getAllKeys', [])
