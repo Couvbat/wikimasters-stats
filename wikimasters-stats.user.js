@@ -36,7 +36,7 @@
     return {
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
-      auctions: {}, history: {}, wish: {}, wishAt: 0, alerts: {}, wishSeen: {},
+      auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
       pool: { url: '', key: '', on: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
@@ -93,7 +93,7 @@
   // Ce qui est personnel (collection, ventes, échanges, boosters, souhaits…) est rangé à part pour chaque compte, sous
   // wmstats.v1.u.<compte> ; les prix du marché et les réglages d'affichage sont communs à tous, sous wmstats.v1.
   // Tant que le compte n'est pas reconnu, sa partie personnelle est sous wmstats.v1.u._.
-  const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt',
+  const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt', 'wishFullAt',
     'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'selling', 'sellingAt', 'tagCat', 'friends', 'me', 'sell', 'wishHideOwned'];
   const PERSONAL_SET = new Set(PERSONAL);
   const acctKey = uid => KEY + '.u.' + (uid || '_');
@@ -448,7 +448,7 @@
   // Liste de souhaits : les cartes pour lesquelles tu as demandé une alerte sur la page « Toutes les cartes ».
   function ingestWish(j, replace) {
     if (!j || !Array.isArray(j.cards)) return;
-    if (replace) db.wish = {};
+    if (replace) { db.wish = {}; db.wishFullAt = Date.now(); }
     for (const c of j.cards) if (c && okKey(c.id)) db.wish[c.id] = [str(c.wikipedia_title || '?', 200), rarOf(c.rarity)];
     db.wishAt = Date.now();
     saveDb();
@@ -1495,20 +1495,26 @@
   }
   function endJob(msg, where) { job.running = false; setStatus(msg, where); syncButtons(); refresh(); }
 
+  // Lit toute la collection, page après page. hit(f) fait la requête f (et l'attente qui suit) ; onPage(n) suit la progression.
+  // Renvoie null si stop() devient vrai avant la fin : une collection lue à moitié ne doit rien remplacer.
+  async function readCollection(stop, hit, onPage) {
+    const all = [];
+    for (let page = 0; page < 400; page++) {
+      if (stop()) return null;
+      const j = await hit(() => getJSON('/api/my-collection?sort=rarity&page=' + page + '&stats=0'));
+      const items = (j && j.collection) || [];
+      all.push(...items);
+      if (onPage) onPage(all.length);
+      if (items.length < PAGE_SIZE) return all;
+    }
+    return all;
+  }
   async function loadCollection() {
     if (job.running) return;
     startJob('Chargement de la collection…');
     try {
-      const all = [];
-      for (let page = 0; page < 400 && !job.stop; page++) {
-        const j = await getJSON('/api/my-collection?sort=rarity&page=' + page + '&stats=0');
-        const items = j.collection || [];
-        all.push(...items);
-        setStatus('Collection : ' + all.length + ' cartes…');
-        if (items.length < PAGE_SIZE) break;
-        await sleep(400);
-      }
-      if (job.stop) return endJob('Arrêté, collection inchangée.');
+      const all = await readCollection(() => job.stop, f => f().then(r => sleep(400).then(() => r)), n => setStatus('Collection : ' + n + ' cartes…'));
+      if (!all) return endJob('Arrêté, collection inchangée.');
       ingestCollection(all, true);
       endJob('Collection chargée : ' + all.length + ' cartes.');
     } catch (e) {
@@ -1643,57 +1649,102 @@
   const AUTO_KEY = 'wmstats.auto';   // verrou et horloge partagés entre les onglets, à part de la base
   const AUTO_EVERY = 30 * 6e4;       // un passage au plus toutes les 30 min
   const AUTO_WARMUP = 2 * 6e4;       // pas avant 2 min après l'ouverture de la page
-  const AUTO_MAX = 60;               // prix finaux par passage : le site détecte l'automatisation, on reste modeste
   const auto = { busy: false, loadedAt: Date.now(), tab: Math.random().toString(36).slice(2) };
   const readAuto = () => { try { return JSON.parse(localStorage.getItem(AUTO_KEY)) || {}; } catch (e) { return {}; } };
   const writeAuto = o => { try { localStorage.setItem(AUTO_KEY, JSON.stringify(o)); } catch (e) {} };
   const autoSleep = () => sleep(PRICE_DELAY + Math.random() * 500);
   function autoDue(now) {
     if (!ov('autoObs') || auto.busy || job.running) return false;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    // En arrière-plan aussi : le navigateur ralentit alors les minuteries, et le passage avec.
     if (now - auto.loadedAt < AUTO_WARMUP || db.autoPauseUntil > now) return false;
     const a = readAuto();
     if (num(a.until) > now && a.tab !== auto.tab) return false; // un autre onglet relève en ce moment
     return now - num(a.at) >= AUTO_EVERY;
   }
+  const AUTO_BUDGET = 60;     // requêtes au site par passage automatique : le site détecte l'automatisation, on reste modeste
+  const ALERTS_PER_PASS = 20;
+  const routineCounts = () => ({ prices: 0, alerts: 0, finals: 0, collection: false, wish: false });
+  // Un passage de la routine, étape par étape, de la plus utile à la moins utile :
+  //   1. la collection, relue en entier une fois par jour (en automatique, le passage s'arrête ensuite) ;
+  //   2. la liste de souhaits, relue en entier une fois par jour ;
+  //   3. les souhaits que le site a signalés en vente ;
+  //   4. les prix à relire (priceDue), du plus lourd au plus léger : le pool d'abord, puis le site (compte Pro) ;
+  //   5. les prix finaux, puis la lecture des fins d'enchères qui prépare le passage suivant (hors budget, comme avant).
+  // manual (bouton) : pas de budget, rythme des boutons, Stop. Sinon : 60 requêtes, et arrêt dès qu'un relevé manuel démarre.
+  // Le verrou entre onglets est renouvelé à chaque requête. out reçoit les compteurs au fil de l'eau.
+  async function routinePass({ manual, out = routineCounts() }) {
+    const stop = manual ? () => job.stop : () => job.running || job.stop;
+    let used = 0;
+    const left = () => (manual ? Infinity : AUTO_BUDGET - used);
+    const hit = async (f, counted = true) => {
+      if (counted) used++;
+      writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });
+      const r = await f();
+      await (manual ? pace() : autoSleep());
+      return r;
+    };
+    if (Date.now() - num(db.collectionFullAt) > DAY) {
+      const all = await readCollection(stop, hit);
+      if (!all) return out;
+      ingestCollection(all, true);
+      out.collection = true;
+      if (!manual) return out;
+    }
+    if (Date.now() - num(db.wishFullAt) > DAY && !stop()) {
+      const all = await readWishlist(stop, hit);
+      if (all) { ingestWish({ cards: all }, true); out.wish = true; }
+    }
+    for (const [, a] of alertsToCheck().slice(0, manual ? Infinity : ALERTS_PER_PASS)) {
+      if (stop() || left() <= 0) break;
+      await hit(() => searchCard(a[0], a[1]));
+      out.alerts++;
+    }
+    let due = dueCards();
+    if (due.length && poolOn() && !stop()) {
+      await poolPrefetch(due.map(x => x[0]));
+      due = due.filter(([id, r]) => priceDue(id, r));
+    }
+    if (proState() === true) {
+      for (const [id, r] of due) {
+        if (stop() || left() <= 0) break;
+        await hit(() => fetchSales(id, r));
+        out.prices++;
+      }
+    }
+    if (poolOn() && !stop()) { try { await poolKnown(); } catch (e) { poolNote(e); } }
+    for (const id of finalsToFetch()) {
+      if (stop() || left() <= 0) break;
+      try {
+        const j = await hit(() => getJSON('/api/marketplace/' + encodeURIComponent(id)));
+        ingestFinal(id, j);
+        if (j && j.auction && typeof j.auction.final_price === 'number') out.finals++;
+      } catch (e) {
+        if (e.code === AUTO_LIMIT) throw e;
+        if (e.status === 404 || e.status === 403) delete db.finQ[id];
+        else throw e;
+      }
+    }
+    if (!stop()) {
+      const done = new Set();
+      for (const url of sweepUrls(MARKET_PAGES, RARE_PAGES, 'ending_soon')) {
+        if (stop()) break;
+        if (done.has(sweepGroup(url))) continue;
+        const j = await hit(() => getJSON(url), false);
+        ingestMarket(j);
+        if (!j.hasMore) done.add(sweepGroup(url));
+      }
+    }
+    return out;
+  }
   async function autoRun() {
     if (auto.busy || job.running) return;
     auto.busy = true;
-    const prev = readAuto();
-    let read = 0, finals = 0;
+    const out = routineCounts();
+    writeAuto({ tab: auto.tab, until: Date.now() + 2 * 6e4, at: num(readAuto().at) });
     try {
-      if (poolOn()) { try { await poolKnown(); } catch (e) { poolNote(e); } }
-      const todo = finalsToFetch().slice(0, AUTO_MAX);
-      writeAuto({ tab: auto.tab, until: Date.now() + (todo.length + 20) * (PRICE_DELAY + 500), at: num(prev.at) });
-      for (const id of todo) {
-        if (job.running || job.stop) break;
-        const card = db.finQ[id] && db.finQ[id][0];
-        try {
-          const j = await getJSON('/api/marketplace/' + encodeURIComponent(id));
-          ingestFinal(id, j);
-          read++;
-          if (j && j.auction && typeof j.auction.final_price === 'number') finals++;
-        } catch (e) {
-          if (e.code === AUTO_LIMIT) throw e;
-          if (e.status === 404 || e.status === 403) { delete db.finQ[id]; read++; }
-          else throw e;
-        }
-        await autoSleep();
-      }
-      // Prépare le passage suivant : lit les fins d'enchères (seulement si aucun relevé manuel n'a démarré entre-temps).
-      if (!job.running && !job.stop) {
-        const done = new Set();
-        for (const url of sweepUrls(MARKET_PAGES, RARE_PAGES, 'ending_soon')) {
-          if (job.running || job.stop) break;
-          if (done.has(sweepGroup(url))) continue;
-          const j = await getJSON(url);
-          ingestMarket(j);
-          if (!j.hasMore) done.add(sweepGroup(url));
-          await autoSleep();
-        }
-      }
+      await routinePass({ manual: false, out });
     } catch (e) { /* limite du site, réseau : on s'arrête et on reprendra au prochain passage */ }
-    db.autoLast = { finals, read, at: Date.now() };
+    db.autoLast = Object.assign({ at: Date.now() }, out);
     writeAuto({ tab: auto.tab, until: 0, at: Date.now() });
     saveDb();
     auto.busy = false;
@@ -1753,20 +1804,25 @@
   }
 
   // Lit ta liste de souhaits page par page, comme la page « Toutes les cartes » avec son filtre.
+  // Lit toute la liste de souhaits (mêmes règles que readCollection).
+  async function readWishlist(stop, hit, onPage) {
+    const all = [];
+    for (let page = 0; page < 100; page++) {
+      if (stop()) return null;
+      const j = await hit(() => getJSON('/api/cards?page=' + page + '&sort=rarity&wishlist=1'));
+      const cards = (j && j.cards) || [];
+      all.push(...cards);
+      if (onPage) onPage(all.length);
+      if (cards.length < PAGE_SIZE || (j && typeof j.total === 'number' && all.length >= j.total)) return all;
+    }
+    return all;
+  }
   async function loadWish() {
     if (job.running) return;
     startJob('Lecture de la liste de souhaits…', 'wishStatus');
     try {
-      const all = [];
-      for (let page = 0; page < 100 && !job.stop; page++) {
-        const j = await getJSON('/api/cards?page=' + page + '&sort=rarity&wishlist=1');
-        const cards = j.cards || [];
-        all.push(...cards);
-        setStatus('Liste de souhaits : ' + all.length + ' cartes…', 'wishStatus');
-        if (cards.length < PAGE_SIZE || (typeof j.total === 'number' && all.length >= j.total)) break;
-        await pace();
-      }
-      if (job.stop) return endJob('Arrêté, liste inchangée.', 'wishStatus');
+      const all = await readWishlist(() => job.stop, f => f().then(r => pace().then(() => r)), n => setStatus('Liste de souhaits : ' + n + ' cartes…', 'wishStatus'));
+      if (!all) return endJob('Arrêté, liste inchangée.', 'wishStatus');
       ingestWish({ cards: all }, true);
       endJob('Liste de souhaits chargée : ' + all.length + ' cartes.', 'wishStatus');
     } catch (e) {
@@ -1779,6 +1835,17 @@
   const SEARCH_BATCH = Infinity;  // plus de plafond : tout est traité, au rythme du site
   const SEARCH_FRESH = 60 * 6e4;  // une carte cherchée depuis moins d'une heure n'est pas recherchée à nouveau
   // Cherche une liste de cartes [identifiant, titre] sur le marché, une recherche par seconde.
+  // Cherche une carte sur le marché par son titre (une requête). Renvoie vrai si elle est en vente.
+  async function searchCard(cardId, title) {
+    const j = await getJSON('/api/marketplace?page=1&limit=50&sort=recent&q=' + encodeURIComponent(title));
+    // La recherche fait foi pour cette carte : on repart de ce qu'elle renvoie.
+    delete db.market.asks[cardId];
+    ingestMarket(j);
+    const found = ((j && j.auctions) || []).some(x => x && x.card_id === cardId);
+    for (const id in db.alerts) if (db.alerts[id][0] === cardId) db.alerts[id][3] = found ? 1 : 2;
+    db.wishSeen[cardId] = Date.now();
+    return found;
+  }
   async function marketSearch(todo, label, noneText, where) {
     where = where || 'wishStatus';
     startJob(label + ' : 0 / ' + todo.length, where);
@@ -1786,14 +1853,7 @@
     try {
       for (const [cardId, title] of todo) {
         if (job.stop) break;
-        const j = await getJSON('/api/marketplace?page=1&limit=50&sort=recent&q=' + encodeURIComponent(title));
-        // La recherche fait foi pour cette carte : on repart de ce qu'elle renvoie.
-        delete db.market.asks[cardId];
-        ingestMarket(j);
-        const found = (j.auctions || []).some(x => x && x.card_id === cardId);
-        if (found) live++;
-        for (const id in db.alerts) if (db.alerts[id][0] === cardId) db.alerts[id][3] = found ? 1 : 2;
-        db.wishSeen[cardId] = Date.now();
+        if (await searchCard(cardId, title)) live++;
         i++;
         setStatus(label + ' : ' + i + ' / ' + todo.length + ' · ' + plural(live, 'carte en vente', 'cartes en vente') +
           eta(todo.length - i), where);
