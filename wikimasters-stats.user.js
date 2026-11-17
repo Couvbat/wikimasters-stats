@@ -266,9 +266,21 @@
   // Ce qui touche aux données attend qu'elles soient chargées (réponses du site interceptées, panneau, pastilles).
   const whenReady = f => (store.loaded ? f() : ready.then(f));
   // Un autre onglet du site a enregistré des données : on les reprend pour ne pas les écraser.
+  // Sauf pendant un traitement, ou quand cet onglet a lui-même des écritures en attente : elles seraient perdues.
   window.addEventListener('storage', ev => {
-    if (ev.key === KEY && !job.running) { db = loadDb(); refresh(); }
+    if (store.mode === 'local' && ev.key === KEY && !job.running) { db = loadDb(); refresh(); }
   });
+  const mayReload = () => store.mode === 'idb' && store.loaded && !job.running && !store.pending.size && !store.writing;
+  if (channel) channel.onmessage = ev => {
+    if (!ev || !ev.data || ev.data.saved === TAB || !mayReload()) return;
+    idbReadAll(store.idb).then(texts => {
+      if (!mayReload()) return;
+      store.texts = texts;
+      db = loadDb();
+      resetPrices();
+      refresh();
+    }).catch(() => {});
+  };
   function splitDb() {
     const shared = {}, mine = {};
     for (const k of Object.keys(db)) (PERSONAL_SET.has(k) ? mine : shared)[k] = db[k];

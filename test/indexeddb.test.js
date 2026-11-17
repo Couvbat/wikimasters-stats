@@ -3,7 +3,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { load, reply } = require('./harness');
+const { load, reply, fakeBus } = require('./harness');
 
 const KEY = 'wmstats.v1';
 
@@ -173,4 +173,48 @@ test('réponse du site avant le chargement : traitée après, sans écraser ce q
   assert.ok(env.t.db.prices.C1, 'ce qui a été chargé est là');
   assert.ok(env.t.db.market.asks.C2, 'la réponse arrivée avant a été traitée');
   assert.match(data.get(KEY), /"C2"/);
+});
+
+// ----- Tâche 4 : plusieurs onglets -----
+const until = async f => { for (let i = 0; i < 30 && !f(); i++) await tick(); };
+async function twoTabs(optB = {}) {
+  const data = new Map(), bus = fakeBus();
+  const a = load({ idb: { data, bus } }), b = load({ idb: Object.assign({ data, bus }, optB) });
+  await a.ready;
+  await b.ready;
+  return { a, b };
+}
+
+test('un autre onglet enregistre : celui-ci recharge', async () => {
+  const { a, b } = await twoTabs();
+  a.t.db.pool.url = 'X';
+  a.t.saveDb();
+  await a.t.store.idle();
+  await until(() => b.t.db.pool.url === 'X');
+  assert.equal(b.t.db.pool.url, 'X');
+});
+
+test('écritures en attente : pas de rechargement, elles seraient perdues', async () => {
+  let bFails = true;
+  const { a, b } = await twoTabs({ failWrites: () => bFails });
+  b.t.db.pool.url = 'B';
+  b.t.saveDb();
+  await b.t.store.idle();
+  assert.ok(b.t.store.pending.size, 'l’écriture de B attend');
+  a.t.db.pool.url = 'X';
+  a.t.saveDb();
+  await a.t.store.idle();
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(b.t.db.pool.url, 'B');
+});
+
+test('traitement en cours : pas de rechargement', async () => {
+  const { a, b } = await twoTabs();
+  b.t.job.running = true;
+  b.t.db.pool.url = 'B';
+  a.t.db.pool.url = 'X';
+  a.t.saveDb();
+  await a.t.store.idle();
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(b.t.db.pool.url, 'B');
 });
