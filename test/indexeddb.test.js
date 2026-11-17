@@ -61,8 +61,9 @@ test('relecture différente : rien n’est effacé, mode local', async () => {
   assert.deepEqual(Object.keys(env.t.db.cards), ['x1']);
 });
 
+const META = 'wmstats.meta';
 test('base déjà remplie : elle fait foi, les clés restantes du localStorage sont effacées', async () => {
-  const data = new Map([[KEY, sharedText('A')]]);
+  const data = new Map([[KEY, sharedText('A')], [META, '{"since":1}']]);
   const env = load({ idb: { data }, storage: { [KEY]: sharedText('B'), 'wmstats.auto': '{"at":1}' } });
   await env.ready;
   assert.equal(env.t.db.pool.url, 'A');
@@ -84,7 +85,23 @@ test('rien nulle part : défauts, mode idb', async () => {
   assert.equal(env.t.store.mode, 'idb');
   assert.equal(env.t.store.loaded, true);
   assert.deepEqual(Object.keys(env.t.db.prices), []);
-  assert.equal(env.idbData.size, 0);
+  assert.deepEqual([...env.idbData.keys()], [META], 'seul le marqueur : la base fait foi désormais');
+});
+
+test('vérification qui échoue après la copie : la copie ne fait pas foi, les changements suivants sont gardés', async () => {
+  const data = new Map();
+  let reads = 0;
+  const first = load({ idb: { data, failReads: () => ++reads === 2 }, storage: { [KEY]: sharedText('L1') } });
+  await first.ready;
+  assert.equal(first.t.store.mode, 'local');
+  first.t.db.pool.url = 'L2';
+  first.t.saveDb();
+  const second = load({ idb: { data }, storage: Object.fromEntries(first.store) });
+  await second.ready;
+  assert.equal(second.t.store.mode, 'idb');
+  assert.equal(second.t.db.pool.url, 'L2', 'les changements faits en mode local sont gardés');
+  assert.match(data.get(KEY), /"url":"L2"/);
+  assert.ok(data.has(META));
 });
 
 // ----- Tâche 3 : enregistrement dans la base, attente du chargement -----
@@ -142,9 +159,10 @@ test('compte reconnu : l’enregistrement _ est effacé de la base', async () =>
 });
 
 test('écriture qui échoue puis réussit : avertissement, puis tout est enregistré', async () => {
-  let fail = true;
+  let fail = false;
   const env = load({ idb: { failWrites: () => fail } });
   await env.ready;
+  fail = true; // la base est ouverte et marquée ; c'est l'écriture suivante qui échoue
   env.t.db.pool.url = 'X';
   env.t.saveDb();
   await env.t.store.idle();
@@ -195,8 +213,9 @@ test('un autre onglet enregistre : celui-ci recharge', async () => {
 });
 
 test('écritures en attente : pas de rechargement, elles seraient perdues', async () => {
-  let bFails = true;
+  let bFails = false;
   const { a, b } = await twoTabs({ failWrites: () => bFails });
+  bFails = true;
   b.t.db.pool.url = 'B';
   b.t.saveDb();
   await b.t.store.idle();
@@ -217,4 +236,22 @@ test('traitement en cours : pas de rechargement', async () => {
   await a.t.store.idle();
   for (let i = 0; i < 10; i++) await tick();
   assert.equal(b.t.db.pool.url, 'B');
+});
+
+test('onglet occupé : les autres comptes sont quand même mis à jour, le changement de compte lit la version récente', async () => {
+  const data = new Map([[KEY, sharedText('A')], [META, '{"since":1}'], [KEY + '.u.U1', mineText('x1', 'A')], [KEY + '.u.U2', mineText('x2', 'B')]]);
+  const bus = fakeBus();
+  const a = load({ idb: { data, bus } }), b = load({ idb: { data, bus } });
+  await a.ready;
+  await b.ready;
+  b.t.job.running = true;
+  a.t.setAccount('U2');
+  a.t.db.cards.x3 = { cardId: 'C', title: 'C', rarity: 'R', count: 1 };
+  a.t.saveDb();
+  await a.t.store.idle();
+  await until(() => /"x3"/.test(b.t.store.get(KEY + '.u.U2') || ''));
+  assert.match(b.t.store.get(KEY + '.u.U2'), /"x3"/, 'B connaît la version récente de U2');
+  b.t.job.running = false;
+  b.t.setAccount('U2');
+  assert.ok(b.t.db.cards.x3, 'au changement de compte, B lit U2 à jour');
 });

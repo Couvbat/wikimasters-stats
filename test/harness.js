@@ -32,7 +32,8 @@ class El {
 // Faux IndexedDB, réduit aux appels du script. opt :
 //   data : Map clé → texte, la base (partagée entre deux load pour simuler un rechargement de page ou un second onglet) ;
 //   gate : promesse à attendre avant que l'ouverture aboutisse ; failWrites() : vrai pour faire échouer les écritures ;
-//   corruptReads : getAll renvoie chaque texte suivi de 'x' ; openThrows : open lève une exception.
+//   corruptReads : getAll renvoie chaque texte suivi de 'x' ; failReads() : vrai pour faire échouer une lecture ;
+//   openThrows : open lève une exception.
 // stats.tx : nombre de transactions readwrite ouvertes.
 function fakeIndexedDB(opt, data, stats) {
   const later = f => setImmediate(f);
@@ -55,7 +56,7 @@ function fakeIndexedDB(opt, data, stats) {
         getAll: () => op('getAll', []), getAllKeys: () => op('getAllKeys', [])
       });
       function run() {
-        const fail = write && opt.failWrites && opt.failWrites();
+        const fail = write ? !!(opt.failWrites && opt.failWrites()) : !!(opt.failReads && opt.failReads());
         const staged = new Map(data);
         while (queue.length) {
           const { r, fn, args } = queue.shift();

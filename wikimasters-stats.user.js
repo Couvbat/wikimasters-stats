@@ -231,26 +231,32 @@
   }
   // Efface du localStorage les clés de la base (jamais wmstats.auto, le verrou de la collecte automatique).
   const dropLocal = () => { for (const k of localKeys()) { try { localStorage.removeItem(k); } catch (e) {} } };
-  // Chargement. La base fait foi si elle contient déjà wmstats.v1. Sinon, les données du localStorage y sont copiées telles
-  // quelles, relues et comparées texte par texte ; elles ne sont effacées du localStorage que si tout est identique.
-  // Au moindre problème (base bloquée, copie différente), on reste sur le localStorage, comme avant la 1.24.
+  // Chargement. La base fait foi seulement si elle porte le marqueur META, posé une fois la migration vérifiée : une copie
+  // interrompue ou non vérifiée ne peut donc jamais faire foi, même si on n'a pas pu la retirer.
+  // Sans marqueur, les données du localStorage y sont copiées telles quelles (ce qui n'en vient pas est retiré), relues et
+  // comparées texte par texte ; puis le marqueur est posé, et seulement alors le localStorage est effacé.
+  // Au moindre problème (base bloquée, lecture ratée, copie différente), on reste sur le localStorage, comme avant la 1.24.
+  const META = 'wmstats.meta';
   async function loadStore() {
     try {
       const idb = await idbOpen();
       let texts = await idbReadAll(idb);
-      if (!texts.has(KEY)) {
+      if (!texts.has(META)) {
         const legacy = new Map();
         for (const k of localKeys()) { const v = localStorage.getItem(k); if (v != null) legacy.set(k, v); }
         if (legacy.size) {
-          await idbWrite(idb, legacy);
+          const copy = new Map(legacy);
+          for (const k of texts.keys()) if (!legacy.has(k)) copy.set(k, null);
+          await idbWrite(idb, copy);
           texts = await idbReadAll(idb);
           if ([...legacy].some(([k, v]) => texts.get(k) !== v)) {
-            // Copie différente : on la retire, pour que la base ne fasse pas foi au prochain chargement.
             await idbWrite(idb, new Map([...legacy.keys()].map(k => [k, null]))).catch(() => {});
             throw new Error('copie différente');
           }
         }
+        await idbWrite(idb, new Map([[META, JSON.stringify({ since: Date.now() })]]));
       }
+      texts.delete(META);
       dropLocal();
       store.texts = texts;
       store.idb = idb;
@@ -270,15 +276,22 @@
   window.addEventListener('storage', ev => {
     if (store.mode === 'local' && ev.key === KEY && !job.running) { db = loadDb(); refresh(); }
   });
+  // Occupé, l'onglet ne recharge pas ; mais les parties personnelles des autres comptes, qu'il ne modifie pas, sont mises à jour
+  // dans le cache : un changement de compte lira la version récente, et ne l'écrasera pas par une ancienne.
   const mayReload = () => store.mode === 'idb' && store.loaded && !job.running && !store.pending.size && !store.writing;
   if (channel) channel.onmessage = ev => {
-    if (!ev || !ev.data || ev.data.saved === TAB || !mayReload()) return;
+    if (!ev || !ev.data || ev.data.saved === TAB || store.mode !== 'idb' || !store.loaded) return;
     idbReadAll(store.idb).then(texts => {
-      if (!mayReload()) return;
-      store.texts = texts;
-      db = loadDb();
-      resetPrices();
-      refresh();
+      texts.delete(META);
+      if (mayReload()) {
+        store.texts = texts;
+        db = loadDb();
+        resetPrices();
+        refresh();
+        return;
+      }
+      const mine = acctKey(db.userId);
+      for (const [k, v] of texts) if (k.startsWith(KEY + '.u.') && k !== mine && !store.pending.has(k)) store.texts.set(k, v);
     }).catch(() => {});
   };
   function splitDb() {

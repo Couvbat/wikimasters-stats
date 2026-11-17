@@ -78,13 +78,15 @@ Une couche `store` garde en mémoire le dernier texte connu de chaque enregistre
 
 Au chargement avec IndexedDB :
 
-- **La base contient `wmstats.v1`** : elle fait foi. S'il reste des clés `wmstats.v1*` dans le `localStorage` (effacement raté, ou ancienne version du script relancée entre-temps), elles sont effacées. `wmstats.auto` n'est jamais touché.
-- **La base est vide et le `localStorage` contient `wmstats.v1`** :
+La base fait foi seulement si elle porte le **marqueur** `wmstats.meta`, posé une fois la migration vérifiée (ajouté après la relecture de Copilot). Une copie interrompue ou non vérifiée ne peut donc jamais faire foi, même si on n'a pas pu la retirer.
+
+- **La base porte le marqueur** : elle fait foi. S'il reste des clés `wmstats.v1*` dans le `localStorage` (effacement raté, ou ancienne version du script relancée entre-temps), elles sont effacées. `wmstats.auto` n'est jamais touché.
+- **Pas de marqueur, et le `localStorage` contient des clés `wmstats.v1*`** :
   1. Lire les textes bruts de `wmstats.v1` et de toutes les clés `wmstats.v1.u.*`.
-  2. Les écrire tels quels, sous les mêmes clés, dans **une seule** transaction.
+  2. Les écrire tels quels, sous les mêmes clés, dans **une seule** transaction, en retirant de la base ce qui n'en vient pas (reste d'une copie précédente).
   3. Une fois la transaction terminée, tout relire et comparer chaque texte au texte d'origine.
-  4. Si tout est identique, effacer ces clés du `localStorage`. Sinon, ne rien effacer et passer en mode secours pour cette visite.
-- **Rien nulle part** : on part de `defaults()`.
+  4. Si tout est identique, poser le marqueur, puis effacer ces clés du `localStorage`. Sinon (lecture ratée, texte différent, marqueur pas posé), ne rien effacer et passer en mode secours pour cette visite. Le chargement suivant recommence la copie depuis le `localStorage`, qui a gardé les changements faits entre-temps.
+- **Pas de marqueur, et rien dans le `localStorage`** : la base est adoptée telle quelle (vide, ou ce qu'elle contient), et le marqueur est posé.
 
 L'ancien format d'avant la 1.20 (tout sous `wmstats.v1`) est copié tel quel. `loadDb` sait déjà le lire, et le premier enregistrement le répartit.
 
@@ -100,7 +102,9 @@ L'ancien format d'avant la 1.20 (tout sous `wmstats.v1`) est copié tel quel. `l
 ### Plusieurs onglets
 
 - `BroadcastChannel('wmstats')` : après chaque écriture réussie, on poste `{ saved: <onglet> }`.
-- Un onglet qui reçoit ce message, si aucun traitement n'est en cours (`!job.running`, comme aujourd'hui), relit la base, met le cache à jour, puis fait `db = loadDb()` et `refresh()`.
+- Un onglet qui reçoit ce message relit la base.
+  - S'il n'a ni traitement en cours (`!job.running`, comme aujourd'hui) ni écriture en attente, il met tout le cache à jour, puis fait `db = loadDb()` et `refresh()`.
+  - Sinon, il ne met à jour que les parties personnelles des **autres** comptes, sauf celles qu'il a lui-même en attente : un changement de compte lira alors la version récente, au lieu d'en écrire une ancienne par-dessus (ajouté après la relecture de Copilot).
 - En mode secours, l'écoute de l'événement `storage` reste celle d'aujourd'hui.
 
 ### Onglet Sauvegarde
