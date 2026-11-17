@@ -130,7 +130,27 @@
     for (const k in base.cards) if (base.cards[k] && k === base.cards[k].cardId && byExemplar.has(k)) delete base.cards[k];
     return base;
   }
-  const readJson = k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
+  // ---------- où les données sont rangées ----------
+  // Deux modes, avec les mêmes clés (wmstats.v1 et wmstats.v1.u.<compte>) : 'idb', la base IndexedDB « wmstats », sans la limite
+  // de 5 Mo ; 'local', le localStorage du site (avant la 1.24, et en secours quand le navigateur bloque IndexedDB).
+  // En mode 'idb', texts garde le dernier texte de chaque clé : les lectures restent synchrones.
+  const localKeys = () => {
+    const out = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && (k === KEY || k.startsWith(KEY + '.u.'))) out.push(k); }
+    } catch (e) {}
+    return out;
+  };
+  const store = {
+    mode: 'local', loaded: true, texts: new Map(), pending: new Map(), writing: false, idb: null,
+    get: k => (store.mode === 'idb' ? (store.texts.has(k) ? store.texts.get(k) : null) : (() => { try { return localStorage.getItem(k); } catch (e) { return null; } })()),
+    set: (k, text) => { localStorage.setItem(k, text); },
+    del: k => { try { localStorage.removeItem(k); } catch (e) {} },
+    keys: () => (store.mode === 'idb' ? [...store.texts.keys()] : localKeys()),
+    size: () => store.keys().reduce((n, k) => n + k.length + (store.get(k) || '').length, 0),
+    idle: () => Promise.resolve()
+  };
+  const readJson = k => { try { return JSON.parse(store.get(k)); } catch (e) { return null; } };
   let db = loadDb();
   function loadDb() {
     const base = defaults();
@@ -204,7 +224,7 @@
       // Compte pas encore reconnu : les données présentes sont les siennes.
       db.userId = uid;
       saveDb();
-      try { localStorage.removeItem(acctKey('')); } catch (e) {}
+      store.del(acctKey(''));
       return false;
     }
     saveDb();
@@ -2308,11 +2328,13 @@
 
   function setStatus(msg, where) { const el = ui.el[where || 'status']; if (el) el.textContent = msg || ''; }
   // Le compte connecté et le nombre de comptes dont ce navigateur garde les données (onglet Réglages).
+  // Où sont rangées les données, et combien de place elles prennent (onglet Sauvegarde).
+  function storeLine() {
+    const mo = (store.size() / 1e6).toFixed(1).replace('.', ',');
+    return (store.mode === 'idb' ? 'Rangées dans IndexedDB : ' : 'Rangées dans le stockage du site (limité à 5 Mo) : ') + mo + ' Mo.';
+  }
   function accountLine() {
-    let n = 0;
-    try {
-      for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(KEY + '.u.') && k !== acctKey('')) n++; }
-    } catch (e) {}
+    const n = store.keys().filter(k => k.startsWith(KEY + '.u.') && k !== acctKey('')).length;
     const who = db.me ? db.me : db.userId ? 'compte ' + db.userId.slice(0, 8) : 'pas encore reconnu (recharge la page du site)';
     return 'Compte connecté : ' + who + ' · ' + plural(Math.max(n, db.userId ? 1 : 0), 'compte connu', 'comptes connus') + ' dans ce navigateur.';
   }
@@ -2349,6 +2371,7 @@
     const e = ui.el;
     if (e.poolInfo && !poolUi.testing) e.poolInfo.textContent = poolLine();
     if (e.acctInfo) e.acctInfo.textContent = accountLine();
+    if (e.storeInfo) e.storeInfo.textContent = storeLine();
     if (!e.load) return;
     const pro = proState();
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
@@ -2691,6 +2714,7 @@
     // ----- Sauvegarde -----
     e.view_data = h('div', null,
       h('p', { class: 'line' }, 'Tes données sont rangées dans ce navigateur. Chrome et Zen ont donc chacun les leurs.'),
+      (e.storeInfo = h('p', { class: 'line' }, storeLine())),
       h('div', { class: 'tools' },
         group('Exporter', null, btn('Exporter toutes mes données',
           'Télécharge un fichier avec ta collection, les prix, tes boosters, tes enchères, l’évolution, tes souhaits et les fichiers de tes amis.', exportBackup, 'pri')),
