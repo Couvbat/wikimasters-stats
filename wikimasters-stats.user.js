@@ -145,12 +145,51 @@
   const store = {
     mode: hasIdb ? 'idb' : 'local', loaded: !hasIdb, texts: new Map(), pending: new Map(), writing: false, idb: null,
     get: k => (store.mode === 'idb' ? (store.texts.has(k) ? store.texts.get(k) : null) : (() => { try { return localStorage.getItem(k); } catch (e) { return null; } })()),
-    set: (k, text) => { localStorage.setItem(k, text); },
-    del: k => { try { localStorage.removeItem(k); } catch (e) {} },
+    // En mode 'idb', une écriture met le cache à jour tout de suite et part dans la base peu après (flushStore).
+    set: (k, text) => {
+      if (store.mode !== 'idb') return localStorage.setItem(k, text);
+      store.texts.set(k, text); store.pending.set(k, text); scheduleFlush();
+    },
+    del: k => {
+      if (store.mode !== 'idb') { try { localStorage.removeItem(k); } catch (e) {} return; }
+      store.texts.delete(k); store.pending.set(k, null); scheduleFlush();
+    },
     keys: () => (store.mode === 'idb' ? [...store.texts.keys()] : localKeys()),
     size: () => store.keys().reduce((n, k) => n + k.length + (store.get(k) || '').length, 0),
-    idle: () => Promise.resolve()
+    // Résolue quand rien n'est en cours d'écriture ni prévu.
+    idle: () => new Promise(r => { idleWaiters.push(r); settleIdle(); })
   };
+  const flushState = { scheduled: false }, idleWaiters = [];
+  const settleIdle = () => { if (!store.writing && !flushState.scheduled) while (idleWaiters.length) idleWaiters.shift()(); };
+  // Plusieurs saveDb dans la même tâche : une seule écriture.
+  const scheduleFlush = () => {
+    if (flushState.scheduled) return;
+    flushState.scheduled = true;
+    Promise.resolve().then(() => { flushState.scheduled = false; flushStore(); });
+  };
+  const TAB = Math.random().toString(36).slice(2);
+  const channel = (() => { try { return typeof BroadcastChannel === 'function' ? new BroadcastChannel('wmstats') : null; } catch (e) { return null; } })();
+  // Une seule transaction à la fois. Réussie : on prévient les autres onglets, et on écrit ce qui est arrivé entre-temps.
+  // Ratée : l'en-tête le dit, et ce qui n'a pas été écrit repart au prochain enregistrement.
+  function flushStore() {
+    if (store.writing || !store.pending.size || !store.idb) { settleIdle(); return; }
+    const batch = store.pending, wasFailed = !!saveState.failed;
+    store.pending = new Map();
+    store.writing = true;
+    idbWrite(store.idb, batch).then(() => {
+      saveState.failed = 0;
+      if (channel) { try { channel.postMessage({ saved: TAB }); } catch (e) {} }
+      store.writing = false;
+      if (wasFailed) refresh();
+      if (store.pending.size) flushStore(); else settleIdle();
+    }, () => {
+      for (const [k, v] of batch) if (!store.pending.has(k)) store.pending.set(k, v);
+      saveState.failed = Date.now();
+      store.writing = false;
+      if (!wasFailed) refresh();
+      settleIdle();
+    });
+  }
   const readJson = k => { try { return JSON.parse(store.get(k)); } catch (e) { return null; } };
   let db = loadDb();
   function loadDb() {
@@ -224,6 +263,8 @@
   }
   // Résolue quand les données sont chargées (tout de suite sans IndexedDB).
   const ready = store.loaded ? Promise.resolve() : loadStore();
+  // Ce qui touche aux données attend qu'elles soient chargées (réponses du site interceptées, panneau, pastilles).
+  const whenReady = f => (store.loaded ? f() : ready.then(f));
   // Un autre onglet du site a enregistré des données : on les reprend pour ne pas les écraser.
   window.addEventListener('storage', ev => {
     if (ev.key === KEY && !job.running) { db = loadDb(); refresh(); }
@@ -241,9 +282,18 @@
   // Le relevé reste affiché jusqu'au rechargement de la page : on le retire de l'enregistrement, jamais de la mémoire.
   // Renvoie false si rien n'a pu être enregistré : l'en-tête du panneau le dit alors (saveWarning), au lieu d'un échec silencieux.
   const saveState = { failed: 0 };
-  const saveWarning = () => (saveState.failed
-    ? ' · ⚠ Navigateur plein : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.' : '');
+  const saveWarning = () => (!saveState.failed ? '' : store.mode === 'idb'
+    ? ' · ⚠ Enregistrement impossible : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.'
+    : ' · ⚠ Navigateur plein : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.');
   function saveDb() {
+    // Rien n'est encore chargé : écrire maintenant remplacerait les données par un db vide.
+    if (!store.loaded) return true;
+    if (store.mode === 'idb') {
+      const { shared, mine } = splitDb();
+      store.set(acctKey(db.userId), JSON.stringify(mine)); // le compte au moment de l'appel (setAccount change db.userId juste après)
+      store.set(KEY, JSON.stringify(shared));
+      return true;
+    }
     const write = asks => {
       const { shared, mine } = splitDb();
       if (asks) shared.market = { at: db.market.at, asks };
@@ -1085,34 +1135,34 @@
       if (/\.supabase\.co$/.test(url.hostname)) {
         noteSession(url, input, init);
         // Le site lit tes étiquettes (page Collection) : on retient leur liste, pour l'étiquetage par lots.
-        if (method === 'GET' && url.pathname === '/rest/v1/tags') p.then(r => r.ok && r.clone().json().then(ingestTags)).catch(() => {});
+        if (method === 'GET' && url.pathname === '/rest/v1/tags') p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestTags(j)))).catch(() => {});
       }
       if (method === 'GET' && /\.supabase\.co$/.test(url.hostname) && url.pathname === '/rest/v1/profiles' &&
           url.searchParams.get('select') === 'is_pro') { // la requête que le site fait sur ton propre profil
         const u = /^eq\.(.+)$/.exec(url.searchParams.get('id') || '');
-        if (u) p.then(r => r.ok && r.clone().json().then(j => ingestPro(u[1], j))).catch(() => {});
+        if (u) p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestPro(u[1], j)))).catch(() => {});
       } else if (url.origin === location.origin && method === 'POST' && /^\/api\/packs\//.test(url.pathname)) {
         // Tu viens d'ouvrir un paquet toi-même : on lit juste la liste des cartes tirées.
         const kind = url.pathname.split('/').pop();
-        p.then(r => r.ok && r.clone().json().then(j => j && Array.isArray(j.cards) && onPull(j.cards, kind))).catch(() => {});
+        p.then(r => r.ok && r.clone().json().then(j => j && Array.isArray(j.cards) && whenReady(() => onPull(j.cards, kind)))).catch(() => {});
       } else if (url.origin === location.origin && method === 'GET') {
         const m = url.pathname.match(/^\/api\/marketplace\/cards\/([^/]+)\/sales$/);
         if (m) {
-          p.then(r => r.ok && r.clone().json().then(j => ingestSales(m[1], j))).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestSales(m[1], j)))).catch(() => {});
         } else if (/^\/api\/marketplace\/[0-9a-f-]{36}$/.test(url.pathname)) {
           // Tu ouvres la page d'une enchère : si elle est finie, son prix final exact rejoint les prix observés.
           const id = url.pathname.split('/').pop();
-          p.then(r => r.ok && r.clone().json().then(j => { if (ingestFinal(id, j)) { saveDb(); refresh(); } else overlaySoon(); })).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => { if (ingestFinal(id, j)) { saveDb(); refresh(); } else overlaySoon(); }))).catch(() => {});
         } else if (url.pathname === '/api/my-collection') {
-          p.then(r => r.ok && r.clone().json().then(j => ingestCollection(j.collection, false))).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestCollection(j.collection, false)))).catch(() => {});
         } else if (url.pathname === '/api/marketplace') {
-          p.then(r => r.ok && r.clone().json().then(ingestMarket)).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestMarket(j)))).catch(() => {});
         } else if (url.pathname === '/api/trades') {
-          p.then(r => r.ok && r.clone().json().then(ingestTrades)).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestTrades(j)))).catch(() => {});
         } else if (url.pathname === '/api/notifications') {
-          p.then(r => r.ok && r.clone().json().then(ingestAlerts)).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestAlerts(j)))).catch(() => {});
         } else if (url.pathname === '/api/cards' && url.searchParams.get('wishlist') === '1') {
-          p.then(r => r.ok && r.clone().json().then(j => ingestWish(j, false))).catch(() => {});
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestWish(j, false)))).catch(() => {});
         } else if (url.pathname === '/api/cards') {
           // Page « Toutes les cartes » : on apprend seulement les titres, pour poser les pastilles de valeur.
           p.then(r => r.ok && r.clone().json().then(j => {
@@ -4105,9 +4155,10 @@
     if (!job.running && settleObserved()) { saveDb(); refresh(); return; }
     if (ui.open && ui.tab === 'sales' && db.selling && db.selling.length) renderSales();
   }
-  setInterval(minuteTick, 60000);
-  setInterval(() => { if (autoDue(Date.now())) autoRun(); }, 60000);
-  setInterval(() => { poolTick(Date.now()); }, POOL_FLUSH_EVERY);
+  // Rien avant le chargement des données.
+  setInterval(() => { if (store.loaded) minuteTick(); }, 60000);
+  setInterval(() => { if (store.loaded && autoDue(Date.now())) autoRun(); }, 60000);
+  setInterval(() => { if (store.loaded) poolTick(Date.now()); }, POOL_FLUSH_EVERY);
 
   // ---------- valeur affichée sur les cartes du site ----------
   // Une pastille sur chaque carte que le site affiche : Collection, Marché, Toutes les cartes, boosters…
@@ -4414,7 +4465,7 @@
     overlaySoon();
   }
 
-  const start = () => { if (settleObserved()) saveDb(); mount(); openSellForm(); startOverlay(); };
+  const start = () => whenReady(() => { if (settleObserved()) saveDb(); mount(); openSellForm(); startOverlay(); });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();

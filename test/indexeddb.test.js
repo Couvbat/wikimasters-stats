@@ -3,7 +3,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { load } = require('./harness');
+const { load, reply } = require('./harness');
 
 const KEY = 'wmstats.v1';
 
@@ -85,4 +85,92 @@ test('rien nulle part : défauts, mode idb', async () => {
   assert.equal(env.t.store.loaded, true);
   assert.deepEqual(Object.keys(env.t.db.prices), []);
   assert.equal(env.idbData.size, 0);
+});
+
+// ----- Tâche 3 : enregistrement dans la base, attente du chargement -----
+const gated = () => { let open; const gate = new Promise(r => { open = r; }); return { gate, open }; };
+const tick = () => new Promise(r => setImmediate(r));
+
+test('saveDb avant le chargement n’écrit rien, nulle part', async () => {
+  const data = new Map([[KEY, sharedText('A')]]);
+  const g = gated();
+  const env = load({ idb: { data, gate: g.gate } });
+  assert.equal(env.t.saveDb(), true);
+  assert.equal(env.store.size, 0, 'rien dans le localStorage non plus');
+  g.open();
+  await env.ready;
+  await env.t.store.idle();
+  assert.equal(data.get(KEY), sharedText('A'), 'la base n’a pas été remplacée par des données vides');
+  assert.equal(env.t.db.pool.url, 'A');
+});
+
+test('plusieurs saveDb dans la même tâche : une seule transaction', async () => {
+  const env = load({ idb: {} });
+  await env.ready;
+  const before = env.idbStats.tx;
+  env.t.db.pool.url = 'X';
+  env.t.saveDb(); env.t.saveDb(); env.t.saveDb();
+  await env.t.store.idle();
+  assert.equal(env.idbStats.tx, before + 1);
+  assert.match(env.idbData.get(KEY), /"url":"X"/);
+});
+
+test('changement de compte : chaque compte garde son instantané', async () => {
+  const data = new Map([[KEY, sharedText('A')], [KEY + '.u.U1', mineText('x1', 'A')]]);
+  const env = load({ idb: { data } });
+  await env.ready;
+  assert.deepEqual(Object.keys(env.t.db.cards), ['x1']);
+  env.t.setAccount('U2');
+  await env.t.store.idle();
+  assert.match(data.get(KEY + '.u.U1'), /"x1"/, 'U1 garde sa carte');
+  assert.ok(data.has(KEY + '.u.U2'));
+  assert.deepEqual(Object.keys(env.t.db.cards), []);
+  assert.match(data.get(KEY), /"userId":"U2"/);
+});
+
+test('compte reconnu : l’enregistrement _ est effacé de la base', async () => {
+  const env = load({ idb: {} });
+  await env.ready;
+  env.t.db.cards = { x1: { cardId: 'A', title: 'A', rarity: 'R', count: 1 } };
+  env.t.saveDb();
+  await env.t.store.idle();
+  assert.ok(env.idbData.has(KEY + '.u._'));
+  env.t.setAccount('U1');
+  await env.t.store.idle();
+  assert.ok(!env.idbData.has(KEY + '.u._'));
+  assert.match(env.idbData.get(KEY + '.u.U1'), /"x1"/);
+});
+
+test('écriture qui échoue puis réussit : avertissement, puis tout est enregistré', async () => {
+  let fail = true;
+  const env = load({ idb: { failWrites: () => fail } });
+  await env.ready;
+  env.t.db.pool.url = 'X';
+  env.t.saveDb();
+  await env.t.store.idle();
+  assert.match(env.t.saveWarning(), /Enregistrement impossible/);
+  assert.equal(env.idbData.has(KEY), false);
+  fail = false;
+  env.t.db.me = 'Jules';
+  env.t.saveDb();
+  await env.t.store.idle();
+  assert.equal(env.t.saveWarning(), '');
+  assert.match(env.idbData.get(KEY), /"url":"X"/);
+});
+
+test('réponse du site avant le chargement : traitée après, sans écraser ce qui est chargé', async () => {
+  const data = new Map([[KEY, sharedText('A')]]);
+  const g = gated();
+  const auction = { id: 'A1', card_id: 'C2', base_amount: 10, effective_bid: 10, end_at: new Date(Date.now() + 36e5).toISOString(),
+    snapshot_rarity: 'R', card: { wikipedia_title: 'C2', rarity: 'R' } };
+  const env = load({ idb: { data, gate: g.gate }, fetch: async () => reply({ auctions: [auction] }) });
+  await env.window.fetch('/api/marketplace?page=1');
+  await tick();
+  g.open();
+  await env.ready;
+  await tick();
+  await env.t.store.idle();
+  assert.ok(env.t.db.prices.C1, 'ce qui a été chargé est là');
+  assert.ok(env.t.db.market.asks.C2, 'la réponse arrivée avant a été traitée');
+  assert.match(data.get(KEY), /"C2"/);
 });
