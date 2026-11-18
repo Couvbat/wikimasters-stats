@@ -50,7 +50,7 @@ Storage → crée un dataset `apps/wm-pool` (préréglage « Apps »), puis deux
 
 ### 2. Le code
 
-Copie le contenu de ce dossier `server/` dans `apps/wm-pool/app`. Ce sont les fichiers `server.js`, `db.js`, `validate.js`, `sync.js` et `admin.js` : les cinq sont nécessaires, le serveur ne démarre pas s'il en manque un. Tu peux passer par le partage SMB du NAS, ou par `scp`.
+Copie le contenu de ce dossier `server/` dans `apps/wm-pool/app`. Ce sont les fichiers `server.js`, `db.js`, `validate.js` et `sync.js`, tous nécessaires au démarrage du serveur, plus `admin.js` pour les commandes d'administration (voir plus bas). Tu peux passer par le partage SMB du NAS, ou par `scp`.
 
 ### 3. La clé du groupe
 
