@@ -50,7 +50,7 @@ Storage → crée un dataset `apps/wm-pool` (préréglage « Apps »), puis deux
 
 ### 2. Le code
 
-Copie le contenu de ce dossier `server/` dans `apps/wm-pool/app`. Ce sont les fichiers `server.js`, `db.js`, `validate.js` et `admin.js`. Tu peux passer par le partage SMB du NAS, ou par `scp`.
+Copie le contenu de ce dossier `server/` dans `apps/wm-pool/app`. Ce sont les fichiers `server.js`, `db.js`, `validate.js` et `sync.js`, tous nécessaires au démarrage du serveur, plus `admin.js` pour les commandes d'administration (voir plus bas). Tu peux passer par le partage SMB du NAS, ou par `scp`.
 
 ### 3. La clé du groupe
 
@@ -81,7 +81,7 @@ Dans TrueNAS : Apps → Discover Apps → menu ⋮ → **Install via YAML**.
 
 ### 6. Vérifier
 
-Ouvre `https://pool.<ton domaine>/v1/health`. Tu dois voir `{"ok":true,"version":"1.0.0"}`.
+Ouvre `https://pool.<ton domaine>/v1/health`. Tu dois voir `{"ok":true,"version":"1.1.0"}`.
 
 ### 7. Sauvegardes
 
