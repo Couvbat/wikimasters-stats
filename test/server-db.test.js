@@ -77,14 +77,34 @@ test('idempotence : le même envoi reçu deux fois n’ajoute rien', () => {
   assert.equal(poolStats(db).sales, before);
 });
 
-test('pull : les 20 ventes les plus récentes d’une rareté', () => {
+test('pull : toutes les ventes d’une rareté (plus de 20)', () => {
   const db = openDb(':memory:');
-  const sales = Array.from({ length: 25 }, (_, i) => ['C1', 10 + i, new Date(now - (25 - i) * 3600e3).toISOString(), 0, 1, 'X' + i]);
-  push(db, { member: 'A', sales });
-  const got = pullCards(db, ['C1']).cards.C1.sales;
-  assert.equal(got.length, 20);
-  assert.equal(got[0][0], 34);
-  assert.equal(got[19][0], 15);
+  const at = i => new Date(now - (i + 1) * 3600e3).toISOString();
+  const pro = Array.from({ length: 75 }, (_, i) => [100 + i, at(i), 'L']);
+  const sales = Array.from({ length: 75 }, (_, i) => ['C1', 10 + i, at(200 + i), 0, 1, 'X' + i, 'L']);
+  push(db, { member: 'A', pro: [['C1', now - 10, pro]], sales });
+  const c = pullCards(db, ['C1']).cards.C1;
+  assert.equal(c.pro.sales.length, 75);
+  assert.equal(c.sales.length, 75);
+  assert.equal(c.pro.sales[0][0], 100, 'la plus récente d’abord');
+});
+
+test('pull : 2 000 au plus, les plus récentes', () => {
+  const db = openDb(':memory:');
+  const all = Array.from({ length: 2500 }, (_, i) => [1 + i, new Date(now - (i + 1) * 60e3).toISOString(), 'C']);
+  const pro = [];
+  for (let i = 0; i < all.length; i += 200) pro.push(['C1', now - 10, all.slice(i, i + 200)]);
+  push(db, { member: 'A', pro });
+  const got = pullCards(db, ['C1']).cards.C1.pro.sales;
+  assert.equal(got.length, 2000);
+  assert.equal(got[0][0], 1);
+  assert.equal(got[1999][0], 2000);
+});
+
+test('push : jusqu’à 200 ventes par relevé Pro', () => {
+  const sales = Array.from({ length: 250 }, (_, i) => [1 + i, new Date(now - (i + 1) * 60e3).toISOString(), 'L']);
+  const p = parsePush({ pro: [['C1', now - 10, sales]] }, now);
+  assert.equal(p.pro[0].sales.length, 200);
 });
 
 test('parsePush : plafonds, forme, entrées invalides, membre', () => {
@@ -107,7 +127,7 @@ test('purgeMember supprime les lignes du membre', () => {
   assert.equal(pullCards(db, ['C3']).cards.C3, undefined);
 });
 
-test('rareté de chaque vente : gardée à l’envoi, rendue au pull, 20 dernières par rareté', () => {
+test('rareté de chaque vente : gardée à l’envoi, rendue au pull, toutes les ventes de chaque rareté', () => {
   const db = openDb(':memory:');
   push(db, { member: 'A', pro: [['C1', now - 10, [[50, T, 'L'], [7, T2, 'UR']]]] });
   assert.deepEqual(pullCards(db, ['C1']).cards.C1.pro.sales, [[7, T2, 'UR'], [50, T, 'L']]);
@@ -116,7 +136,7 @@ test('rareté de chaque vente : gardée à l’envoi, rendue au pull, 20 derniè
   for (let i = 0; i < 3; i++) sales.push(['C2', 10 + i, new Date(now - (40 - i) * 3600e3).toISOString(), 0, 1, 'U' + i, 'UR']);
   push(db, { member: 'A', sales });
   const got = pullCards(db, ['C2']).cards.C2.sales;
-  assert.equal(got.filter(s => s[5] === 'L').length, 20);
+  assert.equal(got.filter(s => s[5] === 'L').length, 25);
   assert.equal(got.filter(s => s[5] === 'UR').length, 3);
 });
 

@@ -40,6 +40,9 @@ function migrate(db) {
       (SELECT COALESCE(MAX(rev), 0) FROM unsold_queue)) WHERE k = 'rev';`);
 }
 
+// Ventes rendues au plus par carte et par sorte (Pro, observées) : la même limite que le script.
+const MAX_SALES_PER_CARD = 2000;
+
 function openDb(path) {
   const db = new DatabaseSync(path);
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;');
@@ -58,12 +61,9 @@ function openDb(path) {
     dropProv: db.prepare("DELETE FROM sales WHERE auction = ? AND kind = 'prov'"),
     proFetch: db.prepare('INSERT INTO pro_fetch (card, at, member, rev) VALUES (?, ?, ?, ?) ON CONFLICT(card) DO UPDATE SET at = excluded.at, member = excluded.member, rev = excluded.rev WHERE excluded.at > pro_fetch.at'),
     getProFetch: db.prepare('SELECT at, member FROM pro_fetch WHERE card = ?'),
-    // Les 20 dernières ventes de chaque rareté (60 au plus) : chaque rareté a son propre historique.
-    proRows: db.prepare("SELECT price, sold_at, rarity FROM (SELECT price, sold_at, rarity, ROW_NUMBER() OVER (PARTITION BY COALESCE(rarity, '') ORDER BY sold_at DESC) AS rn " +
-      "FROM sales WHERE card = ? AND kind = 'pro') WHERE rn <= 20 ORDER BY sold_at DESC LIMIT 60"),
-    obsRows: db.prepare("SELECT price, sold_at, gap, kind, auction, rarity FROM (SELECT price, sold_at, gap, kind, auction, rarity, " +
-      "ROW_NUMBER() OVER (PARTITION BY COALESCE(rarity, '') ORDER BY sold_at DESC) AS rn FROM sales WHERE card = ? AND kind IN ('exact', 'prov')) " +
-      'WHERE rn <= 20 ORDER BY sold_at DESC LIMIT 60')
+    // Toutes les ventes de la carte, les plus récentes d'abord, avec un garde-fou de 2 000 de chaque sorte.
+    proRows: db.prepare("SELECT price, sold_at, rarity FROM sales WHERE card = ? AND kind = 'pro' ORDER BY sold_at DESC LIMIT " + MAX_SALES_PER_CARD),
+    obsRows: db.prepare("SELECT price, sold_at, gap, kind, auction, rarity FROM sales WHERE card = ? AND kind IN ('exact', 'prov') ORDER BY sold_at DESC LIMIT " + MAX_SALES_PER_CARD)
   };
   return db;
 }

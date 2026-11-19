@@ -905,6 +905,8 @@
   const POOL_PULL_EVERY = 6 * 36e5;   // réception de la collection et des souhaits
   const POOL_QMAX = 20000;            // entrées en attente gardées au plus
   const POOL_BATCH = { p: 2000, s: 5000, u: 5000 };
+  const POOL_BATCH_BYTES = 1.5e6;     // un envoi reste sous la limite de 2 Mo du pool
+  const POOL_PRO_SALES = 200;         // ventes envoyées par relevé Pro : les plus récentes (le pool garde les plus anciennes)
   const poolUrlOk = u => /^https:\/\/[^\s/]+/.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u);
   const poolOn = () => !!(db.pool && db.pool.on && db.pool.key && poolUrlOk(db.pool.url || ''));
   // type : 'p' relevé Pro [carte, rareté] ; 's' vente [carte, prix, date, écart, exact, enchère, rareté] ; 'u' enchère finie sans vente.
@@ -955,7 +957,7 @@
     if (Array.isArray(e[2])) return e; // file d'une version précédente : l'historique y est déjà
     const p = db.prices[e[0]];
     if (!isObj(p) || p.by || !Array.isArray(p.sales) || !p.sales.length) return null;
-    return [e[0], num(p.at), p.sales.map(s => [s.p, s.t, s.r || null]), e[1] || null];
+    return [e[0], num(p.at), p.sales.slice(0, POOL_PRO_SALES).map(s => [s.p, s.t, s.r || null]), e[1] || null];
   }
   const poolState = { flushing: false };
   async function poolFlush(now) {
@@ -964,10 +966,17 @@
     poolState.flushing = true;
     const count = { p: 0, s: 0, u: 0 }, batch = [];
     const body = { member: (db.me || '').trim().slice(0, 40) || 'anonyme', pro: [], sales: [], unsold: [] };
+    // Le lot s'arrête avant 1,5 Mo de JSON : le reste part au lot suivant.
+    let size = JSON.stringify(body).length;
     for (const item of db.poolQ) {
       const k = item[0];
       if (!(k in count) || count[k] >= POOL_BATCH[k]) continue;
       const e = k === 'p' ? proEntry(item[1]) : item[1];
+      if (e) {
+        const add = JSON.stringify(e).length + 1;
+        if (size + add > POOL_BATCH_BYTES && count.p + count.s + count.u) break;
+        size += add;
+      }
       batch.push(item);
       if (!e) continue;
       count[k]++;

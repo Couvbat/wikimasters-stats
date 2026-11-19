@@ -36,7 +36,7 @@ test('health répond sans clé', async () => {
   const r = await req('GET', '/v1/health');
   assert.equal(r.status, 200);
   assert.deepEqual(r.json, { ok: true, version: VERSION });
-  assert.equal(VERSION, '1.2.0');
+  assert.equal(VERSION, '1.3.0');
 });
 
 test('push : sans clé ou mauvaise clé, 401 ; bonne clé, 200', async () => {
@@ -113,6 +113,6 @@ test('profils par HTTP : sans clé 401, mal formé 400', async () => {
   assert.ok(!(await req('GET', '/v1/profiles', { headers: auth })).json.profiles.some(x => x.id === 'U5'));
 });
 
-test('health : version 1.2.0', async () => {
-  assert.equal((await req('GET', '/v1/health')).json.version, '1.2.0');
+test('health : version 1.3.0', async () => {
+  assert.equal((await req('GET', '/v1/health')).json.version, '1.3.0');
 });

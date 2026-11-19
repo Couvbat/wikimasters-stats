@@ -151,6 +151,33 @@ test('file plafonnée à 20 000, envoi en plusieurs lots', async () => {
   assert.equal(t.db.poolQ.length, 0);
 });
 
+test('relevé Pro envoyé : les 200 plus récentes', async () => {
+  const { t, calls } = setup();
+  enable(t);
+  const sales = Array.from({ length: 500 }, (_, i) => ({ p: 1 + i, t: new Date(Date.parse(T) - i * 60e3).toISOString(), r: 'L' }));
+  t.db.prices = { C1: { at: 100, sales } };
+  t.poolQueue('p', ['C1', 'L']);
+  await t.poolFlush();
+  const e = calls[0].body.pro[0];
+  assert.equal(e[2].length, 200);
+  assert.deepEqual(e[2][0], [1, T, 'L']);
+});
+
+test('lots coupés à 1,5 Mo', async () => {
+  const { t, calls } = setup();
+  enable(t);
+  t.db.prices = {};
+  for (let c = 0; c < 300; c++) {
+    t.db.prices['C' + c] = { at: 100, sales: Array.from({ length: 200 }, (_, i) => ({ p: 100000 + i, t: new Date(Date.parse(T) - i * 60e3).toISOString(), r: 'UR' })) };
+    t.poolQueue('p', ['C' + c, 'UR']);
+  }
+  while (t.db.poolQ.length && calls.length < 10) await t.poolFlush();
+  assert.ok(calls.length >= 2, 'au moins deux envois');
+  for (const c of calls) assert.ok(JSON.stringify(c.body).length <= 1.5e6, 'chaque envoi fait 1,5 Mo au plus');
+  assert.equal(calls.reduce((n, c) => n + c.body.pro.length, 0), 300);
+  assert.equal(t.db.poolQ.length, 0);
+});
+
 // ----- Tâche 5 : réception, enchères déjà connues, relevés Pro sautés -----
 test('poolPull fusionne le relevé Pro (avec son auteur) et les ventes observées', async () => {
   const { t } = setup({ pull: { C1: { pro: { at: Date.now() - MIN, by: 'Marie', sales: [[50, T]] }, sales: [[45, T2, 0, 1, 'A1']] } } });

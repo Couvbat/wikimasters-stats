@@ -9,7 +9,7 @@ const { openDb, applyPush, pullCards, knownAuctions, poolStats, putProfile, list
 const { parsePush, parseIds, parseProfile, httpError, okId } = require('./validate');
 const { syncOnce, syncStatus } = require('./sync');
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const MAX_BODY = 2 * 1024 * 1024;
 const MAX_PULL = 500, MAX_KNOWN = 1000;
 
