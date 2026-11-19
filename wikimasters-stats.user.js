@@ -640,6 +640,8 @@
   const MAX_OBS = 6000;     // enchères en cours suivies
   const MAX_OBS_CARDS = 8000;
   const MAX_FINQ = 3000;    // enchères finies en attente de leur prix final
+  // Pendant une fusion en bloc (pool, fichier ami), les cartes touchées : leurs ventes sont triées et dédoublonnées une fois, à la fin.
+  let obsBatch = null;
   function addObserved(cardId, sale, rarity) {
     if (!okKey(cardId) || typeof sale.p !== 'number' || sale.p <= 0) return false;
     let list = db.obsSales[cardId] || [];
@@ -654,7 +656,7 @@
     if (sale.x) item.x = 1;
     if (rarOk(sale.r)) item.r = sale.r;
     list.push(item);
-    db.obsSales[cardId] = keepAll(list);
+    if (obsBatch) { db.obsSales[cardId] = list; obsBatch.add(cardId); } else db.obsSales[cardId] = keepAll(list);
     const end = Date.parse(sale.t);
     if (rarity && rarity !== '?' && sale.g <= OBS_NEAR && Number.isFinite(end)) {
       const rl = db.obsRar[rarity] || [];
@@ -761,9 +763,16 @@
   function mergeObserved(seen) {
     if (!isObj(seen)) return 0;
     let added = 0;
-    for (const s of (Array.isArray(seen.sales) ? seen.sales : []).slice(0, 20000)) {
-      if (!Array.isArray(s) || !okKey(s[0]) || typeof s[1] !== 'number' || typeof s[2] !== 'string' || !Number.isFinite(Date.parse(s[2]))) continue;
-      if (addObserved(s[0], { p: s[1], t: s[2], g: num(s[3]), x: s[4] === 1, i: okKey(s[5]) ? s[5] : '', r: s[6] }, null)) added++;
+    obsBatch = new Set();
+    try {
+      for (const s of (Array.isArray(seen.sales) ? seen.sales : []).slice(0, 20000)) {
+        if (!Array.isArray(s) || !okKey(s[0]) || typeof s[1] !== 'number' || typeof s[2] !== 'string' || !Number.isFinite(Date.parse(s[2]))) continue;
+        if (addObserved(s[0], { p: s[1], t: s[2], g: num(s[3]), x: s[4] === 1, i: okKey(s[5]) ? s[5] : '', r: s[6] }, null)) added++;
+      }
+    } finally {
+      const touched = obsBatch;
+      obsBatch = null;
+      for (const id of touched) db.obsSales[id] = keepAll(db.obsSales[id]);
     }
     if (isObj(seen.rar)) for (const r of RARITIES) {
       const src = Array.isArray(seen.rar[r]) ? seen.rar[r].slice(0, 400) : [];
@@ -4585,6 +4594,7 @@
     if (p.basis === 'all' && p.nRecent) return '7 derniers jours : ' + fmt(Math.round(p.medRecent)) + ' ₩ (' + plural(p.nRecent, 'vente', 'ventes') + ')';
     return '';
   }
+  const SPARK_MAX = 30; // ventes dessinées au plus dans la courbe de la bulle
   function badgeFor(cardId, au, mine) {
     // Une annonce se juge à la valeur de la rareté de son exemplaire.
     const p = au && rarOk(au.r) ? priceOf(cardId, au.r) : priceOf(cardId);
@@ -4633,7 +4643,7 @@
       }
     }
     if (have) { text += ' ✓'; lines.push('Tu l’as déjà' + (have.count > 1 ? ' (' + have.count + ' exemplaires)' : '') + '.'); }
-    return { text, border, bg, lines, flag, sales: p.n ? p.sales : null, med: p.n ? Math.max(p.med, DISCARD) : 0 };
+    return { text, border, bg, lines, flag, sales: p.n ? p.sales.slice(0, SPARK_MAX) : null, med: p.n ? Math.max(p.med, DISCARD) : 0 };
   }
   function scanCards() {
     scanTimer = 0;

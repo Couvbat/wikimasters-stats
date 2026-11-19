@@ -152,3 +152,23 @@ test('Collection : marque « 7 j » et colonnes « 7 jours » et « Depuis toujo
   assert.equal(text(col('value').cell(old)).includes('7 j'), false, 'valeur depuis toujours : pas de marque');
   assert.equal(text(col('value').cell(none)).includes('7 j'), false, 'sans vente : pas de marque');
 });
+
+// ----- Relecture finale -----
+test('fusion des ventes observées : 2 000 ventes d’une carte en moins d’une seconde et demie', () => {
+  const { t } = load();
+  const sales = Array.from({ length: 2000 }, (_, i) => ['C1', 10 + i, iso(Date.now() - (i + 1) * 60e3), 0, 1, 'A' + i, 'C']);
+  const t0 = Date.now();
+  t.mergeObserved({ sales: sales.concat([sales[5]]) });
+  assert.ok(Date.now() - t0 < 1500, 'trop lent : ' + (Date.now() - t0) + ' ms');
+  const got = t.db.obsSales.C1;
+  assert.equal(got.length, 2000);
+  assert.equal(got[0].p, 10, 'la plus récente d’abord');
+});
+
+test('bulle des pastilles : la courbe montre les 30 dernières ventes', () => {
+  const { t } = load();
+  t.db.prices = { C1: { at: Date.now(), sales: ventes(100, 300, 20) } };
+  const b = t.badgeFor('C1', null, {});
+  assert.equal(b.sales.length, 30);
+  assert.match(nbsp(b.lines.join('\n')), /depuis toujours, 100 ventes/);
+});
