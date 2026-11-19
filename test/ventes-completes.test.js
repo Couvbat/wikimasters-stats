@@ -65,3 +65,49 @@ test('une vente sans rareté déjà connue avec sa rareté compte une fois', () 
   t.ingestSales('C1', { recent: [{ final_price: 11, settled_at: B }, { final_price: 12, settled_at: iso(ago(0.5)) }] });
   assert.equal(t.db.prices.C1.sales.length, 3);
 });
+
+// ----- Tâche 2 : valeur récente (7 jours, 3 ventes au moins) ou depuis toujours -----
+const ventes = (n, p, d, r = 'L') => Array.from({ length: n }, (_, i) => ({ p, t: iso(ago(d) - i * H), r }));
+
+test('la récente compte quand il y a assez de ventes', () => {
+  const { t } = load();
+  t.db.prices = { C1: { at: Date.now(), sales: ventes(4, 100, 1).concat(ventes(30, 300, 20)) } };
+  const p = t.priceOf('C1', 'L');
+  assert.equal(p.med, 100);
+  assert.equal(p.n, 4);
+  assert.equal(p.basis, 'recent');
+  assert.equal(p.nRecent, 4);
+  assert.equal(p.medAll, 300);
+  assert.equal(p.nAll, 34);
+});
+
+test('pas assez de ventes récentes : depuis toujours', () => {
+  const { t } = load();
+  t.db.prices = { C1: { at: Date.now(), sales: ventes(2, 100, 1).concat(ventes(30, 300, 20)) } };
+  const p = t.priceOf('C1', 'L');
+  assert.equal(p.med, 300);
+  assert.equal(p.basis, 'all');
+  assert.equal(p.medRecent, 100);
+  assert.equal(p.nRecent, 2);
+});
+
+test('une vente d’il y a 7 jours compte encore, une de 7 jours et une heure non', () => {
+  const { t } = load();
+  const at = (ms, p) => ({ p, t: iso(ms), r: 'L' });
+  const edge = Date.now() - 7 * DAY + 5000;
+  t.db.prices = { C1: { at: Date.now(), sales: [at(edge, 100), at(edge - 1, 100), at(edge - 2, 100)] } };
+  assert.equal(t.priceOf('C1', 'L').basis, 'recent');
+  const late = Date.now() - 7 * DAY - H;
+  t.db.prices = { C2: { at: Date.now(), sales: [at(late, 100), at(late - 1, 100), at(late - 2, 100)] } };
+  assert.equal(t.priceOf('C2', 'L').basis, 'all');
+});
+
+test('récentes d’une autre rareté : pas de valeur récente ici', () => {
+  const { t } = load();
+  t.db.prices = { C1: { at: Date.now(), sales: ventes(5, 900, 1, 'UR').concat(ventes(10, 300, 20)) } };
+  const p = t.priceOf('C1', 'L');
+  assert.equal(p.basis, 'all');
+  assert.equal(p.nRecent, 0);
+  assert.equal(p.medRecent, null);
+  assert.equal(p.med, 300);
+});

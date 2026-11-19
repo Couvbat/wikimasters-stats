@@ -1378,6 +1378,8 @@
     const ratio = recent / old;
     return ratio > 1.25 ? 1 : ratio < 0.8 ? -1 : 0;
   }
+  // Valeur récente : les ventes des 7 derniers jours, quand il y en a au moins 3.
+  const RECENT_DAYS = 7, RECENT_MIN = 3;
   let priceCache = new Map(), rarMap = null;
   function resetPrices() { priceCache = new Map(); rarMap = null; }
   // Rareté actuelle d'une carte, quand on la connaît : ta collection, tes souhaits, sinon ce que le site a affiché.
@@ -1415,13 +1417,20 @@
     let out = null;
     if (!src) out = rec && Array.isArray(rec.sales) ? { n: 0, at: rec.at } : null;
     else {
-      const sales = src.sales, own = src.kind === 'own', obs = src.kind === 'obs';
+      // Deux valeurs : depuis toujours (toutes les ventes) et récente (les 7 derniers jours). La récente compte quand elle
+      // repose sur 3 ventes au moins, sinon celle depuis toujours. Le reste (moyenne, fiabilité, tendance…) suit celle qui compte.
+      const now = Date.now();
+      const recent = src.sales.filter(s => { const ts = Date.parse(s.t); return Number.isFinite(ts) && now - ts <= RECENT_DAYS * DAY; });
+      const medAll = median(src.sales.map(s => s.p)), medRecent = median(recent.map(s => s.p));
+      const basis = recent.length >= RECENT_MIN ? 'recent' : 'all';
+      const sales = basis === 'recent' ? recent : src.sales, own = src.kind === 'own', obs = src.kind === 'obs';
       const v = sales.map(s => s.p);
       const at = (rec ? rec.at : 0) || (src.kind === 'pro' ? 0 : db.market.at);
       out = {
-        avg: v.reduce((a, b) => a + b, 0) / v.length, med: median(v),
+        avg: v.reduce((a, b) => a + b, 0) / v.length, med: basis === 'recent' ? medRecent : medAll,
         last: v[0], lastT: sales[0].t, min: Math.min(...v), max: Math.max(...v), n: v.length, at, own, obs,
-        rel: reliability(sales), trend: trendOf(sales), sales, mixed: src.mixed, r: want
+        rel: reliability(sales), trend: trendOf(sales), sales, mixed: src.mixed, r: want,
+        medAll, nAll: src.sales.length, medRecent, nRecent: recent.length, basis
       };
       // Un prix observé provisoire est un minimum, pas un prix final : tant qu'il en reste un, pas de « Fiable ».
       // Des prix finaux tous relus sur la page des enchères valent l'historique Pro.
