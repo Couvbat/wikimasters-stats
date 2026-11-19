@@ -83,7 +83,7 @@ Dans TrueNAS : Apps → Discover Apps → menu ⋮ → **Install via YAML**.
 
 ### 6. Vérifier
 
-Ouvre `https://pool.<ton domaine>/v1/health`. Tu dois voir `{"ok":true,"version":"1.3.0"}`.
+Ouvre `https://pool.<ton domaine>/v1/health`. Tu dois voir `{"ok":true,"version":"1.4.0"}`.
 
 ### 7. Sauvegardes
 
@@ -98,6 +98,8 @@ Si la clé fuit, change-la (étapes 3 et 5) et redonne-la au groupe.
 ## Mise à jour
 
 Recopie les fichiers de `server/` dans `apps/wm-pool/app`, puis redémarre l'application dans TrueNAS.
+
+Passage en 1.4.0 (fil des nouveautés, pour le script 1.28) : `server.js`, `db.js` et `validate.js` changent. La base se met à jour toute seule au démarrage (identifiant du pool). Un script 1.27 continue de fonctionner avec un pool 1.4.0.
 
 ## Administration
 
@@ -120,7 +122,8 @@ Le script de chacun continue normalement avec ses propres données. Les envois a
 | `GET /v1/health` | état du serveur, sans clé |
 | `GET /v1/stats` | compteurs |
 | `POST /v1/push` | envoi de prix (historique Pro, ventes, invendus) |
-| `POST /v1/pull` | prix de 500 cartes au plus |
+| `GET /v1/feed` | nouveautés depuis un numéro (`since`), 5 000 lignes par page (`limit`, 10 000 au plus) : ventes, relevés Pro, enchères à retirer. Le script 1.28 reçoit ainsi tout le pool |
+| `POST /v1/pull` | prix de 500 cartes au plus (scripts 1.27 et mode secours) |
 | `POST /v1/known` | parmi 1000 enchères au plus, celles dont le prix final est déjà connu |
 | `POST /v1/profile` | dépôt du profil d'un membre qui partage : collection (20 000 cartes au plus) et souhaits (5 000 au plus) |
 | `GET /v1/profiles` | les profils de tous les membres qui partagent |
