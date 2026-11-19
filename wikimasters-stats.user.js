@@ -638,7 +638,9 @@
   // donne son prix final exact : « Relever les prix finaux » le lit et remplace le prix provisoire (x = 1 : exact).
   const OBS_NEAR = 30;      // au-delà de 30 min avant la fin, le prix vu est trop incertain pour les niveaux par rareté
   const MAX_OBS = 6000;     // enchères en cours suivies
-  const MAX_OBS_CARDS = 8000;
+  // Cartes dont on garde les ventes observées : tout le pool en IndexedDB (1.28), 8 000 en mode secours (5 Mo).
+  const OBS_CARDS_IDB = 50000, OBS_CARDS_LOCAL = 8000;
+  const obsCardsMax = () => (store.mode === 'idb' ? OBS_CARDS_IDB : OBS_CARDS_LOCAL);
   const MAX_FINQ = 3000;    // enchères finies en attente de leur prix final
   // Pendant une fusion en bloc (pool, fichier ami), les cartes touchées : leurs ventes sont triées et dédoublonnées une fois, à la fin.
   let obsBatch = null;
@@ -650,7 +652,18 @@
     if (same) {
       if (!sale.x || same.x) return false;
       list = list.filter(x => x !== same);
-    } else if (list.some(x => x.t === sale.t && x.p === sale.p)) return false;
+    } else {
+      // Même date, même prix : la même vente. Un prix exact rend exact le provisoire déjà gardé, comme le fait le pool.
+      const twin = list.find(x => x.t === sale.t && x.p === sale.p);
+      if (twin) {
+        if (!sale.x || twin.x) return false;
+        twin.x = 1;
+        twin.g = Math.max(0, Math.round(num(sale.g)));
+        if (okKey(sale.i) && !twin.i) twin.i = sale.i;
+        if (obsBatch) obsBatch.add(cardId); else db.obsSales[cardId] = keepAll(list);
+        return true;
+      }
+    }
     const item = { p: sale.p, t: str(sale.t, 40), g: Math.max(0, Math.round(num(sale.g))) };
     if (okKey(sale.i)) item.i = sale.i;
     if (sale.x) item.x = 1;
@@ -690,9 +703,9 @@
       ids.sort((x, y) => db.obs[x][4] - db.obs[y][4]).slice(0, ids.length - MAX_OBS).forEach(id => delete db.obs[id]);
     }
     const cards = Object.keys(db.obsSales);
-    if (cards.length > MAX_OBS_CARDS) {
+    if (cards.length > obsCardsMax()) {
       cards.sort((x, y) => (db.obsSales[x][0].t < db.obsSales[y][0].t ? -1 : 1))
-        .slice(0, cards.length - MAX_OBS_CARDS).forEach(id => delete db.obsSales[id]);
+        .slice(0, cards.length - obsCardsMax()).forEach(id => delete db.obsSales[id]);
     }
     return changed;
   }
@@ -752,6 +765,25 @@
       return 0;
     });
   }
+  // Enchères que le pool a retirées (finie sans vente, ou provisoire remplacé par une vente déjà connue) : leur prix provisoire
+  // disparaît aussi d'ici, et le site n'a plus rien à apprendre sur elles. Un prix exact n'est jamais retiré.
+  // Renvoie le nombre de ventes retirées.
+  function dropProvisional(auctions) {
+    const want = new Set((Array.isArray(auctions) ? auctions : []).filter(okKey));
+    if (!want.size) return 0;
+    for (const id of want) delete db.finQ[id];
+    const gone = s => !!s && !s.x && !!s.i && want.has(s.i);
+    let dropped = 0;
+    for (const cardId of Object.keys(db.obsSales)) {
+      const list = db.obsSales[cardId];
+      if (!Array.isArray(list) || !list.some(gone)) continue;
+      const kept = list.filter(s => !gone(s));
+      dropped += list.length - kept.length;
+      if (kept.length) db.obsSales[cardId] = kept; else delete db.obsSales[cardId];
+    }
+    if (dropped) resetPrices();
+    return dropped;
+  }
   // Les fins d'enchères observées, pour le fichier ami et la sauvegarde. L'historique Pro voyage à part (voir proExport).
   function observedExport() {
     const sales = [];
@@ -786,9 +818,9 @@
       if (list.length) db.obsRar[r] = list.sort((x, y) => y[1] - x[1]).slice(0, 400);
     }
     const cards = Object.keys(db.obsSales);
-    if (cards.length > MAX_OBS_CARDS) {
+    if (cards.length > obsCardsMax()) {
       cards.sort((x, y) => (db.obsSales[x][0].t < db.obsSales[y][0].t ? -1 : 1))
-        .slice(0, cards.length - MAX_OBS_CARDS).forEach(id => delete db.obsSales[id]);
+        .slice(0, cards.length - obsCardsMax()).forEach(id => delete db.obsSales[id]);
     }
     return added;
   }

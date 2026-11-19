@@ -17,7 +17,7 @@ const EXPOSE = [
   'sellingRows', 'sellingStats', 'renderSales', 'minuteTick', 'originOf', 'tagBatch', 'applyTagBatch', 'sbSession', 'auctionFor', 'saveWarning',
   'store', 'ready', 'storeLine', 'whenReady', 'priceDue', 'dueCards', 'missingIds', 'routinePass', 'updateAll', 'autoLine',
   'ingestWish', 'profileBody', 'poolSendProfile', 'poolRemoveProfile', 'setProfileShare', 'applyProfiles', 'poolPullProfiles',
-  'keepAll', 'COLS'
+  'keepAll', 'COLS', 'obsCardsMax', 'dropProvisional'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +
