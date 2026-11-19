@@ -2,7 +2,7 @@
 // avec les mêmes règles que le script (identifiants sûrs, prix entiers positifs, dates lisibles).
 'use strict';
 
-const LIMITS = { pro: 2000, sales: 5000, unsold: 5000, proSales: 50 };
+const LIMITS = { pro: 2000, sales: 5000, unsold: 5000, proSales: 50, profileCards: 20000, profileWish: 5000 };
 const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
@@ -57,4 +57,28 @@ function parseIds(v, max) {
   return [...new Set(v.filter(okId))];
 }
 
-module.exports = { parsePush, parseIds, httpError, okId, LIMITS };
+// Profil d'un membre qui partage sa collection : [carte, titre, rareté, exemplaires] et [carte, titre, rareté], rien d'autre.
+// Une entrée invalide refuse tout le profil. Rareté inconnue : null ('?' du script compris).
+function parseProfile(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw httpError(400, 'corps invalide');
+  if (!okId(body.id)) throw httpError(400, 'id invalide');
+  const pseudo = typeof body.pseudo === 'string' ? body.pseudo.trim() : '';
+  if (!pseudo || pseudo.length > 40) throw httpError(400, 'pseudo invalide');
+  if (typeof body.at !== 'number' || !Number.isFinite(body.at)) throw httpError(400, 'date invalide');
+  const entries = (key, max, withCount) => {
+    const v = body[key];
+    if (!Array.isArray(v)) throw httpError(400, key + ' doit être une liste');
+    if (v.length > max) throw httpError(413, 'trop d’entrées dans ' + key);
+    return v.map(e => {
+      if (!Array.isArray(e) || !okId(e[0]) || typeof e[1] !== 'string' || e[1].length > 200) throw httpError(400, 'entrée invalide dans ' + key);
+      const r = e[2] == null || e[2] === '?' ? null : rarity(e[2]);
+      if (e[2] != null && e[2] !== '?' && !r) throw httpError(400, 'rareté invalide dans ' + key);
+      if (!withCount) return [e[0], e[1], r];
+      if (!Number.isInteger(e[3]) || e[3] < 1 || e[3] > 9999) throw httpError(400, 'nombre d’exemplaires invalide');
+      return [e[0], e[1], r, e[3]];
+    });
+  };
+  return { id: body.id, pseudo, at: Math.round(body.at), cards: entries('cards', LIMITS.profileCards, true), wish: entries('wish', LIMITS.profileWish, false) };
+}
+
+module.exports = { parsePush, parseIds, parseProfile, httpError, okId, LIMITS };

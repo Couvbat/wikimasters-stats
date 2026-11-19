@@ -12,7 +12,9 @@ Toutes les ventes reçues, sans limite de durée :
 - les dernières offres vues ;
 - les ventes et achats des membres.
 
-Pour chaque vente, il garde aussi le pseudo du membre qui l'a envoyée. Il ne reçoit jamais la collection d'un membre, ni ses souhaits, ni rien de son compte.
+Pour chaque vente, il garde aussi le pseudo du membre qui l'a envoyée.
+
+Il reçoit la collection et la liste de souhaits d'un membre **seulement s'il coche** « Partager ma collection et mes souhaits avec le groupe » dans les Réglages du script. Elles sont alors visibles par tous les membres qui ont la clé, dans leur onglet Amis. Décocher la case les retire du pool. Il ne reçoit jamais rien d'autre du compte.
 
 ## En attendant le NAS : le pool sur ton PC (temporaire)
 
@@ -81,7 +83,7 @@ Dans TrueNAS : Apps → Discover Apps → menu ⋮ → **Install via YAML**.
 
 ### 6. Vérifier
 
-Ouvre `https://pool.<ton domaine>/v1/health`. Tu dois voir `{"ok":true,"version":"1.1.0"}`.
+Ouvre `https://pool.<ton domaine>/v1/health`. Tu dois voir `{"ok":true,"version":"1.2.0"}`.
 
 ### 7. Sauvegardes
 
@@ -120,5 +122,8 @@ Le script de chacun continue normalement avec ses propres données. Les envois a
 | `POST /v1/push` | envoi de prix (historique Pro, ventes, invendus) |
 | `POST /v1/pull` | prix de 500 cartes au plus |
 | `POST /v1/known` | parmi 1000 enchères au plus, celles dont le prix final est déjà connu |
+| `POST /v1/profile` | dépôt du profil d'un membre qui partage : collection (20 000 cartes au plus) et souhaits (5 000 au plus) |
+| `GET /v1/profiles` | les profils de tous les membres qui partagent |
+| `POST /v1/profile/remove` | retrait d'un profil |
 
 Toutes, sauf `health`, demandent l'en-tête `x-group-key`. Limite : 120 requêtes par minute et par membre.
