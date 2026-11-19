@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS pro_fetch (card TEXT PRIMARY KEY, at INTEGER NOT NULL
 -- croissant (compteur « rev » de meta) : la synchro reprend après la dernière révision envoyée, sans rien sauter.
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS unsold_queue (auction TEXT PRIMARY KEY, rev INTEGER NOT NULL DEFAULT 0);
+-- Profils des membres qui partagent leur collection et leurs souhaits (amis par le pool). Un par compte WikiMasters.
+CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, pseudo TEXT NOT NULL, at INTEGER NOT NULL, cards TEXT NOT NULL, wish TEXT NOT NULL, received_at INTEGER NOT NULL);
 `;
 // Une base créée par une version précédente : on ajoute les révisions, dans l'ordre d'arrivée des lignes.
 function migrate(db) {
@@ -149,14 +151,30 @@ function knownAuctions(db, ids) {
 
 function poolStats(db) {
   const r = db.prepare('SELECT COUNT(*) AS sales, COUNT(DISTINCT card) AS cards, COUNT(DISTINCT member) AS members, MAX(received_at) AS lastPushAt FROM sales').get();
-  return { sales: Number(r.sales), cards: Number(r.cards), members: Number(r.members), lastPushAt: r.lastPushAt == null ? 0 : Number(r.lastPushAt) };
+  const profiles = Number(db.prepare('SELECT COUNT(*) AS n FROM profiles').get().n);
+  return { sales: Number(r.sales), cards: Number(r.cards), members: Number(r.members), lastPushAt: r.lastPushAt == null ? 0 : Number(r.lastPushAt), profiles };
 }
 
 // Retire tout ce qu'un membre a envoyé (données fausses, membre parti). Renvoie le nombre de ventes supprimées.
 function purgeMember(db, member) {
   const n = Number(db.prepare('DELETE FROM sales WHERE member = ?').run(member).changes);
   db.prepare('DELETE FROM pro_fetch WHERE member = ?').run(member);
+  db.prepare('DELETE FROM profiles WHERE pseudo = ?').run(member);
   return n;
+}
+
+// Profils (amis par le pool) : le dernier envoyé par chaque compte remplace le précédent.
+function putProfile(db, p, now) {
+  db.prepare('INSERT INTO profiles (id, pseudo, at, cards, wish, received_at) VALUES (?, ?, ?, ?, ?, ?) ' +
+    'ON CONFLICT(id) DO UPDATE SET pseudo = excluded.pseudo, at = excluded.at, cards = excluded.cards, wish = excluded.wish, received_at = excluded.received_at')
+    .run(p.id, p.pseudo, p.at, JSON.stringify(p.cards), JSON.stringify(p.wish), now);
+}
+function listProfiles(db) {
+  return { profiles: db.prepare('SELECT id, pseudo, at, cards, wish FROM profiles ORDER BY pseudo').all()
+    .map(r => ({ id: r.id, pseudo: r.pseudo, at: Number(r.at), cards: JSON.parse(r.cards), wish: JSON.parse(r.wish) })) };
+}
+function removeProfile(db, id) {
+  return Number(db.prepare('DELETE FROM profiles WHERE id = ?').run(id).changes) > 0;
 }
 
 function getMeta(db, k) {
@@ -167,4 +185,4 @@ function setMeta(db, k, v) {
   db.prepare('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(k, String(v));
 }
 
-module.exports = { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember, getMeta, setMeta };
+module.exports = { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember, putProfile, listProfiles, removeProfile, getMeta, setMeta };

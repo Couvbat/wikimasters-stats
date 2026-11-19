@@ -36,7 +36,7 @@ test('health répond sans clé', async () => {
   const r = await req('GET', '/v1/health');
   assert.equal(r.status, 200);
   assert.deepEqual(r.json, { ok: true, version: VERSION });
-  assert.equal(VERSION, '1.1.0');
+  assert.equal(VERSION, '1.2.0');
 });
 
 test('push : sans clé ou mauvaise clé, 401 ; bonne clé, 200', async () => {
@@ -90,4 +90,29 @@ test('limite de débit par adresse du membre (CF-Connecting-IP)', async () => {
 
 test('refus de démarrer avec une clé trop courte', async () => {
   await assert.rejects(() => start({ dbPath: ':memory:', port: 0, groupKey: 'court', allowedOrigins: [ORIGIN] }), /24/);
+});
+
+// ----- Profils (amis par le pool) -----
+test('profils par HTTP : dépôt, lecture, retrait', async () => {
+  const auth = { 'x-group-key': KEY };
+  const body = { id: 'U2', pseudo: 'Paul', at: Date.now(), cards: [['C1', 'Titre', 'L', 2]], wish: [['W1', 'Souhait', 'UR']] };
+  assert.equal((await req('POST', '/v1/profile', { body, headers: auth })).status, 200);
+  const got = await req('GET', '/v1/profiles', { headers: auth });
+  assert.equal(got.status, 200);
+  const p = got.json.profiles.find(x => x.id === 'U2');
+  assert.deepEqual(p.cards, [['C1', 'Titre', 'L', 2]]);
+  assert.equal((await req('POST', '/v1/profile/remove', { body: { id: 'U2' }, headers: auth })).status, 200);
+  assert.ok(!(await req('GET', '/v1/profiles', { headers: auth })).json.profiles.some(x => x.id === 'U2'));
+});
+
+test('profils par HTTP : sans clé 401, mal formé 400', async () => {
+  assert.equal((await req('GET', '/v1/profiles')).status, 401);
+  const auth = { 'x-group-key': KEY };
+  const bad = { id: 'U5', pseudo: 'Zoé', at: Date.now(), cards: [['C1', 'Titre', 'zz', 1]], wish: [] };
+  assert.equal((await req('POST', '/v1/profile', { body: bad, headers: auth })).status, 400);
+  assert.ok(!(await req('GET', '/v1/profiles', { headers: auth })).json.profiles.some(x => x.id === 'U5'));
+});
+
+test('health : version 1.2.0', async () => {
+  assert.equal((await req('GET', '/v1/health')).json.version, '1.2.0');
 });

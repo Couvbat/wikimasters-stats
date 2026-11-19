@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.25.0
+// @version      1.26.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -39,7 +39,7 @@
       auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
-      pool: { url: '', key: '', on: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
+      pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
     };
   }
   // Réglages de ce que le script ajoute aux pages du site (onglet Réglages). Valeur par défaut si jamais touché.
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.25.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.26.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -441,7 +441,7 @@
     db.collectionAt = Date.now();
     saveDb();
     // Un chargement complet donne une photo fiable du jour ; une page isolée, non.
-    if (replace) { db.collectionFullAt = Date.now(); saveDb(); resetPrices(); snapshot(buildRows()); poolPullMine(true); }
+    if (replace) { db.collectionFullAt = Date.now(); saveDb(); resetPrices(); snapshot(buildRows()); poolSendProfile(); poolPullMine(true); }
     refresh();
   }
 
@@ -453,6 +453,7 @@
     db.wishAt = Date.now();
     saveDb();
     refresh();
+    if (replace) poolSendProfile();
     poolPullMine(!!replace);
   }
 
@@ -997,6 +998,118 @@
   }
   const poolNote = e => { db.pool.err = (e && e.message) || 'pool injoignable'; saveDb(); };
   // Ta collection et tes souhaits, au plus toutes les 6 h (ou tout de suite si on force).
+  // ---------- amis par le pool ----------
+  // Le profil du compte connecté : sa collection et sa liste de souhaits, au format du fichier ami, sans les prix (déjà dans le pool).
+  // null sans compte reconnu ou sans pseudo.
+  function profileBody() {
+    const pseudo = (db.me || '').trim().slice(0, 40);
+    if (!okKey(db.userId) || !pseudo) return null;
+    const mine = myCards();
+    return {
+      id: db.userId, pseudo, at: Date.now(),
+      cards: Object.keys(mine).map(id => [id, String(mine[id].title || '?').slice(0, 200), rarOk(mine[id].rarity) ? mine[id].rarity : null,
+        Math.max(1, Math.min(9999, num(mine[id].count) || 1))]),
+      wish: Object.entries(db.wish).map(([id, w]) => [id, String(w[0] || '?').slice(0, 200), rarOk(w[1]) ? w[1] : null])
+    };
+  }
+  // Publications et retraits passent l'un après l'autre : un retrait ne part jamais avant une publication déjà lancée.
+  let profileOps = Promise.resolve();
+  const queueProfile = f => { const run = profileOps.then(f); profileOps = run.catch(() => {}); return run; };
+  // db.pool.published : les comptes de ce navigateur qui ont un profil dans le pool (la case vaut pour tous).
+  function markPublished(id, on) {
+    const p = Object.assign({}, isObj(db.pool.published) ? db.pool.published : {});
+    if (on) p[id] = 1; else delete p[id];
+    db.pool.published = p;
+    saveDb();
+  }
+  // Publie le profil, si la case « Partager ma collection et mes souhaits avec le groupe » est cochée. Ne lève jamais d'erreur.
+  function poolSendProfile() {
+    return queueProfile(async () => {
+      if (!poolOn() || !db.pool.share) return false;
+      const body = profileBody();
+      if (!body) return false;
+      try { await poolFetch('/v1/profile', body); markPublished(body.id, true); return true; } catch (e) { poolNote(e); return false; }
+    });
+  }
+  // Retire du pool les profils de tous les comptes qui en ont publié un, et celui du compte connecté.
+  // Il suffit de l'adresse et de la clé : la case des prix peut être décochée.
+  function poolRemoveProfile() {
+    return queueProfile(async () => {
+      if (!poolUrlOk(db.pool.url || '') || !db.pool.key) return;
+      const ids = new Set(Object.keys(isObj(db.pool.published) ? db.pool.published : {}));
+      if (okKey(db.userId)) ids.add(db.userId);
+      for (const id of ids) {
+        try { await poolFetch('/v1/profile/remove', { id }); markPublished(id, false); } catch (e) { poolNote(e); }
+      }
+    });
+  }
+  // Message passager sous les réglages du pool.
+  function poolSay(text) {
+    if (ui.el.poolInfo) ui.el.poolInfo.textContent = text;
+    poolUi.testing = true;
+    setTimeout(() => { poolUi.testing = false; }, 8000);
+  }
+  // La case : cochée, le profil part (il faut un pseudo) et ceux des autres arrivent ; décochée, le profil est retiré du pool.
+  async function setProfileShare(on) {
+    if (on && !(db.me || '').trim()) {
+      db.pool.share = false;
+      saveDb();
+      poolSay('Écris d’abord ton pseudo dans l’onglet Amis.');
+      return;
+    }
+    db.pool.share = !!on;
+    saveDb();
+    if (on) {
+      await poolSendProfile();
+      if (typeof poolPullProfiles === 'function') await poolPullProfiles();
+    } else {
+      await poolRemoveProfile();
+    }
+    syncButtons();
+  }
+  // Les profils reçus deviennent des amis (src: 'pool'), au format des fichiers ami. Ceux du pool sont reconstruits à chaque fois :
+  // un membre parti disparaît, un pseudo changé change de nom. Le compte connecté n'est pas un ami de lui-même.
+  // Deux membres au même pseudo : « Paul », « Paul (2) ». Un ami venu d'un fichier plus récent n'est pas remplacé.
+  function applyProfiles(profiles) {
+    const list = (Array.isArray(profiles) ? profiles : [])
+      .filter(p => p && okKey(p.id) && p.id !== db.userId && typeof p.pseudo === 'string')
+      .sort((a, b) => a.pseudo.localeCompare(b.pseudo) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const n of Object.keys(db.friends)) if (db.friends[n] && db.friends[n].src === 'pool') delete db.friends[n];
+    const used = new Set();
+    for (const p of list) {
+      let base = p.pseudo.trim().slice(0, 40) || 'ami';
+      if (BAD_KEYS.has(base)) base = 'ami';
+      let name = base;
+      for (let k = 2; used.has(name); k++) name = base + ' (' + k + ')';
+      used.add(name);
+      const cur = db.friends[name];
+      if (cur && num(cur.at) > num(p.at)) continue;
+      const cards = {}, wish = {};
+      for (const c of (Array.isArray(p.cards) ? p.cards : []).slice(0, 20000)) {
+        if (!Array.isArray(c) || !okKey(c[0]) || typeof c[1] !== 'string') continue;
+        const n = Math.max(1, Math.min(9999, Math.floor(Number(c[3]) || 1)));
+        cards[c[0]] = [c[1].slice(0, 200), rarOf(c[2]), (cards[c[0]] ? cards[c[0]][2] : 0) + n];
+      }
+      for (const c of (Array.isArray(p.wish) ? p.wish : []).slice(0, 5000)) {
+        if (Array.isArray(c) && okKey(c[0]) && typeof c[1] === 'string') wish[c[0]] = [c[1].slice(0, 200), rarOf(c[2])];
+      }
+      db.friends[name] = { at: num(p.at), cards, wish, src: 'pool', id: p.id };
+    }
+    saveDb();
+    refresh();
+  }
+  // Lit les profils des membres qui partagent. Un pool pas encore à jour (sans profils, 404) n'est pas une erreur.
+  async function poolPullProfiles() {
+    if (!poolOn()) return 0;
+    try {
+      const j = await poolFetch('/v1/profiles');
+      applyProfiles(j && j.profiles);
+      return Object.values(db.friends).filter(f => f && f.src === 'pool').length;
+    } catch (e) {
+      if (e && e.status !== 404) poolNote(e);
+      return 0;
+    }
+  }
   async function poolPullMine(force) {
     if (!poolOn()) return;
     const now = Date.now();
@@ -1005,6 +1118,9 @@
     const ids = new Set(Object.keys(db.wish));
     for (const c of Object.values(db.cards)) if (c && okKey(c.cardId)) ids.add(c.cardId);
     try { if (await poolPull([...ids])) refresh(); } catch (e) { poolNote(e); }
+    // La case vaut pour tous les comptes du navigateur : décochée depuis un autre compte, le profil publié par celui-ci est retiré ici.
+    if (!db.pool.share && isObj(db.pool.published) && Object.keys(db.pool.published).length) await poolRemoveProfile();
+    await poolPullProfiles();
   }
   // Cartes affichées par le site sans aucun prix connu : regroupées pendant 2 s, chacune demandée une seule fois par visite.
   const poolWanted = { queue: new Set(), asked: new Set(), timer: 0 };
@@ -2373,7 +2489,7 @@
     try {
       if (file.size > 2e7) throw new Error('fichier trop gros');
       const f = parseFriend(await file.text());
-      if (!db.friends[f.pseudo] && Object.keys(db.friends).length >= 10) throw new Error('10 amis au maximum, retire-en un');
+      if (!db.friends[f.pseudo] && Object.values(db.friends).filter(x => x && x.src !== 'pool').length >= 10) throw new Error('10 amis au maximum, retire-en un');
       db.friends[f.pseudo] = { at: f.at, cards: f.cards, wish: f.wish };
       ui.friend = f.pseudo;
       const prices = mergeObserved(f.seen);
@@ -2881,7 +2997,9 @@
           rarSelect(ev => { ui.frRarity = ev.target.value; renderFriends(); }),
           chk('Cartes en un seul exemplaire', 'Décochée, l’échange proposé ne contient que des doublons : personne ne perd une carte. Cochée, il peut aussi contenir des cartes que l’un de vous n’a qu’en un exemplaire.',
             !!ui.frSingles, ev => { ui.frSingles = ev.target.checked; renderFriends(); }),
-          btn('Retirer cet ami', 'Oublie le fichier de cet ami.', () => { if (ui.friend) { delete db.friends[ui.friend]; ui.friend = ''; saveDb(); refresh(); } }))),
+          (e.frRemove = btn('Retirer cet ami', 'Oublie le fichier de cet ami.', () => {
+            if (ui.friend && !(db.friends[ui.friend] && db.friends[ui.friend].src === 'pool')) { delete db.friends[ui.friend]; ui.friend = ''; saveDb(); refresh(); }
+          })))),
       e.frStatus, e.frBody);
 
     // ----- Mes ventes -----
@@ -2995,6 +3113,9 @@
             'data-tip': 'La clé du groupe. Ne la donne qu’aux membres.',
             oninput: ev => { db.pool.key = ev.target.value.trim().slice(0, 200); saveDb(); syncButtons(); } }),
           btn('Tester', 'Vérifie l’adresse et la clé, et affiche ce que contient le pool.', poolTest),
+          chk('Partager ma collection et mes souhaits avec le groupe', 'Seulement ta collection et ta liste de souhaits, rien d’autre de ton compte. ' +
+            'Tous les membres qui ont la clé les voient dans leur onglet Amis, et tu vois ceux qui partagent. Il faut un pseudo (onglet Amis). Décocher retire ton profil du pool.',
+            !!db.pool.share, ev => { const el = ev.target; setProfileShare(el.checked).then(() => { el.checked = !!db.pool.share; }); }),
           chk('Partager et recevoir les prix', 'Envoie les prix que tu relèves, y compris ceux déjà accumulés, et reçoit ceux du groupe pour ta collection, tes souhaits et les cartes affichées.',
             !!db.pool.on, ev => { db.pool.on = ev.target.checked; if (poolOn()) { poolBackfill(); poolPullMine(true); } saveDb(); syncButtons(); }),
           (e.poolInfo = h('span', { class: 'sub' }, poolLine()))),
@@ -4130,12 +4251,18 @@
     const names = Object.keys(db.friends).sort();
     if (!names.includes(ui.friend)) ui.friend = names[0] || '';
     e.frSelect.replaceChildren(...(names.length
-      ? names.map(n => h('option', { value: n, selected: n === ui.friend }, n))
+      ? names.map(n => h('option', { value: n, selected: n === ui.friend }, n + (db.friends[n].src === 'pool' ? ' (via le pool)' : '')))
       : [h('option', { value: '' }, 'aucun ami importé')]));
     const f = db.friends[ui.friend];
+    if (e.frRemove) {
+      const viaPool = !!(f && f.src === 'pool');
+      e.frRemove.disabled = viaPool;
+      e.frRemove.dataset.tip = viaPool ? 'Il partage sa collection par le pool : il réapparaîtrait.' : 'Oublie le fichier de cet ami.';
+    }
     if (!f) {
       e.frBody.replaceChildren(h('div', { class: 'empty' },
-        'Exporte ta collection et envoie le fichier à un ami. Quand il t’envoie le sien, importe-le ici pour voir qui a quoi.'));
+        'Exporte ta collection et envoie le fichier à un ami. Quand il t’envoie le sien, importe-le ici pour voir qui a quoi. ' +
+        'Avec le pool du groupe, c’est automatique : coche « Partager ma collection et mes souhaits avec le groupe » dans les Réglages.'));
       return;
     }
     const mine = myCards();

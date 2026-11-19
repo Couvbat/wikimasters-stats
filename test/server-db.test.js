@@ -3,8 +3,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember } = require('../server/db');
-const { parsePush } = require('../server/validate');
+const { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember, putProfile, listProfiles, removeProfile } = require('../server/db');
+const { parsePush, parseProfile } = require('../server/validate');
 
 const now = Date.parse('2026-11-16T12:00:00Z');
 const T = '2026-11-15T10:00:00.000Z', T2 = '2026-11-15T10:05:00.000Z', T3 = '2026-11-14T09:00:00.000Z';
@@ -124,4 +124,41 @@ test('une vente Pro sans rareté prend celle de l’entrée', () => {
   const db = openDb(':memory:');
   push(db, { member: 'A', pro: [['C1', now - 10, [[50, T]], 'SR']] });
   assert.deepEqual(pullCards(db, ['C1']).cards.C1.pro.sales, [[50, T, 'SR']]);
+});
+
+// ----- Profils (amis par le pool) -----
+const prof = (id, pseudo, cards = [['C1', 'Titre', 'L', 2]], wish = [['W1', 'Souhait', 'UR']]) => ({ id, pseudo, at: now - 1000, cards, wish });
+
+test('profils : dépôt, lecture, remplacement, retrait', () => {
+  const db = openDb(':memory:');
+  putProfile(db, parseProfile(prof('U2', 'Paul')), now);
+  putProfile(db, parseProfile(prof('U3', 'Marie')), now);
+  assert.equal(listProfiles(db).profiles.length, 2);
+  putProfile(db, parseProfile(prof('U2', 'Paulo', [['C9', 'Autre', 'R', 1]])), now);
+  const p2 = listProfiles(db).profiles.find(p => p.id === 'U2');
+  assert.equal(p2.pseudo, 'Paulo');
+  assert.deepEqual(p2.cards, [['C9', 'Autre', 'R', 1]]);
+  assert.deepEqual(p2.wish, [['W1', 'Souhait', 'UR']]);
+  assert.equal(removeProfile(db, 'U2'), true);
+  assert.equal(listProfiles(db).profiles.length, 1);
+  assert.equal(removeProfile(db, 'U2'), false);
+});
+
+test('purge retire aussi le profil du membre, et stats compte les profils', () => {
+  const db = openDb(':memory:');
+  putProfile(db, parseProfile(prof('U2', 'Paul')), now);
+  assert.equal(poolStats(db).profiles, 1);
+  purgeMember(db, 'Paul');
+  assert.equal(listProfiles(db).profiles.length, 0);
+  assert.equal(poolStats(db).profiles, 0);
+});
+
+test('parseProfile refuse ce qui ne va pas', () => {
+  const status = body => { try { parseProfile(body); return 200; } catch (e) { return e.status; } };
+  assert.equal(status(prof('U2', 'Paul')), 200);
+  assert.equal(status(prof('U2', 'Paul', Array.from({ length: 20001 }, (_, i) => ['C' + i, 'T', 'C', 1]))), 413);
+  assert.equal(status(prof('U2', 'Paul', [['C1', 'T', 'zz', 1]])), 400);
+  assert.equal(status(prof('U2', 'Paul', [['C1', 'T', 'L', 0]])), 400);
+  assert.equal(status(prof('U2', '')), 400);
+  assert.equal(status(prof('__proto__', 'Paul')), 400);
 });
