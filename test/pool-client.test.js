@@ -225,8 +225,9 @@ test('poolPullMine : au plus toutes les 6 h, sauf si on force', async () => {
   await t.poolPullMine();
   assert.equal(calls.length, 0);
   await t.poolPullMine(true);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].body.cards.sort(), ['C1', 'W1']);
+  const pulls = calls.filter(c => c.path === '/v1/pull'); // les profils des amis sont lus en même temps (1.26)
+  assert.equal(pulls.length, 1);
+  assert.deepEqual(pulls[0].body.cards.sort(), ['C1', 'W1']);
 });
 
 test('la clé du groupe n’est ni dans la sauvegarde ni dans le fichier ami', () => {

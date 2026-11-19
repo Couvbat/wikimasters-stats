@@ -89,3 +89,75 @@ test('pool injoignable : pas de plantage, erreur notée', async () => {
   assert.equal(await t.poolSendProfile(), false);
   assert.ok(t.db.pool.err);
 });
+
+// ----- Tâche 3 : recevoir les profils des autres -----
+const profile = (id, pseudo, at = 1000) => ({ id, pseudo, at, cards: [['C1', 'Titre', 'L', 2]], wish: [['W1', 'Souhait', 'UR']] });
+
+test('profils reçus : amis du pool, au format des fichiers', () => {
+  const { t } = setup();
+  t.applyProfiles([profile('U2', 'Paul'), profile('U3', 'Marie')]);
+  assert.deepEqual(plain(t.db.friends.Paul), { at: 1000, cards: { C1: ['Titre', 'L', 2] }, wish: { W1: ['Souhait', 'UR'] }, src: 'pool', id: 'U2' });
+  assert.equal(t.db.friends.Marie.id, 'U3');
+});
+
+test('le compte connecté est exclu, l’autre compte du joueur apparaît', () => {
+  const { t } = setup();
+  t.applyProfiles([profile('U1', 'Jules'), profile('U9', 'Jules')]);
+  assert.deepEqual(Object.keys(t.db.friends), ['Jules']);
+  assert.equal(t.db.friends.Jules.id, 'U9');
+});
+
+test('deux membres au même pseudo', () => {
+  const { t } = setup();
+  t.applyProfiles([profile('U4', 'Paul'), profile('U2', 'Paul')]);
+  assert.equal(t.db.friends.Paul.id, 'U2');
+  assert.equal(t.db.friends['Paul (2)'].id, 'U4');
+});
+
+test('membre parti : retiré ; ami venu d’un fichier : gardé', () => {
+  const { t } = setup();
+  t.applyProfiles([profile('U2', 'Paul')]);
+  t.db.friends['Zoé'] = { at: 5, cards: {}, wish: {} };
+  t.applyProfiles([]);
+  assert.deepEqual(Object.keys(t.db.friends), ['Zoé']);
+});
+
+test('fichier plus récent : pas écrasé', () => {
+  const { t } = setup();
+  t.db.friends['Zoé'] = { at: 2000, cards: { X: ['Fichier', 'C', 1] }, wish: {} };
+  t.applyProfiles([profile('U5', 'Zoé', 1000)]);
+  assert.equal(t.db.friends['Zoé'].src, undefined, 'le fichier reste');
+  t.applyProfiles([profile('U5', 'Zoé', 3000)]);
+  assert.equal(t.db.friends['Zoé'].src, 'pool');
+});
+
+test('pseudo changé : l’ancien nom disparaît', () => {
+  const { t } = setup();
+  t.applyProfiles([profile('U2', 'Paul')]);
+  t.applyProfiles([profile('U2', 'Paulo')]);
+  assert.deepEqual(Object.keys(t.db.friends), ['Paulo']);
+});
+
+test('poolPullMine lit aussi les profils', async () => {
+  const { t, sent } = setup({ profiles: [profile('U2', 'Paul')] });
+  await t.poolPullMine(true);
+  assert.equal(sent('/v1/profiles').length, 1);
+  assert.equal(t.db.friends.Paul.src, 'pool');
+});
+
+test('serveur pas encore à jour (404 sur les profils) : pas d’erreur affichée', async () => {
+  const { t } = setup();
+  const env = load({ fast: true, fetch: async url => (url.startsWith(POOL) ? reply({ error: 'route inconnue' }, url.endsWith('/v1/profiles') ? 404 : 200) : reply({})) });
+  Object.assign(env.t.db.pool, { url: POOL, key: KEY, on: true });
+  assert.equal(await env.t.poolPullProfiles(), 0);
+  assert.equal(env.t.db.pool.err, '');
+  assert.ok(t);
+});
+
+test('les amis du pool ne comptent pas dans la limite de 10', async () => {
+  const { t } = setup();
+  t.applyProfiles(Array.from({ length: 10 }, (_, i) => profile('P' + i, 'Membre ' + i)));
+  const file = JSON.stringify({ wmstats: 1, pseudo: 'Zoé', at: 1, cards: [['C1', 'T', 'L', 1]], wish: [] });
+  await t.importFriend({ size: file.length, text: async () => file });
+  assert.ok(t.db.friends['Zoé'], 'le fichier est importé malgré 10 amis du pool');
+});
