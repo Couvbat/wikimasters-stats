@@ -156,6 +156,10 @@ Une courbe de la valeur totale, du nombre de cartes ou du nombre de cartes déj�
 
 ### Amis
 
+**Avec le pool du groupe, c'est automatique.** Dans Réglages, groupe « Pool partagé du groupe », coche « Partager ma collection et mes souhaits avec le groupe » (il faut un pseudo, à écrire dans l'onglet Amis). Ta collection et ta liste de souhaits partent au pool après chaque relecture, et tu retrouves dans l'onglet Amis, marqués « via le pool », tous les membres qui ont coché la case. Seules ta collection et ta liste de souhaits partent, pas tes prix (ils passent déjà par le pool) ni rien d'autre de ton compte. Tous les membres qui ont la clé les voient. Décocher la case retire ton profil du pool. Un ami du pool ne compte pas dans la limite de 10, et un membre qui ne partage plus disparaît de la liste.
+
+**Sans le pool, par fichier :**
+
 1. Écris ton pseudo et clique sur « Exporter ma collection pour mes amis ».
 2. Envoie le fichier à un ami, et demande-lui le sien.
 3. Importe son fichier : tu vois ce qu'il a et que tu n'as pas, ce que tu as et qu'il n'a pas, avec les doublons en tête.

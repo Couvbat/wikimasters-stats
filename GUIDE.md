@@ -84,6 +84,7 @@ C'est le pool du groupe, sur le NAS de Jules.
 2. Colle l'**adresse** dans la première case, et la **clé** dans la seconde.
 3. Clique **« Tester »**.
 4. Coche **« Partager et recevoir les prix »**.
+5. Si tu veux, coche aussi **« Partager ma collection et mes souhaits avec le groupe »**. Le groupe voit alors ta collection dans son onglet **Amis**, et tu vois celle des autres qui l'ont cochée, sans échanger de fichiers. Il faut d'abord écrire ton **pseudo** dans l'onglet Amis.
 
 ✅ **Tu dois voir**, après « Tester », un message du genre « Connecté : 1 234 ventes, 567 cartes, 4 membres ».
 
