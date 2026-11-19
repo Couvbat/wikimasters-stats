@@ -39,7 +39,7 @@
       auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
-      pool: { url: '', key: '', on: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
+      pool: { url: '', key: '', on: false, share: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
     };
   }
   // Réglages de ce que le script ajoute aux pages du site (onglet Réglages). Valeur par défaut si jamais touché.
@@ -441,7 +441,7 @@
     db.collectionAt = Date.now();
     saveDb();
     // Un chargement complet donne une photo fiable du jour ; une page isolée, non.
-    if (replace) { db.collectionFullAt = Date.now(); saveDb(); resetPrices(); snapshot(buildRows()); poolPullMine(true); }
+    if (replace) { db.collectionFullAt = Date.now(); saveDb(); resetPrices(); snapshot(buildRows()); poolSendProfile(); poolPullMine(true); }
     refresh();
   }
 
@@ -453,6 +453,7 @@
     db.wishAt = Date.now();
     saveDb();
     refresh();
+    if (replace) poolSendProfile();
     poolPullMine(!!replace);
   }
 
@@ -997,6 +998,54 @@
   }
   const poolNote = e => { db.pool.err = (e && e.message) || 'pool injoignable'; saveDb(); };
   // Ta collection et tes souhaits, au plus toutes les 6 h (ou tout de suite si on force).
+  // ---------- amis par le pool ----------
+  // Le profil du compte connecté : sa collection et sa liste de souhaits, au format du fichier ami, sans les prix (déjà dans le pool).
+  // null sans compte reconnu ou sans pseudo.
+  function profileBody() {
+    const pseudo = (db.me || '').trim().slice(0, 40);
+    if (!okKey(db.userId) || !pseudo) return null;
+    const mine = myCards();
+    return {
+      id: db.userId, pseudo, at: Date.now(),
+      cards: Object.keys(mine).map(id => [id, mine[id].title, rarOk(mine[id].rarity) ? mine[id].rarity : null, Math.max(1, Math.min(9999, num(mine[id].count) || 1))]),
+      wish: Object.entries(db.wish).map(([id, w]) => [id, w[0], rarOk(w[1]) ? w[1] : null])
+    };
+  }
+  // Publie le profil, si la case « Partager ma collection et mes souhaits avec le groupe » est cochée. Ne lève jamais d'erreur.
+  async function poolSendProfile() {
+    if (!poolOn() || !db.pool.share) return false;
+    const body = profileBody();
+    if (!body) return false;
+    try { await poolFetch('/v1/profile', body); return true; } catch (e) { poolNote(e); return false; }
+  }
+  async function poolRemoveProfile() {
+    if (!poolOn() || !okKey(db.userId)) return;
+    try { await poolFetch('/v1/profile/remove', { id: db.userId }); } catch (e) { poolNote(e); }
+  }
+  // Message passager sous les réglages du pool.
+  function poolSay(text) {
+    if (ui.el.poolInfo) ui.el.poolInfo.textContent = text;
+    poolUi.testing = true;
+    setTimeout(() => { poolUi.testing = false; }, 8000);
+  }
+  // La case : cochée, le profil part (il faut un pseudo) et ceux des autres arrivent ; décochée, le profil est retiré du pool.
+  async function setProfileShare(on) {
+    if (on && !(db.me || '').trim()) {
+      db.pool.share = false;
+      saveDb();
+      poolSay('Écris d’abord ton pseudo dans l’onglet Amis.');
+      return;
+    }
+    db.pool.share = !!on;
+    saveDb();
+    if (on) {
+      await poolSendProfile();
+      if (typeof poolPullProfiles === 'function') await poolPullProfiles();
+    } else {
+      await poolRemoveProfile();
+    }
+    syncButtons();
+  }
   async function poolPullMine(force) {
     if (!poolOn()) return;
     const now = Date.now();
@@ -2995,6 +3044,9 @@
             'data-tip': 'La clé du groupe. Ne la donne qu’aux membres.',
             oninput: ev => { db.pool.key = ev.target.value.trim().slice(0, 200); saveDb(); syncButtons(); } }),
           btn('Tester', 'Vérifie l’adresse et la clé, et affiche ce que contient le pool.', poolTest),
+          chk('Partager ma collection et mes souhaits avec le groupe', 'Seulement ta collection et ta liste de souhaits, rien d’autre de ton compte. ' +
+            'Tous les membres qui ont la clé les voient dans leur onglet Amis, et tu vois ceux qui partagent. Il faut un pseudo (onglet Amis). Décocher retire ton profil du pool.',
+            !!db.pool.share, ev => { const el = ev.target; setProfileShare(el.checked).then(() => { el.checked = !!db.pool.share; }); }),
           chk('Partager et recevoir les prix', 'Envoie les prix que tu relèves, y compris ceux déjà accumulés, et reçoit ceux du groupe pour ta collection, tes souhaits et les cartes affichées.',
             !!db.pool.on, ev => { db.pool.on = ev.target.checked; if (poolOn()) { poolBackfill(); poolPullMine(true); } saveDb(); syncButtons(); }),
           (e.poolInfo = h('span', { class: 'sub' }, poolLine()))),
