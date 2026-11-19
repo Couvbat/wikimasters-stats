@@ -36,10 +36,10 @@
     return {
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
-      auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, profileSent: false, alerts: {}, wishSeen: {},
+      auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
-      pool: { url: '', key: '', on: false, share: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
+      pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
     };
   }
   // Réglages de ce que le script ajoute aux pages du site (onglet Réglages). Valeur par défaut si jamais touché.
@@ -93,7 +93,7 @@
   // Ce qui est personnel (collection, ventes, échanges, boosters, souhaits…) est rangé à part pour chaque compte, sous
   // wmstats.v1.u.<compte> ; les prix du marché et les réglages d'affichage sont communs à tous, sous wmstats.v1.
   // Tant que le compte n'est pas reconnu, sa partie personnelle est sous wmstats.v1.u._.
-  const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt', 'wishFullAt', 'profileSent',
+  const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt', 'wishFullAt',
     'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'selling', 'sellingAt', 'tagCat', 'friends', 'me', 'sell', 'wishHideOwned'];
   const PERSONAL_SET = new Set(PERSONAL);
   const acctKey = uid => KEY + '.u.' + (uid || '_');
@@ -1007,20 +1007,41 @@
     const mine = myCards();
     return {
       id: db.userId, pseudo, at: Date.now(),
-      cards: Object.keys(mine).map(id => [id, mine[id].title, rarOk(mine[id].rarity) ? mine[id].rarity : null, Math.max(1, Math.min(9999, num(mine[id].count) || 1))]),
-      wish: Object.entries(db.wish).map(([id, w]) => [id, w[0], rarOk(w[1]) ? w[1] : null])
+      cards: Object.keys(mine).map(id => [id, String(mine[id].title || '?').slice(0, 200), rarOk(mine[id].rarity) ? mine[id].rarity : null,
+        Math.max(1, Math.min(9999, num(mine[id].count) || 1))]),
+      wish: Object.entries(db.wish).map(([id, w]) => [id, String(w[0] || '?').slice(0, 200), rarOk(w[1]) ? w[1] : null])
     };
   }
-  // Publie le profil, si la case « Partager ma collection et mes souhaits avec le groupe » est cochée. Ne lève jamais d'erreur.
-  async function poolSendProfile() {
-    if (!poolOn() || !db.pool.share) return false;
-    const body = profileBody();
-    if (!body) return false;
-    try { await poolFetch('/v1/profile', body); db.profileSent = true; saveDb(); return true; } catch (e) { poolNote(e); return false; }
+  // Publications et retraits passent l'un après l'autre : un retrait ne part jamais avant une publication déjà lancée.
+  let profileOps = Promise.resolve();
+  const queueProfile = f => { const run = profileOps.then(f); profileOps = run.catch(() => {}); return run; };
+  // db.pool.published : les comptes de ce navigateur qui ont un profil dans le pool (la case vaut pour tous).
+  function markPublished(id, on) {
+    const p = Object.assign({}, isObj(db.pool.published) ? db.pool.published : {});
+    if (on) p[id] = 1; else delete p[id];
+    db.pool.published = p;
+    saveDb();
   }
-  async function poolRemoveProfile() {
-    if (!poolOn() || !okKey(db.userId)) return;
-    try { await poolFetch('/v1/profile/remove', { id: db.userId }); db.profileSent = false; saveDb(); } catch (e) { poolNote(e); }
+  // Publie le profil, si la case « Partager ma collection et mes souhaits avec le groupe » est cochée. Ne lève jamais d'erreur.
+  function poolSendProfile() {
+    return queueProfile(async () => {
+      if (!poolOn() || !db.pool.share) return false;
+      const body = profileBody();
+      if (!body) return false;
+      try { await poolFetch('/v1/profile', body); markPublished(body.id, true); return true; } catch (e) { poolNote(e); return false; }
+    });
+  }
+  // Retire du pool les profils de tous les comptes qui en ont publié un, et celui du compte connecté.
+  // Il suffit de l'adresse et de la clé : la case des prix peut être décochée.
+  function poolRemoveProfile() {
+    return queueProfile(async () => {
+      if (!poolUrlOk(db.pool.url || '') || !db.pool.key) return;
+      const ids = new Set(Object.keys(isObj(db.pool.published) ? db.pool.published : {}));
+      if (okKey(db.userId)) ids.add(db.userId);
+      for (const id of ids) {
+        try { await poolFetch('/v1/profile/remove', { id }); markPublished(id, false); } catch (e) { poolNote(e); }
+      }
+    });
   }
   // Message passager sous les réglages du pool.
   function poolSay(text) {
@@ -1060,6 +1081,7 @@
       if (BAD_KEYS.has(base)) base = 'ami';
       let name = base;
       for (let k = 2; used.has(name); k++) name = base + ' (' + k + ')';
+      used.add(name);
       const cur = db.friends[name];
       if (cur && num(cur.at) > num(p.at)) continue;
       const cards = {}, wish = {};
@@ -1072,7 +1094,6 @@
         if (Array.isArray(c) && okKey(c[0]) && typeof c[1] === 'string') wish[c[0]] = [c[1].slice(0, 200), rarOf(c[2])];
       }
       db.friends[name] = { at: num(p.at), cards, wish, src: 'pool', id: p.id };
-      used.add(name);
     }
     saveDb();
     refresh();
@@ -1098,7 +1119,7 @@
     for (const c of Object.values(db.cards)) if (c && okKey(c.cardId)) ids.add(c.cardId);
     try { if (await poolPull([...ids])) refresh(); } catch (e) { poolNote(e); }
     // La case vaut pour tous les comptes du navigateur : décochée depuis un autre compte, le profil publié par celui-ci est retiré ici.
-    if (!db.pool.share && db.profileSent) await poolRemoveProfile();
+    if (!db.pool.share && isObj(db.pool.published) && Object.keys(db.pool.published).length) await poolRemoveProfile();
     await poolPullProfiles();
   }
   // Cartes affichées par le site sans aucun prix connu : regroupées pendant 2 s, chacune demandée une seule fois par visite.

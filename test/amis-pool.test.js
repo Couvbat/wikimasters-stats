@@ -173,3 +173,72 @@ test('case décochée sur un autre compte : le profil publié par ce compte est 
   await t.poolPullMine(true);
   assert.equal(sent('/v1/profile/remove').length, 1, 'une seule fois');
 });
+
+// ----- Relecture Copilot (PR #14) -----
+const later = () => { let release; const p = new Promise(r => { release = r; }); return { p, release }; };
+
+test('décocher retire les profils de tous les comptes qui ont publié', async () => {
+  const { t, sent } = setup();
+  t.db.pool.published = { U1: 1, U9: 1 };
+  await t.setProfileShare(false);
+  assert.deepEqual(plain(sent('/v1/profile/remove').map(c => c.body.id)).sort(), ['U1', 'U9']);
+  assert.deepEqual(plain(t.db.pool.published), {});
+});
+
+test('compte changé pendant la publication : c’est le compte qui a publié qui est marqué', async () => {
+  const gate = later();
+  const env = load({ fast: true, fetch: async url => { if (url.endsWith('/v1/profile')) await gate.p; return reply({ ok: true }); } });
+  const t = env.t;
+  Object.assign(t.db.pool, { url: POOL, key: KEY, on: true, share: true });
+  t.db.userId = 'U1'; t.db.me = 'Jules';
+  const sending = t.poolSendProfile();
+  await tick();
+  t.db.userId = 'U2';
+  gate.release();
+  await sending;
+  assert.deepEqual(plain(t.db.pool.published), { U1: 1 });
+});
+
+test('prix désactivés : décocher le partage retire quand même le profil', async () => {
+  const { t, sent } = setup();
+  t.db.pool.on = false;
+  t.db.pool.published = { U1: 1 };
+  await t.setProfileShare(false);
+  assert.equal(sent('/v1/profile/remove').length, 1);
+});
+
+test('décocher pendant une publication : le retrait part après elle', async () => {
+  const gate = later();
+  let profileDone = false, removeAfter = null;
+  const env = load({ fast: true, fetch: async url => {
+    if (url.endsWith('/v1/profile')) { await gate.p; profileDone = true; }
+    if (url.endsWith('/v1/profile/remove')) removeAfter = profileDone;
+    return reply({ ok: true });
+  } });
+  const t = env.t;
+  Object.assign(t.db.pool, { url: POOL, key: KEY, on: true, share: true });
+  t.db.userId = 'U1'; t.db.me = 'Jules';
+  const sending = t.poolSendProfile();
+  await tick();
+  const unsharing = t.setProfileShare(false);
+  await tick();
+  gate.release();
+  await sending; await unsharing;
+  assert.equal(removeAfter, true, 'le retrait est envoyé une fois la publication terminée');
+  assert.deepEqual(plain(t.db.pool.published), {});
+});
+
+test('titre de plus de 200 caractères : coupé, le profil part', async () => {
+  const { t } = setup();
+  t.db.cards = { e1: { cardId: 'C1', title: 'x'.repeat(300), rarity: 'L', count: 1 } };
+  t.db.wish = {};
+  assert.equal(t.profileBody().cards[0][1].length, 200);
+});
+
+test('fichier plus récent et deux homonymes : le second reçoit bien « (2) »', () => {
+  const { t } = setup();
+  t.db.friends.Paul = { at: 2000, cards: {}, wish: {} };
+  t.applyProfiles([profile('U2', 'Paul', 1000), profile('U4', 'Paul', 1000)]);
+  assert.equal(t.db.friends.Paul.src, undefined, 'le fichier plus récent reste');
+  assert.equal(t.db.friends['Paul (2)'] && t.db.friends['Paul (2)'].id, 'U4');
+});
