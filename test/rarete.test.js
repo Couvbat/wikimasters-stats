@@ -11,16 +11,16 @@ const T = i => new Date(BASE - i * 36e5).toISOString(); // i heures avant le 15/
 const MIN = 6e4;
 
 // ----- Tâche 1 : les ventes gardent leur rareté -----
-test('ingestSales lit les 200 ventes et garde ses ventes par rareté (20 pour L)', () => {
+test('ingestSales lit les 200 ventes et garde toutes ses ventes, chacune avec sa rareté', () => {
   const { t } = load();
   const sales = [];
   for (let i = 0; i < 25; i++) sales.push({ id: 'L' + i, final_price: 13000 + i, settled_at: T(i), rarity: 'L' });
   for (let i = 0; i < 3; i++) sales.push({ id: 'U' + i, final_price: 7000 + i, settled_at: T(30 + i), rarity: 'UR' });
   t.ingestSales('C', { recent: sales.slice(0, 10), sales });
   const got = t.db.prices.C.sales;
-  assert.equal(got.filter(s => s.r === 'L').length, 20);
+  assert.equal(got.filter(s => s.r === 'L').length, 25);
   assert.equal(got.filter(s => s.r === 'UR').length, 3);
-  assert.equal(got.length, 23);
+  assert.equal(got.length, 28);
   assert.equal(got[0].p, 13000);
 });
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.26.0
+// @version      1.27.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.26.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.27.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -385,9 +385,27 @@
   const byDateDesc = (a, b) => (a.t < b.t ? 1 : a.t > b.t ? -1 : 0);
   const rarOf = r => (typeof r === 'string' && /^[A-Z]{1,3}$/.test(r) ? r : '?');
   const rarOk = r => typeof r === 'string' && /^[A-Z]{1,3}$/.test(r);
-  // Une même carte se vend à plusieurs raretés (des exemplaires de raretés différentes circulent) : chaque vente garde la sienne (r),
-  // et l'on garde les ventes les plus récentes de chaque rareté, pour que chacune ait son propre historique.
-  // 20 ventes pour les raretés qui valent le plus, 10 pour les autres, 60 au plus par carte (le pool, lui, garde tout).
+  // Une même carte se vend à plusieurs raretés (des exemplaires de raretés différentes circulent) : chaque vente garde la sienne (r).
+  // Toutes les ventes connues d'une carte sont gardées, de la plus récente à la plus ancienne, sans doublon,
+  // avec un garde-fou de 2 000 ventes par carte contre un emballement.
+  const MAX_SALES_PER_CARD = 2000;
+  const isoT = t => { const v = Date.parse(t); return Number.isFinite(v) ? new Date(v).toISOString() : String(t || ''); };
+  // Une vente est la même si elle a la même rareté, la même date (écrite d'une façon ou d'une autre) et le même prix.
+  const saleKey = s => (s.r || '') + '|' + isoT(s.t) + '|' + s.p;
+  function keepAll(list) {
+    const seen = new Map(), rated = new Set();
+    for (const s of list) if (s && s.r) rated.add(isoT(s.t) + '|' + s.p);
+    for (const s of list) {
+      if (!s) continue;
+      // Une vente sans rareté (liste « recent » du site) déjà connue avec sa rareté ne compte pas une deuxième fois.
+      if (!s.r && rated.has(isoT(s.t) + '|' + s.p)) continue;
+      const k = saleKey(s);
+      if (!seen.has(k)) seen.set(k, { s, t: isoT(s.t) });
+    }
+    return [...seen.values()].sort((a, b) => (a.t < b.t ? 1 : a.t > b.t ? -1 : 0)).slice(0, MAX_SALES_PER_CARD).map(e => e.s);
+  }
+  // Garde-fou du mode secours (localStorage plein) : les ventes les plus récentes de chaque rareté, 20 pour les raretés
+  // qui valent le plus, 10 pour les autres, 60 au plus par carte.
   const KEEP_RARE = { L: 20, UR: 20, SR: 20 };
   function keepPerRarity(list, per, max = 60) {
     const by = new Map();
@@ -482,7 +500,7 @@
       if (a[6] == null || !okKey(a[1]) || a[8]) continue;
       (mine[a[1]] = mine[a[1]] || []).push(rarOk(a[3]) ? { p: a[6], t: a[7], r: a[3] } : { p: a[6], t: a[7] });
     }
-    for (const id in mine) mine[id] = keepPerRarity(mine[id]);
+    for (const id in mine) mine[id] = keepAll(mine[id]);
     db.mySales = mine;
   }
 
@@ -491,14 +509,16 @@
     if (!j || typeof j !== 'object') return;
     // « sales » remonte jusqu'à 200 ventes, chacune avec sa rareté ; « recent » n'en donne que 10, toutes raretés confondues.
     const src = Array.isArray(j.sales) && j.sales.length ? j.sales : (Array.isArray(j.recent) ? j.recent : []);
-    const sales = keepPerRarity(src
+    const sales = keepAll(src
       .filter(s => s && typeof s.final_price === 'number')
       .map(s => (rarOk(s.rarity) ? { p: s.final_price, t: s.settled_at || '', r: s.rarity } : { p: s.final_price, t: s.settled_at || '' })));
-    // L'historique d'une carte ne disparaît pas : un retour vide vient du site. Un historique déjà relevé ici garde ses ventes,
+    // Les relevés s'additionnent : les ventes lues rejoignent celles déjà connues de la carte.
+    // L'historique d'une carte ne disparaît pas : un retour vide vient du site. Un historique déjà connu garde ses ventes,
     // et son envoi au pool, s'il attend dans la file, aussi.
     const old = db.prices[cardId];
-    if (!sales.length && isObj(old) && !old.by && Array.isArray(old.sales) && old.sales.length) old.at = Date.now();
-    else db.prices[cardId] = { at: Date.now(), sales };
+    const known = isObj(old) && Array.isArray(old.sales) ? old.sales : [];
+    if (!sales.length && known.length) old.at = Date.now();
+    else db.prices[cardId] = { at: Date.now(), sales: keepAll(sales.concat(known)) };
     if (sales.length) poolQueue('p', [cardId, rarity && rarity !== '?' ? rarity : null]);
     saveDb();
     refresh();
@@ -620,6 +640,8 @@
   const MAX_OBS = 6000;     // enchères en cours suivies
   const MAX_OBS_CARDS = 8000;
   const MAX_FINQ = 3000;    // enchères finies en attente de leur prix final
+  // Pendant une fusion en bloc (pool, fichier ami), les cartes touchées : leurs ventes sont triées et dédoublonnées une fois, à la fin.
+  let obsBatch = null;
   function addObserved(cardId, sale, rarity) {
     if (!okKey(cardId) || typeof sale.p !== 'number' || sale.p <= 0) return false;
     let list = db.obsSales[cardId] || [];
@@ -634,7 +656,7 @@
     if (sale.x) item.x = 1;
     if (rarOk(sale.r)) item.r = sale.r;
     list.push(item);
-    db.obsSales[cardId] = keepPerRarity(list);
+    if (obsBatch) { db.obsSales[cardId] = list; obsBatch.add(cardId); } else db.obsSales[cardId] = keepAll(list);
     const end = Date.parse(sale.t);
     if (rarity && rarity !== '?' && sale.g <= OBS_NEAR && Number.isFinite(end)) {
       const rl = db.obsRar[rarity] || [];
@@ -741,9 +763,16 @@
   function mergeObserved(seen) {
     if (!isObj(seen)) return 0;
     let added = 0;
-    for (const s of (Array.isArray(seen.sales) ? seen.sales : []).slice(0, 20000)) {
-      if (!Array.isArray(s) || !okKey(s[0]) || typeof s[1] !== 'number' || typeof s[2] !== 'string' || !Number.isFinite(Date.parse(s[2]))) continue;
-      if (addObserved(s[0], { p: s[1], t: s[2], g: num(s[3]), x: s[4] === 1, i: okKey(s[5]) ? s[5] : '', r: s[6] }, null)) added++;
+    obsBatch = new Set();
+    try {
+      for (const s of (Array.isArray(seen.sales) ? seen.sales : []).slice(0, 20000)) {
+        if (!Array.isArray(s) || !okKey(s[0]) || typeof s[1] !== 'number' || typeof s[2] !== 'string' || !Number.isFinite(Date.parse(s[2]))) continue;
+        if (addObserved(s[0], { p: s[1], t: s[2], g: num(s[3]), x: s[4] === 1, i: okKey(s[5]) ? s[5] : '', r: s[6] }, null)) added++;
+      }
+    } finally {
+      const touched = obsBatch;
+      obsBatch = null;
+      for (const id of touched) db.obsSales[id] = keepAll(db.obsSales[id]);
     }
     if (isObj(seen.rar)) for (const r of RARITIES) {
       const src = Array.isArray(seen.rar[r]) ? seen.rar[r].slice(0, 400) : [];
@@ -772,8 +801,9 @@
       .sort((x, y) => num(db.prices[y].at) - num(db.prices[x].at)).slice(0, MAX_PRO_SHARE)
       .map(id => { const p = db.prices[id]; return [id, num(p.at), p.sales.map(s => [s.p, s.t, s.r || null]), p.by || pseudo]; });
   }
-  // Fusionne les relevés Pro d'un ami : pour chaque carte, le relevé le plus récent gagne, comme pour une sauvegarde.
-  // Une date dans le futur est ramenée à maintenant, sinon ce prix ne serait jamais remplacé. Renvoie le nombre de relevés ajoutés.
+  // Fusionne les relevés Pro d'un ami ou du pool : pour chaque carte, les ventes s'additionnent à celles déjà connues.
+  // La date et l'auteur restent ceux du relevé le plus récent. Une date dans le futur est ramenée à maintenant,
+  // sinon ce relevé resterait toujours « le plus récent ». Renvoie le nombre de relevés qui ont apporté quelque chose.
   function mergePro(list, from) {
     if (!Array.isArray(list)) return 0;
     const now = Date.now();
@@ -781,14 +811,21 @@
     for (const e of list.slice(0, 20000)) {
       if (!Array.isArray(e) || !okKey(e[0]) || !(num(e[1]) > 0) || !Array.isArray(e[2])) continue;
       // Une vente sans date lisible ne compte pas, comme dans mergeObserved.
-      const sales = keepPerRarity(e[2].filter(s => Array.isArray(s) && num(s[0]) > 0 && typeof s[1] === 'string' && Number.isFinite(Date.parse(s[1])))
-        .slice(0, 200).map(s => (rarOk(s[2]) ? { p: s[0], t: str(s[1], 40), r: s[2] } : { p: s[0], t: str(s[1], 40) })));
+      const sales = keepAll(e[2].filter(s => Array.isArray(s) && num(s[0]) > 0 && typeof s[1] === 'string' && Number.isFinite(Date.parse(s[1])))
+        .slice(0, MAX_SALES_PER_CARD).map(s => (rarOk(s[2]) ? { p: s[0], t: str(s[1], 40), r: s[2] } : { p: s[0], t: str(s[1], 40) })));
       if (!sales.length) continue;
-      const at = Math.min(e[1], now), cur = db.prices[e[0]];
-      if (cur && num(cur.at) >= at) continue;
-      // Tes propres prix revenus par un ami ne sont pas « partagés ».
-      const by = (typeof e[3] === 'string' && e[3].trim().slice(0, 40)) || from;
-      db.prices[e[0]] = by && by !== db.me ? { at, sales, by } : { at, sales };
+      const at = Math.min(e[1], now), cur = isObj(db.prices[e[0]]) ? db.prices[e[0]] : null;
+      const curSales = cur && Array.isArray(cur.sales) ? cur.sales : [];
+      const newer = !cur || num(cur.at) < at;
+      const seen = new Set(curSales.map(saleKey));
+      const fresh = sales.filter(s => !seen.has(saleKey(s)));
+      if (!newer && !fresh.length) continue;
+      const all = keepAll(curSales.concat(fresh));
+      if (newer) {
+        // Tes propres prix revenus par un ami ne sont pas « partagés ».
+        const by = (typeof e[3] === 'string' && e[3].trim().slice(0, 40)) || from;
+        db.prices[e[0]] = by && by !== db.me ? { at, sales: all, by } : { at, sales: all };
+      } else cur.sales = all;
       added++;
     }
     if (added) resetPrices();
@@ -877,6 +914,8 @@
   const POOL_PULL_EVERY = 6 * 36e5;   // réception de la collection et des souhaits
   const POOL_QMAX = 20000;            // entrées en attente gardées au plus
   const POOL_BATCH = { p: 2000, s: 5000, u: 5000 };
+  const POOL_BATCH_BYTES = 1.5e6;     // un envoi reste sous la limite de 2 Mo du pool
+  const POOL_PRO_SALES = 200;         // ventes envoyées par relevé Pro : les plus récentes (le pool garde les plus anciennes)
   const poolUrlOk = u => /^https:\/\/[^\s/]+/.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u);
   const poolOn = () => !!(db.pool && db.pool.on && db.pool.key && poolUrlOk(db.pool.url || ''));
   // type : 'p' relevé Pro [carte, rareté] ; 's' vente [carte, prix, date, écart, exact, enchère, rareté] ; 'u' enchère finie sans vente.
@@ -927,7 +966,7 @@
     if (Array.isArray(e[2])) return e; // file d'une version précédente : l'historique y est déjà
     const p = db.prices[e[0]];
     if (!isObj(p) || p.by || !Array.isArray(p.sales) || !p.sales.length) return null;
-    return [e[0], num(p.at), p.sales.map(s => [s.p, s.t, s.r || null]), e[1] || null];
+    return [e[0], num(p.at), p.sales.slice(0, POOL_PRO_SALES).map(s => [s.p, s.t, s.r || null]), e[1] || null];
   }
   const poolState = { flushing: false };
   async function poolFlush(now) {
@@ -936,10 +975,17 @@
     poolState.flushing = true;
     const count = { p: 0, s: 0, u: 0 }, batch = [];
     const body = { member: (db.me || '').trim().slice(0, 40) || 'anonyme', pro: [], sales: [], unsold: [] };
+    // Le lot s'arrête avant 1,5 Mo de JSON : le reste part au lot suivant.
+    let size = JSON.stringify(body).length;
     for (const item of db.poolQ) {
       const k = item[0];
       if (!(k in count) || count[k] >= POOL_BATCH[k]) continue;
       const e = k === 'p' ? proEntry(item[1]) : item[1];
+      if (e) {
+        const add = JSON.stringify(e).length + 1;
+        if (size + add > POOL_BATCH_BYTES && count.p + count.s + count.u) break;
+        size += add;
+      }
       batch.push(item);
       if (!e) continue;
       count[k]++;
@@ -988,7 +1034,9 @@
         if (isObj(c.pro) && Array.isArray(c.pro.sales)) pro.push([id, num(c.pro.at), c.pro.sales, typeof c.pro.by === 'string' ? c.pro.by : '']);
         for (const s of Array.isArray(c.sales) ? c.sales : []) if (Array.isArray(s)) sales.push([id, ...s]);
       }
-      added += mergePro(pro, 'groupe') + mergeObserved({ sales });
+      added += mergePro(pro, 'groupe');
+      // 500 cartes × jusqu'à 2 000 ventes : par paquets, sous la limite de 20 000 de mergeObserved.
+      for (let k = 0; k < sales.length; k += 20000) added += mergeObserved({ sales: sales.slice(k, k + 20000) });
     }
     db.pool.recv = num(db.pool.recv) + added;
     db.pool.err = '';
@@ -1350,6 +1398,8 @@
     const ratio = recent / old;
     return ratio > 1.25 ? 1 : ratio < 0.8 ? -1 : 0;
   }
+  // Valeur récente : les ventes des 7 derniers jours, quand il y en a au moins 3.
+  const RECENT_DAYS = 7, RECENT_MIN = 3;
   let priceCache = new Map(), rarMap = null;
   function resetPrices() { priceCache = new Map(); rarMap = null; }
   // Rareté actuelle d'une carte, quand on la connaît : ta collection, tes souhaits, sinon ce que le site a affiché.
@@ -1379,7 +1429,9 @@
   function priceOf(cardId, rarity) {
     const want = rarity === undefined ? rarityOf(cardId) : (rarOk(rarity) ? rarity : '');
     const key = cardId + '|' + want;
-    if (priceCache.has(key)) return priceCache.get(key);
+    const hit = priceCache.get(key);
+    if (hit && Date.now() < hit.until) return hit.out;
+    let until = Infinity;
     const rec = db.prices[cardId];
     const sources = [['pro', rec && rec.sales], ['own', db.mySales[cardId]], ['obs', db.obsSales[cardId]]]
       .map(([kind, list]) => Object.assign({ kind }, salesFor(list, want))).filter(s => s.sales.length);
@@ -1387,13 +1439,26 @@
     let out = null;
     if (!src) out = rec && Array.isArray(rec.sales) ? { n: 0, at: rec.at } : null;
     else {
-      const sales = src.sales, own = src.kind === 'own', obs = src.kind === 'obs';
+      // Deux valeurs : depuis toujours (toutes les ventes) et récente (les 7 derniers jours). La récente compte quand elle
+      // repose sur 3 ventes au moins, sinon celle depuis toujours. Le reste (moyenne, fiabilité, tendance…) suit celle qui compte.
+      const now = Date.now();
+      const recent = src.sales.filter(s => {
+        const ts = Date.parse(s.t);
+        if (!Number.isFinite(ts) || now - ts > RECENT_DAYS * DAY) return false;
+        // Le calcul est à refaire dès que cette vente sortira des 7 jours.
+        until = Math.min(until, ts + RECENT_DAYS * DAY + 1);
+        return true;
+      });
+      const medAll = median(src.sales.map(s => s.p)), medRecent = median(recent.map(s => s.p));
+      const basis = recent.length >= RECENT_MIN ? 'recent' : 'all';
+      const sales = basis === 'recent' ? recent : src.sales, own = src.kind === 'own', obs = src.kind === 'obs';
       const v = sales.map(s => s.p);
       const at = (rec ? rec.at : 0) || (src.kind === 'pro' ? 0 : db.market.at);
       out = {
-        avg: v.reduce((a, b) => a + b, 0) / v.length, med: median(v),
+        avg: v.reduce((a, b) => a + b, 0) / v.length, med: basis === 'recent' ? medRecent : medAll,
         last: v[0], lastT: sales[0].t, min: Math.min(...v), max: Math.max(...v), n: v.length, at, own, obs,
-        rel: reliability(sales), trend: trendOf(sales), sales, mixed: src.mixed, r: want
+        rel: reliability(sales), trend: trendOf(sales), sales, mixed: src.mixed, r: want,
+        medAll, nAll: src.sales.length, medRecent, nRecent: recent.length, basis
       };
       // Un prix observé provisoire est un minimum, pas un prix final : tant qu'il en reste un, pas de « Fiable ».
       // Des prix finaux tous relus sur la page des enchères valent l'historique Pro.
@@ -1404,7 +1469,7 @@
       // Relevé Pro reçu d'un ami : son pseudo, pour le dire au survol.
       out.by = (src.kind === 'pro' && rec && rec.by) || '';
     }
-    priceCache.set(key, out);
+    priceCache.set(key, { out, until });
     return out;
   }
   // Valeur d'une carte : médiane de ses ventes, jamais moins que la défausse ; sans vente connue, la défausse.
@@ -2699,11 +2764,16 @@
   const auctionLink = (id, kids, title) => (okKey(id)
     ? h('a', { class: 'go', href: '/marketplace/' + encodeURIComponent(id), target: '_blank', rel: 'noopener', title: (title ? title + ' · ' : '') + 'Ouvrir l’annonce' }, kids, ' ↗')
     : h('span', { title: title || '' }, kids));
-  const TIP_VALUE = 'Médiane des 10 dernières ventes de la carte. En italique : aucune vente connue, la carte compte pour 1 ₩ (ce que rapporte la défausse).';
+  const TIP_VALUE = 'Médiane des ventes des 7 derniers jours quand la carte s’y est vendue au moins 3 fois à cette rareté (marque « 7 j »), ' +
+    'sinon médiane de toutes ses ventes connues. En italique : aucune vente connue, la carte compte pour 1 ₩ (ce que rapporte la défausse).';
   const TIP_REL = 'Fiable : au moins 5 ventes, la dernière de moins de 30 jours. Moyen : au moins 2 ventes de moins de 90 jours. Douteux sinon. ' +
     'Des prix très dispersés font descendre d’un cran. La flèche dit si les ventes récentes montent ou baissent ; survole le mot pour le détail.';
   const estCell = (r, v) => h('span', { class: r.est ? 'est' : '' }, fmt(v));
   const pr = (r, k) => (r.price ? r.price[k] : undefined);
+  // « 7 j » : la valeur qui compte est celle des 7 derniers jours.
+  const recentMark = p => (p && p.n && p.basis === 'recent' ? h('span', { class: 'sub' }, ' · 7 j') : '');
+  // Une médiane et le nombre de ventes sur lequel elle repose, ou « — » sans vente.
+  const medCell = (m, n) => (n ? fmt(Math.round(m)) + ' ₩ · ' + plural(n, 'vente', 'ventes') : '—');
   const COLS = [
     { k: 'title', t: 'Carte', get: r => r.title.toLowerCase(),
       cell: r => [r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title) : r.title,
@@ -2714,7 +2784,11 @@
     { k: 'def', t: 'DEF', get: r => r.def, cell: r => fmt(r.def) },
     { k: 'q', t: 'Q-Score', tip: 'Indice de qualité de l’article Wikipédia, donné par le site.', get: r => r.q, cell: r => fmt(r.q) },
     { k: 'views', t: 'Vues 30j', tip: 'Vues de l’article Wikipédia sur 30 jours. Plus il est lu, plus la carte est rare.', get: r => r.views, cell: r => fmt(r.views) },
-    { k: 'value', t: 'Valeur', tip: TIP_VALUE, price: true, get: r => r.value, cell: r => estCell(r, r.value) },
+    { k: 'value', t: 'Valeur', tip: TIP_VALUE, price: true, get: r => r.value, cell: r => [estCell(r, r.value), recentMark(r.price)] },
+    { k: 'recent', t: '7 jours', tip: 'Médiane des ventes des 7 derniers jours à cette rareté, et leur nombre.', price: true,
+      get: r => (pr(r, 'nRecent') ? r.price.medRecent : null), cell: r => medCell(pr(r, 'medRecent'), pr(r, 'nRecent')) },
+    { k: 'all', t: 'Depuis toujours', tip: 'Médiane de toutes les ventes connues à cette rareté, et leur nombre.', price: true,
+      get: r => (pr(r, 'nAll') ? r.price.medAll : null), cell: r => medCell(pr(r, 'medAll'), pr(r, 'nAll')) },
     { k: 'rel', t: 'Fiabilité', tip: TIP_REL, price: true, get: r => (pr(r, 'n') ? r.price.rel.level : null), cell: r => relCell(r.price) },
     { k: 'last', t: 'Dernière', price: true, get: r => pr(r, 'last'), cell: r => fmt(pr(r, 'last')) },
     { k: 'min', t: 'Min', price: true, get: r => pr(r, 'min'), cell: r => fmt(pr(r, 'min')) },
@@ -3713,8 +3787,13 @@
               fmt(priceForAsk(c.id, c.ask, c.price).med) + ' ₩, ' + priceForAsk(c.id, c.ask, c.price).n + ' ventes)' }, 'bonne affaire −' + dealOf(c) + ' %') : null,
             c.owned ? h('span', { class: 'tag', title: 'Cette carte est déjà dans ta collection' }, 'possédée') : null] },
         { t: 'Rareté', asc: true, get: c => rarOrder(c.rarity), cell: c => rarBadge(c.rarity) },
-        withPrices ? { t: 'Valeur médiane', tip: 'Médiane des dernières ventes de la carte : sert à juger si une annonce est une bonne affaire.', get: c => (c.price && c.price.n ? c.price.med : null),
-          cell: c => (c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') } : null,
+        withPrices ? { t: 'Valeur médiane', tip: 'Médiane des ventes des 7 derniers jours quand la carte s’y est vendue au moins 3 fois (marque « 7 j »), ' +
+          'sinon de toutes ses ventes connues : sert à juger si une annonce est une bonne affaire. Survole la valeur pour voir les deux.', get: c => (c.price && c.price.n ? c.price.med : null),
+          cell: c => (c.price && c.price.n
+            ? h('span', { title: [c.price.basis === 'recent' ? '7 derniers jours : ' + fmt(Math.round(c.price.medRecent)) + ' ₩ (' + plural(c.price.nRecent, 'vente', 'ventes') + ')'
+              : 'Depuis toujours : ' + fmt(Math.round(c.price.medAll)) + ' ₩ (' + plural(c.price.nAll, 'vente', 'ventes') + ')', otherValue(c.price)].filter(Boolean).join(' · ') },
+            fmt(c.price.med) + ' ₩', recentMark(c.price))
+            : '—') } : null,
         { t: 'En vente à', tip: 'Prix de l’annonce affichée sur la ligne. Un point = une offre a déjà été faite. Le lien ouvre l’annonce. « à vérifier » : signalée par le site, prix pas encore lu.', asc: true, get: c => (c.ask ? feat(c).a : null),
           cell: c => {
             if (!c.ask) return c.alert ? auctionLink(c.alert[4], h('span', { class: 'est' }, 'à vérifier'), 'Prix pas encore lu') : '—';
@@ -4519,6 +4598,13 @@
   // Contenu de la pastille d'une carte. au = l'annonce quand la carte est affichée sur le Marché.
   // flag : 'dim' pour une annonce trop chère à griser, 'glow' pour une bonne affaire à faire ressortir.
   const BG_DEAL = 'rgba(6,95,70,.92)', BG_BAD = 'rgba(127,29,29,.92)', BG_UP = 'rgba(30,64,175,.92)';
+  // L'autre valeur que celle qui compte : depuis toujours quand la récente compte, et inversement. '' si elle n'existe pas.
+  function otherValue(p) {
+    if (p.basis === 'recent' && p.nAll) return 'Depuis toujours : ' + fmt(Math.round(p.medAll)) + ' ₩ (' + plural(p.nAll, 'vente', 'ventes') + ')';
+    if (p.basis === 'all' && p.nRecent) return '7 derniers jours : ' + fmt(Math.round(p.medRecent)) + ' ₩ (' + plural(p.nRecent, 'vente', 'ventes') + ')';
+    return '';
+  }
+  const SPARK_MAX = 30; // ventes dessinées au plus dans la courbe de la bulle
   function badgeFor(cardId, au, mine) {
     // Une annonce se juge à la valeur de la rareté de son exemplaire.
     const p = au && rarOk(au.r) ? priceOf(cardId, au.r) : priceOf(cardId);
@@ -4533,7 +4619,9 @@
       const med = Math.max(p.med, DISCARD), mx = maxBid(p);
       text = (p.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(med)) + ' ₩';
       border = ['#6b7280', '#f59e0b', '#10b981'][p.rel.level];
-      lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + (p.mixed ? ', ventes d’autres raretés' : p.r ? ', en ' + p.r : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
+      lines.push('Valeur : ' + fmt(Math.round(med)) + ' ₩ (' + (p.basis === 'recent' ? '7 derniers jours, ' : 'depuis toujours, ') + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + (p.mixed ? ', ventes d’autres raretés' : p.r ? ', en ' + p.r : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
+      const other = otherValue(p);
+      if (other) lines.push(other);
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
         if (au.s) {
@@ -4565,7 +4653,7 @@
       }
     }
     if (have) { text += ' ✓'; lines.push('Tu l’as déjà' + (have.count > 1 ? ' (' + have.count + ' exemplaires)' : '') + '.'); }
-    return { text, border, bg, lines, flag, sales: p.n ? p.sales : null, med: p.n ? Math.max(p.med, DISCARD) : 0 };
+    return { text, border, bg, lines, flag, sales: p.n ? p.sales.slice(0, SPARK_MAX) : null, med: p.n ? Math.max(p.med, DISCARD) : 0 };
   }
   function scanCards() {
     scanTimer = 0;

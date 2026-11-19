@@ -2,7 +2,7 @@
 // avec les mêmes règles que le script (identifiants sûrs, prix entiers positifs, dates lisibles).
 'use strict';
 
-const LIMITS = { pro: 2000, sales: 5000, unsold: 5000, proSales: 50, profileCards: 20000, profileWish: 5000 };
+const LIMITS = { pro: 2000, sales: 5000, unsold: 5000, proSales: 200, profileCards: 20000, profileWish: 5000 };
 const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });

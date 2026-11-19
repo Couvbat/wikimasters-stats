@@ -83,7 +83,7 @@ Dans TrueNAS : Apps → Discover Apps → menu ⋮ → **Install via YAML**.
 
 ### 6. Vérifier
 
-Ouvre `https://pool.<ton domaine>/v1/health`. Tu dois voir `{"ok":true,"version":"1.2.0"}`.
+Ouvre `https://pool.<ton domaine>/v1/health`. Tu dois voir `{"ok":true,"version":"1.3.0"}`.
 
 ### 7. Sauvegardes
 
