@@ -188,3 +188,45 @@ test('deux appels simultanés : une seule série de requêtes ; sans force, pas 
   await env.t.poolFeed();
   assert.equal(env.calls.length, 1);
 });
+
+// ----- Tâche 6 : branchement -----
+test('poolTick lance un passage toutes les 15 min, et aussi quand la date du dernier est dans le futur', async () => {
+  const env = await feedLoad(many(3));
+  const { t, calls } = env;
+  await t.poolTick(Date.now());
+  assert.equal(calls.length, 1);
+  await t.poolTick(Date.now() + 5 * 6e4);
+  assert.equal(calls.length, 1, 'moins de 15 min : rien');
+  t.db.pool.feed.at = Date.now() + 36e5; // horloge reculée
+  await t.poolTick(Date.now());
+  assert.equal(calls.length, 2);
+});
+
+test('fil actif : poolPullMine passe par le fil, poolWant et poolPrefetch se taisent', async () => {
+  const env = await feedLoad(many(3));
+  const { t, calls } = env;
+  await t.poolPullMine(true);
+  assert.ok(calls.some(c => c.startsWith('/v1/feed')));
+  assert.ok(!calls.some(c => c === '/v1/pull'));
+  const before = calls.length;
+  t.poolWant('C9');
+  await t.poolPrefetch(['C9']);
+  await new Promise(r => setImmediate(r)); // fast : le regroupement de 2 s de poolWant passe tout de suite
+  assert.equal(calls.length, before);
+});
+
+test('pool en 1.3.0 : poolPullMine retombe sur /v1/pull dans le même appel', async () => {
+  const env = await feedLoad([], { status: 404 });
+  env.t.db.wish = { C1: ['Carte', 'SR'] };
+  await env.t.poolPullMine(true);
+  assert.ok(env.calls.includes('/v1/pull'));
+});
+
+test('ligne d’état : à jour, puis ancienne méthode', async () => {
+  const env = await feedLoad(many(3));
+  await env.t.poolFeed(true);
+  assert.match(env.t.poolLine(), /à jour à l’instant/);
+  env.t.db.pool.feed.off = Date.now();
+  env.t.db.pool.feed.at = 0;
+  assert.match(env.t.poolLine(), /ancienne méthode \(pool en 1\.3\.0\)/);
+});

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.27.0
+// @version      1.28.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -50,7 +50,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.27.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.28.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -1043,9 +1043,16 @@
     poolState.flushing = false;
     saveDb();
   }
+  // Toutes les 15 s : l'envoi de la file, et toutes les 15 min un passage du fil des nouveautés (une date de dernier passage
+  // dans le futur, après un changement d'horloge, ne bloque rien). Après un échec, les deux attendent le même recul.
   function poolTick(now) {
     now = now || Date.now();
-    if (poolOn() && db.poolQ.length && now >= num(db.pool.retryAt)) return poolFlush(now);
+    if (!poolOn() || now < num(db.pool.retryAt)) return;
+    const jobs = [];
+    if (db.poolQ.length) jobs.push(poolFlush(now));
+    const at = num(db.pool.feed && db.pool.feed.at);
+    if (feedOn() && (now - at >= POOL_FEED_EVERY || at > now)) jobs.push(poolFeed().then(n => { if (n) refresh(); }));
+    return jobs.length ? Promise.all(jobs) : undefined;
   }
   // À l'activation du partage : tes propres relevés déjà accumulés partent aussi (historique Pro relevé ici, tes ventes et achats).
   function poolBackfill() {
@@ -1290,20 +1297,26 @@
   }
   async function poolPullMine(force) {
     if (!poolOn()) return;
+    // Pool 1.4.0 : le fil tient tout le pool à jour, à son propre rythme (au plus un passage par minute sans « force »).
+    if (feedOn() && await poolFeed(force)) refresh();
     const now = Date.now();
     if (!force && now - num(db.pool.pullAt) < POOL_PULL_EVERY) return;
     db.pool.pullAt = now;
-    const ids = new Set(Object.keys(db.wish));
-    for (const c of Object.values(db.cards)) if (c && okKey(c.cardId)) ids.add(c.cardId);
-    try { if (await poolPull([...ids])) refresh(); } catch (e) { poolNote(e); }
+    // Sans fil (pool encore en 1.3.0, ou mode secours) : ta collection et tes souhaits, carte par carte, comme avant.
+    if (!feedOn()) {
+      const ids = new Set(Object.keys(db.wish));
+      for (const c of Object.values(db.cards)) if (c && okKey(c.cardId)) ids.add(c.cardId);
+      try { if (await poolPull([...ids])) refresh(); } catch (e) { poolNote(e); }
+    }
     // La case vaut pour tous les comptes du navigateur : décochée depuis un autre compte, le profil publié par celui-ci est retiré ici.
     if (!db.pool.share && isObj(db.pool.published) && Object.keys(db.pool.published).length) await poolRemoveProfile();
     await poolPullProfiles();
   }
   // Cartes affichées par le site sans aucun prix connu : regroupées pendant 2 s, chacune demandée une seule fois par visite.
   const poolWanted = { queue: new Set(), asked: new Set(), timer: 0 };
+  // Inutile quand le fil sert : tout le pool est déjà là.
   function poolWant(id) {
-    if (!poolOn() || !okKey(id) || poolWanted.asked.has(id)) return;
+    if (!poolOn() || feedOn() || !okKey(id) || poolWanted.asked.has(id)) return;
     poolWanted.asked.add(id);
     poolWanted.queue.add(id);
     if (poolWanted.timer) return;
@@ -1332,8 +1345,9 @@
     return sales.length;
   }
   // Avant de demander des historiques Pro au site : ceux que le groupe a relevés il y a moins de 24 h suffisent.
+  // Inutile quand le fil sert : les prix du groupe ont au plus 15 min.
   async function poolPrefetch(ids) {
-    if (!poolOn() || !ids || !ids.length) return;
+    if (!poolOn() || feedOn() || !ids || !ids.length) return;
     try { await poolPull(ids); } catch (e) { poolNote(e); }
   }
 
@@ -2952,6 +2966,10 @@
     if (!poolOn()) return 'Remplis l’adresse (https://…) et la clé, puis « Tester ».';
     const parts = [];
     if (p.err) parts.push('Dernière erreur : ' + p.err + (num(p.retryAt) > now ? ' (nouvel essai dans ' + Math.ceil((p.retryAt - now) / 6e4) + ' min)' : ''));
+    const f = isObj(p.feed) ? p.feed : {};
+    if (poolState.feeding && !num(f.at)) parts.push('réception de tout le pool : ' + fmt(num(f.got)) + ' ventes reçues');
+    else if (feedOn() && num(f.at)) parts.push('à jour ' + ago(f.at));
+    else if (num(f.off)) parts.push('ancienne méthode (pool en 1.3.0)');
     parts.push(plural(num(p.sent), 'prix envoyé', 'prix envoyés') + ', ' + plural(num(p.recv), 'reçu', 'reçus') + (db.poolQ.length ? ', ' + fmt(db.poolQ.length) + ' en attente' : ''));
     if (p.pushAt) parts.push('dernier envoi ' + ago(p.pushAt));
     return parts.join(' · ') + '.';
@@ -3320,7 +3338,8 @@
           chk('Partager ma collection et mes souhaits avec le groupe', 'Seulement ta collection et ta liste de souhaits, rien d’autre de ton compte. ' +
             'Tous les membres qui ont la clé les voient dans leur onglet Amis, et tu vois ceux qui partagent. Il faut un pseudo (onglet Amis). Décocher retire ton profil du pool.',
             !!db.pool.share, ev => { const el = ev.target; setProfileShare(el.checked).then(() => { el.checked = !!db.pool.share; }); }),
-          chk('Partager et recevoir les prix', 'Envoie les prix que tu relèves, y compris ceux déjà accumulés, et reçoit ceux du groupe pour ta collection, tes souhaits et les cartes affichées.',
+          chk('Partager et recevoir les prix', 'Envoie les prix que tu relèves, y compris ceux déjà accumulés, et reçoit ceux du groupe, toutes cartes confondues ' +
+            '(seulement ta collection, tes souhaits et les cartes affichées quand le pool est encore en 1.3.0).',
             !!db.pool.on, ev => { db.pool.on = ev.target.checked; if (poolOn()) { poolBackfill(); poolPullMine(true); } saveDb(); syncButtons(); }),
           (e.poolInfo = h('span', { class: 'sub' }, poolLine()))),
         group('Mise à jour', 'Tampermonkey met le script à jour tout seul, une fois par jour. Ces boutons servent à ne pas attendre.',
