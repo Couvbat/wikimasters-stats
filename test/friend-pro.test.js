@@ -68,12 +68,13 @@ test('mergePro ramène une date future à maintenant', () => {
   assert.ok(t.db.prices.A.at <= Date.now() && t.db.prices.A.at >= before);
 });
 
-test('mergePro garde mon relevé quand il est plus récent, remplace un plus ancien', () => {
+test('mergePro additionne les ventes ; la date et l’auteur suivent le relevé le plus récent', () => {
   const { t } = load();
   t.db.prices = { A: { at: 1000, sales: [{ p: 1, t: T1 }] }, B: { at: 100, sales: [{ p: 1, t: T1 }] } };
-  assert.equal(t.mergePro([['A', 500, [[9, T1]]], ['B', 500, [[9, T1]]]], 'Marie'), 1);
-  assert.equal(t.db.prices.A.sales[0].p, 1);
-  assert.deepEqual(plain(t.db.prices.B), { at: 500, sales: [{ p: 9, t: T1 }], by: 'Marie' });
+  assert.equal(t.mergePro([['A', 500, [[9, T1]]], ['B', 500, [[9, T1]]]], 'Marie'), 2);
+  assert.deepEqual(plain(t.db.prices.A), { at: 1000, sales: [{ p: 1, t: T1 }, { p: 9, t: T1 }] });
+  assert.deepEqual(plain(t.db.prices.B), { at: 500, sales: [{ p: 1, t: T1 }, { p: 9, t: T1 }], by: 'Marie' });
+  assert.equal(t.mergePro([['A', 500, [[9, T1]]]], 'Marie'), 0, 'rien de neuf : rien d’ajouté');
 });
 
 test('mergePro n’étiquette pas « partagé » mes propres prix qui me reviennent', () => {
