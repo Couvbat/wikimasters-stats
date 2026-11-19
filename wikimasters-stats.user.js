@@ -36,7 +36,7 @@
     return {
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
-      auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
+      auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, profileSent: false, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
       pool: { url: '', key: '', on: false, share: false, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
@@ -93,7 +93,7 @@
   // Ce qui est personnel (collection, ventes, échanges, boosters, souhaits…) est rangé à part pour chaque compte, sous
   // wmstats.v1.u.<compte> ; les prix du marché et les réglages d'affichage sont communs à tous, sous wmstats.v1.
   // Tant que le compte n'est pas reconnu, sa partie personnelle est sous wmstats.v1.u._.
-  const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt', 'wishFullAt',
+  const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt', 'wishFullAt', 'profileSent',
     'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'selling', 'sellingAt', 'tagCat', 'friends', 'me', 'sell', 'wishHideOwned'];
   const PERSONAL_SET = new Set(PERSONAL);
   const acctKey = uid => KEY + '.u.' + (uid || '_');
@@ -1016,11 +1016,11 @@
     if (!poolOn() || !db.pool.share) return false;
     const body = profileBody();
     if (!body) return false;
-    try { await poolFetch('/v1/profile', body); return true; } catch (e) { poolNote(e); return false; }
+    try { await poolFetch('/v1/profile', body); db.profileSent = true; saveDb(); return true; } catch (e) { poolNote(e); return false; }
   }
   async function poolRemoveProfile() {
     if (!poolOn() || !okKey(db.userId)) return;
-    try { await poolFetch('/v1/profile/remove', { id: db.userId }); } catch (e) { poolNote(e); }
+    try { await poolFetch('/v1/profile/remove', { id: db.userId }); db.profileSent = false; saveDb(); } catch (e) { poolNote(e); }
   }
   // Message passager sous les réglages du pool.
   function poolSay(text) {
@@ -1097,6 +1097,8 @@
     const ids = new Set(Object.keys(db.wish));
     for (const c of Object.values(db.cards)) if (c && okKey(c.cardId)) ids.add(c.cardId);
     try { if (await poolPull([...ids])) refresh(); } catch (e) { poolNote(e); }
+    // La case vaut pour tous les comptes du navigateur : décochée depuis un autre compte, le profil publié par celui-ci est retiré ici.
+    if (!db.pool.share && db.profileSent) await poolRemoveProfile();
     await poolPullProfiles();
   }
   // Cartes affichées par le site sans aucun prix connu : regroupées pendant 2 s, chacune demandée une seule fois par visite.

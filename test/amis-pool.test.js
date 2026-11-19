@@ -161,3 +161,15 @@ test('les amis du pool ne comptent pas dans la limite de 10', async () => {
   await t.importFriend({ size: file.length, text: async () => file });
   assert.ok(t.db.friends['Zoé'], 'le fichier est importé malgré 10 amis du pool');
 });
+
+// ----- Relecture finale -----
+test('case décochée sur un autre compte : le profil publié par ce compte est retiré à sa prochaine lecture', async () => {
+  const { t, sent } = setup();
+  t.db.pool.share = true;
+  assert.equal(await t.poolSendProfile(), true);
+  t.db.pool.share = false; // décochée depuis l'autre compte du navigateur : rien n'a été retiré pour celui-ci
+  await t.poolPullMine(true);
+  assert.deepEqual(plain(sent('/v1/profile/remove').map(c => c.body)), [{ id: 'U1' }]);
+  await t.poolPullMine(true);
+  assert.equal(sent('/v1/profile/remove').length, 1, 'une seule fois');
+});
