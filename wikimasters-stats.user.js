@@ -1076,6 +1076,44 @@
     saveDb();
     return added;
   }
+  // Une page du fil (1.28) : ventes Pro, ventes observées, relevés Pro, enchères à retirer, fusionnés comme la réception carte par
+  // carte (rien de ce qui est reçu ne repart). Renvoie le nombre de ventes, de relevés et de retraits qui ont changé quelque chose.
+  // Une vente Pro reçue sans la date de son relevé est rangée à la date 1 (« relevé très ancien »), comme le fait le relais entre
+  // pools : la vraie date arrive avec la ligne du relevé, dans cette page ou une suivante. Une sorte inconnue est ignorée.
+  function applyFeedPage(page) {
+    if (!isObj(page)) return 0;
+    const rows = k => (Array.isArray(page[k]) ? page[k].filter(Array.isArray) : []);
+    const rar = v => (rarOk(v) ? v : null);
+    const fetches = new Map(); // carte → [date du relevé, auteur]
+    for (const r of rows('pro')) if (okKey(r[1]) && num(r[2]) > 0) fetches.set(r[1], [num(r[2]), typeof r[3] === 'string' ? r[3] : '']);
+    const proSales = new Map(), obs = [], drop = [];
+    for (const r of rows('sales')) {
+      const [, card, price, t, kind, auction, gap, rarity] = r;
+      if (!okKey(card) || !(num(price) > 0) || typeof t !== 'string') continue;
+      const auc = okKey(auction) ? auction : '';
+      if (kind === 'pro') {
+        if (!proSales.has(card)) proSales.set(card, []);
+        proSales.get(card).push([price, t, rar(rarity)]);
+        if (auc) drop.push(auc); // un provisoire devenu vente Pro : c'est la même vente
+      } else if (kind === 'exact' || kind === 'prov') obs.push([card, price, t, num(gap), kind === 'exact' ? 1 : 0, auc, rar(rarity)]);
+    }
+    const pro = [];
+    for (const [card, sales] of proSales) {
+      const f = fetches.get(card);
+      pro.push([card, f ? f[0] : 1, sales, f ? f[1] : '']);
+      fetches.delete(card);
+    }
+    // Relevé sans vente dans la page : il date les ventes Pro déjà connues de la carte, s'il est plus récent (mergePro ignore une
+    // entrée sans ventes). Une carte sans aucune vente Pro connue ne reçoit pas de relevé vide.
+    for (const [card, [at, by]] of fetches) {
+      const cur = db.prices[card];
+      if (isObj(cur) && Array.isArray(cur.sales) && cur.sales.length && num(cur.at) < at) pro.push([card, at, cur.sales.map(s => [s.p, s.t, s.r || null]), by]);
+    }
+    let added = mergePro(pro, 'groupe');
+    for (let k = 0; k < obs.length; k += 20000) added += mergeObserved({ sales: obs.slice(k, k + 20000) });
+    for (const r of rows('unsold')) if (okKey(r[1])) drop.push(r[1]);
+    return added + dropProvisional(drop);
+  }
   const poolNote = e => { db.pool.err = (e && e.message) || 'pool injoignable'; saveDb(); };
   // Ta collection et tes souhaits, au plus toutes les 6 h (ou tout de suite si on force).
   // ---------- amis par le pool ----------

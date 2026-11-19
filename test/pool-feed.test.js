@@ -38,3 +38,41 @@ test('dropProvisional retire le provisoire et la file des prix finaux, jamais un
   assert.equal(t.db.obsSales.C2.length, 1);
   assert.equal(t.db.finQ.A1, undefined);
 });
+
+// ----- Tâche 4 : fusion d'une page -----
+const page = (o = {}) => Object.assign({ pool: 'p1', max: 0, next: 0, more: false, sales: [], pro: [], unsold: [] }, o);
+
+test('page : ventes Pro avec leur relevé, ventes observées, sorte inconnue ignorée', () => {
+  const { t } = load();
+  const n = t.applyFeedPage(page({
+    sales: [[1, 'C1', 50, T, 'pro', '', 0, 'SR'], [2, 'C2', 30, T, 'prov', 'A1', 4, null], [3, 'C3', 9, T, 'futur', '', 0, null]],
+    pro: [[4, 'C1', 1700000000000, 'Paul']]
+  }));
+  assert.ok(n >= 2);
+  assert.deepEqual(plain(t.db.prices.C1), { at: 1700000000000, sales: [{ p: 50, t: T, r: 'SR' }], by: 'Paul' });
+  assert.deepEqual(plain(t.db.obsSales.C2), [{ p: 30, t: T, g: 4, i: 'A1' }]);
+  assert.equal(t.db.obsSales.C3, undefined);
+  assert.equal(t.db.prices.C3, undefined);
+});
+
+test('page : vente Pro sans son relevé rangée à la date 1, puis la date arrive seule', () => {
+  const { t } = load();
+  t.applyFeedPage(page({ sales: [[1, 'C1', 50, T, 'pro', '', 0, null]] }));
+  assert.equal(t.db.prices.C1.at, 1);
+  t.applyFeedPage(page({ pro: [[2, 'C1', 1700000000000, 'Paul']] }));
+  assert.equal(t.db.prices.C1.at, 1700000000000);
+  assert.equal(t.db.prices.C1.by, 'Paul');
+  assert.equal(t.db.prices.C1.sales.length, 1);
+  t.applyFeedPage(page({ pro: [[3, 'C9', 1700000000000, 'Paul']] }));
+  assert.equal(t.db.prices.C9, undefined, 'pas de relevé vide');
+});
+
+test('page : unsold et vente Pro d’une enchère retirent le provisoire', () => {
+  const { t } = load();
+  t.addObserved('C1', { p: 30, t: T, g: 5, i: 'A1' }, null);
+  t.addObserved('C2', { p: 20, t: T, g: 5, i: 'A2' }, null);
+  t.applyFeedPage(page({ unsold: [[1, 'A1']], sales: [[2, 'C2', 25, T, 'pro', 'A2', 0, null]] }));
+  assert.equal(t.db.obsSales.C1, undefined);
+  assert.equal(t.db.obsSales.C2, undefined);
+  assert.equal(t.db.prices.C2.sales[0].p, 25);
+});
