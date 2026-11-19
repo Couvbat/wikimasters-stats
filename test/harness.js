@@ -117,7 +117,7 @@ const reply = (body, status = 200) => { const r = { ok: status >= 200 && status 
 // storage : contenu du localStorage simulé avant le chargement du script ({ clé: texte }).
 // idb : faux IndexedDB et faux BroadcastChannel (voir fakeIndexedDB) ; sans lui, le navigateur simulé n'en a pas.
 // navigator : navigator simulé (par exemple navigator.locks), absent par défaut.
-function load({ reject = () => false, fetch = async () => reply({}), fast = false, storage = {}, idb = null, navigator = null } = {}) {
+function load({ reject = () => false, fetch = async () => reply({}), fast = false, storage = {}, idb = null, navigator = null, clock = null } = {}) {
   const store = new Map(Object.entries(storage));
   const localStorage = {
     getItem: k => (store.has(k) ? store.get(k) : null),
@@ -138,6 +138,8 @@ function load({ reject = () => false, fetch = async () => reply({}), fast = fals
     ctx.BroadcastChannel = fakeBroadcastChannel(idb.bus || fakeBus());
   }
   vm.createContext(ctx);
+  // Horloge simulée : Date.now du contexte appelle la fonction donnée (le reste de Date ne change pas).
+  if (clock) vm.runInContext('(f => { Date.now = () => f(); })', ctx)(clock);
   vm.runInContext(CODE, ctx);
   const t = window.__t;
   t.ui.el.frStatus = { textContent: '' };

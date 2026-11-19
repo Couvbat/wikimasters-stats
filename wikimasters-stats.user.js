@@ -771,12 +771,13 @@
     });
   }
   // Enchères que le pool a retirées (finie sans vente, ou provisoire remplacé par une vente déjà connue) : leur prix provisoire
-  // disparaît aussi d'ici, et le site n'a plus rien à apprendre sur elles. Un prix exact n'est jamais retiré.
+  // disparaît aussi d'ici, et le site n'a plus rien à apprendre sur elles. Un prix exact n'est jamais retiré. Leur observation
+  // encore en attente part aussi : sinon settleObserved recréerait le provisoire, la demande de prix final et l'envoi au pool.
   // Renvoie le nombre de ventes retirées.
   function dropProvisional(auctions) {
     const want = new Set((Array.isArray(auctions) ? auctions : []).filter(okKey));
     if (!want.size) return 0;
-    for (const id of want) delete db.finQ[id];
+    for (const id of want) { delete db.finQ[id]; delete db.obs[id]; }
     const gone = s => !!s && !s.x && !!s.i && want.has(s.i);
     let dropped = 0;
     for (const cardId of Object.keys(db.obsSales)) {
@@ -847,9 +848,10 @@
     let added = 0;
     for (const e of list.slice(0, 20000)) {
       if (!Array.isArray(e) || !okKey(e[0]) || !(num(e[1]) > 0) || !Array.isArray(e[2])) continue;
-      // Une vente sans date lisible ne compte pas, comme dans mergeObserved.
+      // Une vente sans date lisible ne compte pas, comme dans mergeObserved. keepAll trie de la plus récente à la plus ancienne
+      // avant de garder les 2 000 premières : la liste reçue peut venir dans n'importe quel ordre (le fil la donne de la plus ancienne).
       const sales = keepAll(e[2].filter(s => Array.isArray(s) && num(s[0]) > 0 && typeof s[1] === 'string' && Number.isFinite(Date.parse(s[1])))
-        .slice(0, MAX_SALES_PER_CARD).map(s => (rarOk(s[2]) ? { p: s[0], t: str(s[1], 40), r: s[2] } : { p: s[0], t: str(s[1], 40) })));
+        .map(s => (rarOk(s[2]) ? { p: s[0], t: str(s[1], 40), r: s[2] } : { p: s[0], t: str(s[1], 40) })));
       if (!sales.length) continue;
       const at = Math.min(e[1], now), cur = isObj(db.prices[e[0]]) ? db.prices[e[0]] : null;
       const curSales = cur && Array.isArray(cur.sales) ? cur.sales : [];
@@ -1169,12 +1171,12 @@
     poolState.feeding = true;
     try {
       const locks = typeof navigator !== 'undefined' && navigator && navigator.locks && typeof navigator.locks.request === 'function' ? navigator.locks : null;
-      return locks ? await locks.request('wmstats-feed', { ifAvailable: true }, lock => (lock ? feedPass(f, now) : 0)) : await feedPass(f, now);
+      return locks ? await locks.request('wmstats-feed', { ifAvailable: true }, lock => (lock ? feedPass(f) : 0)) : await feedPass(f);
     } finally {
       poolState.feeding = false;
     }
   }
-  async function feedPass(f, now) {
+  async function feedPass(f) {
     let added = 0;
     try {
       for (let n = 0; n < 1000; n++) {
@@ -1195,8 +1197,9 @@
       if (added) resetPrices();
     } catch (e) {
       if (db.pool.feed !== f) return added;
+      // Le recul part de l'échec, pas du début du passage : plusieurs pages ont pu prendre plus que la première minute de recul.
       if (e && e.status === 404) f.off = Date.now();
-      else feedFailed(f, e, now);
+      else feedFailed(f, e, Date.now());
     }
     saveDb();
     return added;

@@ -228,6 +228,23 @@ test('fil : l’identifiant du pool est créé une fois et survit à la réouver
   for (const f of [file, file + '-wal', file + '-shm']) fs.rmSync(f, { force: true });
 });
 
+test('fil : base d’avant 1.1, un même numéro dans plusieurs tables, une page ne coupe pas entre eux', () => {
+  const db = openDb(':memory:');
+  push(db, { member: 'Jules', pro: [['C1', now - 1000, [[50, T], [40, T3]]]] }); // ventes 1, 2 ; relevé 3
+  push(db, { member: 'Paul', unsold: ['A9'] }); // 4
+  // La migration d'avant 1.1 numérotait les ventes par leur id et les relevés par leur rowid : les numéros se croisent.
+  db.exec('UPDATE pro_fetch SET rev = 1; UPDATE unsold_queue SET rev = 1;');
+  const got = { sales: [], pro: [], unsold: [] };
+  let since = 0, more = true, n = 0;
+  while (more && n++ < 10) {
+    const p = feedRows(db, since, 1);
+    for (const k of ['sales', 'pro', 'unsold']) got[k].push(...p[k].map(r => r[0]));
+    since = p.next;
+    more = p.more;
+  }
+  assert.deepEqual(got, { sales: [1, 2], pro: [1], unsold: [1] });
+});
+
 test('fil : une vente Pro porte la date et l’auteur du relevé de sa carte', () => {
   const db = openDb(':memory:');
   push(db, { member: 'Jules', pro: [['C1', now - 1000, [[50, T]]]] });

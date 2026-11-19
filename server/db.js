@@ -158,9 +158,15 @@ function feedRows(db, since, limit) {
     ...db.prepare('SELECT rev, auction FROM unsold_queue WHERE rev > ? ORDER BY rev LIMIT ?').all(since, take)
       .map(r => ({ rev: Number(r.rev), t: 'unsold', v: [Number(r.rev), r.auction] }))
   ].sort((a, b) => a.rev - b.rev);
-  const page = rows.slice(0, limit);
+  // Une base d'avant 1.1 a pu donner le même numéro à une vente, un relevé et une enchère invendue (la migration numérotait les
+  // ventes par leur id, les relevés par leur rowid). La page ne coupe jamais entre deux lignes de même numéro : la suivante
+  // (numéros > next) sauterait les autres. Elle a donc au plus limit + 2 lignes. Chaque table rend limit + 1 lignes, et un
+  // numéro y est unique : toutes les lignes du dernier numéro de la page sont déjà lues.
+  let end = Math.min(limit, rows.length);
+  while (end > 0 && end < rows.length && rows[end].rev === rows[end - 1].rev) end++;
+  const page = rows.slice(0, end);
   const out = { pool: getMeta(db, 'pool_id'), max: Number(getMeta(db, 'rev') || 0), next: page.length ? page[page.length - 1].rev : since,
-    more: rows.length > limit, sales: [], pro: [], unsold: [] };
+    more: rows.length > end, sales: [], pro: [], unsold: [] };
   for (const r of page) out[r.t].push(r.v);
   return out;
 }

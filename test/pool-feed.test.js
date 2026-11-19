@@ -77,6 +77,33 @@ test('page : unsold et vente Pro d’une enchère retirent le provisoire', () =>
   assert.equal(t.db.prices.C2.sales[0].p, 25);
 });
 
+test('page : une enchère retirée par le pool perd aussi son observation en attente, rien n’est recréé ensuite', () => {
+  const { t } = load();
+  Object.assign(t.db.pool, { url: 'https://pool.test/', key: 'cle-du-groupe-assez-longue-123', on: true });
+  const end = Date.now() - 6e4;
+  t.db.obs.A1 = ['C1', 30, 1, end, end - 5 * 6e4, null];
+  t.db.obs.A2 = ['C2', 20, 1, end, end - 5 * 6e4, null];
+  t.applyFeedPage(page({ unsold: [[1, 'A1']], sales: [[2, 'C2', 25, T, 'pro', 'A2', 0, null]] }));
+  assert.equal(t.db.obs.A1, undefined);
+  assert.equal(t.db.obs.A2, undefined);
+  t.settleObserved();
+  assert.equal(t.db.obsSales.C1, undefined, 'pas de provisoire recréé');
+  assert.equal(t.db.obsSales.C2, undefined);
+  assert.equal(t.db.finQ.A1, undefined, 'pas de prix final à relever');
+  assert.equal(t.db.poolQ.length, 0, 'rien de renvoyé au pool');
+});
+
+test('page : plus de 2 000 ventes Pro d’une carte, de la plus ancienne à la plus récente, gardent les 2 000 plus récentes', () => {
+  const { t } = load();
+  const base = Date.parse('2026-01-01T00:00:00Z');
+  const sales = Array.from({ length: 2001 }, (_, i) => [i + 1, 'C1', 10 + i, new Date(base + i * 6e4).toISOString(), 'pro', '', 0, 'SR', 1700000000000, 'Paul']);
+  t.applyFeedPage(page({ sales }));
+  const kept = t.db.prices.C1.sales;
+  assert.equal(kept.length, 2000);
+  assert.equal(kept[0].p, 2010, 'la plus récente est là');
+  assert.ok(!kept.some(s => s.p === 10), 'la plus ancienne est partie');
+});
+
 // ----- Tâche 5 : le passage -----
 const POOL = 'https://pool.test', KEY = 'cle-du-groupe-assez-longue-123';
 // rows : [[table, rev, ...champs]] ; state : { pool, fail(since), status (du fil seulement), body }.
@@ -277,6 +304,17 @@ test('une autre fenêtre remplace les données pendant un passage : il s’arrê
   assert.equal(calls.length, 2, 'pas de troisième page');
   assert.equal(t.db.pool.feed.rev, 5000);
   assert.equal(t.db.pool.feed.at, 0, 'passage non terminé : il reprendra au prochain tour');
+});
+
+test('une page échoue après plus d’une minute de passage : le recul compte depuis l’échec', async () => {
+  let shift = 0;
+  const f = feedEnv(many(12001), { onFetch: since => { if (since === 5000) shift = 5 * 6e4; }, fail: since => since === 5000 });
+  const { t, ready } = load({ idb: {}, fast: true, fetch: f.fetch, clock: () => Date.now() + shift });
+  await ready;
+  Object.assign(t.db.pool, { url: POOL + '/', key: KEY, on: true });
+  await t.poolFeed(true);
+  assert.equal(t.db.pool.feed.rev, 5000);
+  assert.ok(t.db.pool.feed.retryAt >= Date.now() + shift + 59e3, 'nouvel essai une minute après l’échec, pas avant');
 });
 
 test('verrou entre fenêtres : une seule fenêtre fait le passage', async () => {
