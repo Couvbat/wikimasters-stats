@@ -111,3 +111,44 @@ test('récentes d’une autre rareté : pas de valeur récente ici', () => {
   assert.equal(p.medRecent, null);
   assert.equal(p.med, 300);
 });
+
+// ----- Tâche 4 : afficher les deux valeurs -----
+const text = x => (x == null || x === false ? '' : Array.isArray(x) ? x.map(text).join('') : typeof x === 'object' ? (x.textContent || '') + (x.children || []).map(text).join('') : String(x));
+const nbsp = s => s.replace(/[\u00a0\u202f]/g, ' ');
+
+test('pastille : les deux valeurs', () => {
+  const { t } = load();
+  t.db.prices = { C1: { at: Date.now(), sales: ventes(4, 100, 1).concat(ventes(30, 300, 20)) } };
+  let lines = t.badgeFor('C1', null, {}).lines.map(nbsp).join('\n');
+  assert.match(lines, /Valeur : 100 ₩ \(7 derniers jours, 4 ventes/);
+  assert.match(lines, /Depuis toujours : 300 ₩ \(34 ventes\)/);
+  t.db.prices = { C1: { at: Date.now(), sales: ventes(2, 100, 1).concat(ventes(30, 300, 20)) } };
+  t.resetPrices();
+  lines = t.badgeFor('C1', null, {}).lines.map(nbsp).join('\n');
+  assert.match(lines, /Valeur : 300 ₩ \(depuis toujours, 32 ventes/);
+  assert.match(lines, /7 derniers jours : 100 ₩ \(2 ventes\)/);
+});
+
+test('Collection : marque « 7 j » et colonnes « 7 jours » et « Depuis toujours »', () => {
+  const { t } = load();
+  t.db.prices = { C1: { at: Date.now(), sales: ventes(4, 100, 1).concat(ventes(30, 300, 20)) } };
+  const col = k => t.COLS.find(c => c.k === k);
+  assert.equal(col('recent').t, '7 jours');
+  assert.equal(col('all').t, 'Depuis toujours');
+  const ks = t.COLS.map(c => c.k);
+  assert.deepEqual([...ks.slice(ks.indexOf('value'), ks.indexOf('value') + 3)], ['value', 'recent', 'all']);
+  const price = t.priceOf('C1', 'L');
+  const r = { price, value: 100, est: false };
+  assert.match(nbsp(text(col('value').cell(r))), /^100 · 7 j$/);
+  assert.equal(nbsp(text(col('recent').cell(r))), '100 ₩ · 4 ventes');
+  assert.equal(nbsp(text(col('all').cell(r))), '300 ₩ · 34 ventes');
+  assert.equal(col('recent').get(r), 100);
+  assert.equal(col('all').get(r), 300);
+  const none = { price: null, value: 1, est: true };
+  assert.equal(text(col('recent').cell(none)), '—');
+  assert.equal(col('all').get(none), null);
+  t.db.prices.C2 = { at: Date.now(), sales: ventes(10, 300, 20) };
+  const old = { price: t.priceOf('C2', 'L'), value: 300, est: false };
+  assert.equal(text(col('value').cell(old)).includes('7 j'), false, 'valeur depuis toujours : pas de marque');
+  assert.equal(text(col('value').cell(none)).includes('7 j'), false, 'sans vente : pas de marque');
+});

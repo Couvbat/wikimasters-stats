@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.26.0
+// @version      1.27.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -47,7 +47,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.26.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.27.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -2745,11 +2745,16 @@
   const auctionLink = (id, kids, title) => (okKey(id)
     ? h('a', { class: 'go', href: '/marketplace/' + encodeURIComponent(id), target: '_blank', rel: 'noopener', title: (title ? title + ' · ' : '') + 'Ouvrir l’annonce' }, kids, ' ↗')
     : h('span', { title: title || '' }, kids));
-  const TIP_VALUE = 'Médiane des 10 dernières ventes de la carte. En italique : aucune vente connue, la carte compte pour 1 ₩ (ce que rapporte la défausse).';
+  const TIP_VALUE = 'Médiane des ventes des 7 derniers jours quand la carte s’y est vendue au moins 3 fois à cette rareté (marque « 7 j »), ' +
+    'sinon médiane de toutes ses ventes connues. En italique : aucune vente connue, la carte compte pour 1 ₩ (ce que rapporte la défausse).';
   const TIP_REL = 'Fiable : au moins 5 ventes, la dernière de moins de 30 jours. Moyen : au moins 2 ventes de moins de 90 jours. Douteux sinon. ' +
     'Des prix très dispersés font descendre d’un cran. La flèche dit si les ventes récentes montent ou baissent ; survole le mot pour le détail.';
   const estCell = (r, v) => h('span', { class: r.est ? 'est' : '' }, fmt(v));
   const pr = (r, k) => (r.price ? r.price[k] : undefined);
+  // « 7 j » : la valeur qui compte est celle des 7 derniers jours.
+  const recentMark = p => (p && p.n && p.basis === 'recent' ? h('span', { class: 'sub' }, ' · 7 j') : '');
+  // Une médiane et le nombre de ventes sur lequel elle repose, ou « — » sans vente.
+  const medCell = (m, n) => (n ? fmt(Math.round(m)) + ' ₩ · ' + plural(n, 'vente', 'ventes') : '—');
   const COLS = [
     { k: 'title', t: 'Carte', get: r => r.title.toLowerCase(),
       cell: r => [r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title) : r.title,
@@ -2760,7 +2765,11 @@
     { k: 'def', t: 'DEF', get: r => r.def, cell: r => fmt(r.def) },
     { k: 'q', t: 'Q-Score', tip: 'Indice de qualité de l’article Wikipédia, donné par le site.', get: r => r.q, cell: r => fmt(r.q) },
     { k: 'views', t: 'Vues 30j', tip: 'Vues de l’article Wikipédia sur 30 jours. Plus il est lu, plus la carte est rare.', get: r => r.views, cell: r => fmt(r.views) },
-    { k: 'value', t: 'Valeur', tip: TIP_VALUE, price: true, get: r => r.value, cell: r => estCell(r, r.value) },
+    { k: 'value', t: 'Valeur', tip: TIP_VALUE, price: true, get: r => r.value, cell: r => [estCell(r, r.value), recentMark(r.price)] },
+    { k: 'recent', t: '7 jours', tip: 'Médiane des ventes des 7 derniers jours à cette rareté, et leur nombre.', price: true,
+      get: r => (pr(r, 'nRecent') ? r.price.medRecent : null), cell: r => medCell(pr(r, 'medRecent'), pr(r, 'nRecent')) },
+    { k: 'all', t: 'Depuis toujours', tip: 'Médiane de toutes les ventes connues à cette rareté, et leur nombre.', price: true,
+      get: r => (pr(r, 'nAll') ? r.price.medAll : null), cell: r => medCell(pr(r, 'medAll'), pr(r, 'nAll')) },
     { k: 'rel', t: 'Fiabilité', tip: TIP_REL, price: true, get: r => (pr(r, 'n') ? r.price.rel.level : null), cell: r => relCell(r.price) },
     { k: 'last', t: 'Dernière', price: true, get: r => pr(r, 'last'), cell: r => fmt(pr(r, 'last')) },
     { k: 'min', t: 'Min', price: true, get: r => pr(r, 'min'), cell: r => fmt(pr(r, 'min')) },
@@ -3759,8 +3768,13 @@
               fmt(priceForAsk(c.id, c.ask, c.price).med) + ' ₩, ' + priceForAsk(c.id, c.ask, c.price).n + ' ventes)' }, 'bonne affaire −' + dealOf(c) + ' %') : null,
             c.owned ? h('span', { class: 'tag', title: 'Cette carte est déjà dans ta collection' }, 'possédée') : null] },
         { t: 'Rareté', asc: true, get: c => rarOrder(c.rarity), cell: c => rarBadge(c.rarity) },
-        withPrices ? { t: 'Valeur médiane', tip: 'Médiane des dernières ventes de la carte : sert à juger si une annonce est une bonne affaire.', get: c => (c.price && c.price.n ? c.price.med : null),
-          cell: c => (c.price && c.price.n ? fmt(c.price.med) + ' ₩' : '—') } : null,
+        withPrices ? { t: 'Valeur médiane', tip: 'Médiane des ventes des 7 derniers jours quand la carte s’y est vendue au moins 3 fois (marque « 7 j »), ' +
+          'sinon de toutes ses ventes connues : sert à juger si une annonce est une bonne affaire. Survole la valeur pour voir les deux.', get: c => (c.price && c.price.n ? c.price.med : null),
+          cell: c => (c.price && c.price.n
+            ? h('span', { title: [c.price.basis === 'recent' ? '7 derniers jours : ' + fmt(Math.round(c.price.medRecent)) + ' ₩ (' + plural(c.price.nRecent, 'vente', 'ventes') + ')'
+              : 'Depuis toujours : ' + fmt(Math.round(c.price.medAll)) + ' ₩ (' + plural(c.price.nAll, 'vente', 'ventes') + ')', otherValue(c.price)].filter(Boolean).join(' · ') },
+            fmt(c.price.med) + ' ₩', recentMark(c.price))
+            : '—') } : null,
         { t: 'En vente à', tip: 'Prix de l’annonce affichée sur la ligne. Un point = une offre a déjà été faite. Le lien ouvre l’annonce. « à vérifier » : signalée par le site, prix pas encore lu.', asc: true, get: c => (c.ask ? feat(c).a : null),
           cell: c => {
             if (!c.ask) return c.alert ? auctionLink(c.alert[4], h('span', { class: 'est' }, 'à vérifier'), 'Prix pas encore lu') : '—';
@@ -4565,6 +4579,12 @@
   // Contenu de la pastille d'une carte. au = l'annonce quand la carte est affichée sur le Marché.
   // flag : 'dim' pour une annonce trop chère à griser, 'glow' pour une bonne affaire à faire ressortir.
   const BG_DEAL = 'rgba(6,95,70,.92)', BG_BAD = 'rgba(127,29,29,.92)', BG_UP = 'rgba(30,64,175,.92)';
+  // L'autre valeur que celle qui compte : depuis toujours quand la récente compte, et inversement. '' si elle n'existe pas.
+  function otherValue(p) {
+    if (p.basis === 'recent' && p.nAll) return 'Depuis toujours : ' + fmt(Math.round(p.medAll)) + ' ₩ (' + plural(p.nAll, 'vente', 'ventes') + ')';
+    if (p.basis === 'all' && p.nRecent) return '7 derniers jours : ' + fmt(Math.round(p.medRecent)) + ' ₩ (' + plural(p.nRecent, 'vente', 'ventes') + ')';
+    return '';
+  }
   function badgeFor(cardId, au, mine) {
     // Une annonce se juge à la valeur de la rareté de son exemplaire.
     const p = au && rarOk(au.r) ? priceOf(cardId, au.r) : priceOf(cardId);
@@ -4579,7 +4599,9 @@
       const med = Math.max(p.med, DISCARD), mx = maxBid(p);
       text = (p.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(med)) + ' ₩';
       border = ['#6b7280', '#f59e0b', '#10b981'][p.rel.level];
-      lines.push('Valeur médiane : ' + fmt(Math.round(med)) + ' ₩ (' + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + (p.mixed ? ', ventes d’autres raretés' : p.r ? ', en ' + p.r : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
+      lines.push('Valeur : ' + fmt(Math.round(med)) + ' ₩ (' + (p.basis === 'recent' ? '7 derniers jours, ' : 'depuis toujours, ') + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + (p.mixed ? ', ventes d’autres raretés' : p.r ? ', en ' + p.r : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
+      const other = otherValue(p);
+      if (other) lines.push(other);
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
         if (au.s) {

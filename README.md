@@ -63,7 +63,7 @@ L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres cl�
 ### Collection
 
 - **Recharger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
-- **Relever les prix** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées (jusqu'à 200 ventes par carte, dont le script garde les 10 dernières de chaque rareté), une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
+- **Relever les prix** (compte Pro uniquement) : va chercher l'historique des ventes des raretés cochées (jusqu'à 200 ventes par carte). Les relevés s'additionnent : chaque relevé ajoute ses ventes à celles déjà connues de la carte, sans doublon, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
 - **Relever les fins d'enchères** : lit les 500 enchères sur le point de se terminer, plus 150 de chaque rareté L, UR et SR (qui sinon se perdent parmi les centaines d'enchères qui finissent chaque minute), pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
 - **Relever les prix finaux** : quelques minutes plus tard, lit le prix final exact de ces enchères. Pour tous les comptes, Pro ou non. Comme il n'en lit qu'une par seconde, il commence par tes cartes et tes souhaits, puis les raretés qui valent le plus (L, UR, SR…), puis les enchères qui avaient reçu une offre. Une carte qui a déjà dix prix exacts plus récents n'est pas relue.
 - **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite toutes les cartes d'un coup, une par seconde, et saute celles cherchées depuis moins d'une heure.
@@ -222,7 +222,11 @@ Les données rangées avant la version 1.20 sont attribuées au premier compte r
 
 ## Comment lire les chiffres
 
-- **Valeur** : médiane des dernières ventes de la carte **à sa rareté** (20 ventes gardées pour les L, UR et SR, 10 pour les autres ; le pool partagé, lui, garde tout l'historique). Une même carte se vend à plusieurs raretés, car des exemplaires de raretés différentes circulent : une L ne se compare qu'aux ventes en L. Sans vente connue à cette rareté, le script prend les ventes plus anciennes dont la rareté n'est pas connue, sinon celles d'autres raretés. Dans ce dernier cas, la valeur est notée « Douteux » et la bulle le dit.
+- **Valeur** : médiane des ventes de la carte **à sa rareté**. Deux valeurs sont calculées :
+  - **7 jours** : la médiane des ventes des 7 derniers jours ;
+  - **Depuis toujours** : la médiane de toutes les ventes connues.
+
+  La valeur qui compte (totaux, bonnes affaires, enchère max) est celle des 7 derniers jours quand la carte s'y est vendue **au moins 3 fois** à cette rareté, sinon celle depuis toujours. Dans la colonne « Valeur », une petite marque « 7 j » dit que c'est la récente. Les colonnes « 7 jours » et « Depuis toujours » donnent les deux médianes et leur nombre de ventes, et la bulle des pastilles donne les deux. Le script garde toutes les ventes connues de chaque carte, avec un garde-fou de 2 000 ventes par carte (les plus récentes). Une même carte se vend à plusieurs raretés, car des exemplaires de raretés différentes circulent : une L ne se compare qu'aux ventes en L. Sans vente connue à cette rareté, le script prend les ventes plus anciennes dont la rareté n'est pas connue, sinon celles d'autres raretés. Dans ce dernier cas, la valeur est notée « Douteux » et la bulle le dit.
 - **En italique** : carte sans vente connue, comptée à 1 wikibidou. C'est ce que rapporte la défausse, donc le minimum qu'une carte puisse valoir.
 - **Cartes déjà vendues aux enchères** : le nombre de tes cartes pour lesquelles au moins une vente est connue.
 - **Sans vente connue, comptées à 1** : les autres, et la part de la valeur totale qu'elles représentent. Beaucoup de cartes peuvent être dans ce cas tout en pesant très peu dans le total.
@@ -254,7 +258,7 @@ Un prix est à relire **chaque jour** pour une carte qui vaut plus de 50 ₩, un
 
 **« Tout mettre à jour maintenant »** (Accueil et Réglages) lance la même chose tout de suite, sans limite, à une requête par seconde ; Stop l'arrête. La ligne en dessous dit ce qu'a fait le dernier passage, et combien de cartes restent à relire.
 
-Ces prix servent de valeur pour une carte quand il n'y a ni historique Pro ni vente personnelle. Ils donnent aussi un niveau de prix par rareté, affiché en haut de l'onglet Collection.
+Ces prix servent de valeur pour une carte quand il n'y a ni historique Pro ni vente personnelle. Comme les autres, ils s'accumulent sans plafond par rareté (2 000 ventes par carte au plus), et la valeur suit la même règle : les 7 derniers jours quand il y a au moins 3 ventes, sinon toutes les ventes. Ils donnent aussi un niveau de prix par rareté, affiché en haut de l'onglet Collection.
 
 Les prix observés partent dans le fichier que tu exportes pour tes amis, avec ton historique Pro et tes ventes et achats, et ceux de tes amis s'ajoutent aux tiens à l'import : à plusieurs, l'historique se remplit plus vite (voir « Amis »).
 
