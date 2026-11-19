@@ -1034,7 +1034,9 @@
         if (isObj(c.pro) && Array.isArray(c.pro.sales)) pro.push([id, num(c.pro.at), c.pro.sales, typeof c.pro.by === 'string' ? c.pro.by : '']);
         for (const s of Array.isArray(c.sales) ? c.sales : []) if (Array.isArray(s)) sales.push([id, ...s]);
       }
-      added += mergePro(pro, 'groupe') + mergeObserved({ sales });
+      added += mergePro(pro, 'groupe');
+      // 500 cartes × jusqu'à 2 000 ventes : par paquets, sous la limite de 20 000 de mergeObserved.
+      for (let k = 0; k < sales.length; k += 20000) added += mergeObserved({ sales: sales.slice(k, k + 20000) });
     }
     db.pool.recv = num(db.pool.recv) + added;
     db.pool.err = '';
@@ -1427,7 +1429,9 @@
   function priceOf(cardId, rarity) {
     const want = rarity === undefined ? rarityOf(cardId) : (rarOk(rarity) ? rarity : '');
     const key = cardId + '|' + want;
-    if (priceCache.has(key)) return priceCache.get(key);
+    const hit = priceCache.get(key);
+    if (hit && Date.now() < hit.until) return hit.out;
+    let until = Infinity;
     const rec = db.prices[cardId];
     const sources = [['pro', rec && rec.sales], ['own', db.mySales[cardId]], ['obs', db.obsSales[cardId]]]
       .map(([kind, list]) => Object.assign({ kind }, salesFor(list, want))).filter(s => s.sales.length);
@@ -1438,7 +1442,13 @@
       // Deux valeurs : depuis toujours (toutes les ventes) et récente (les 7 derniers jours). La récente compte quand elle
       // repose sur 3 ventes au moins, sinon celle depuis toujours. Le reste (moyenne, fiabilité, tendance…) suit celle qui compte.
       const now = Date.now();
-      const recent = src.sales.filter(s => { const ts = Date.parse(s.t); return Number.isFinite(ts) && now - ts <= RECENT_DAYS * DAY; });
+      const recent = src.sales.filter(s => {
+        const ts = Date.parse(s.t);
+        if (!Number.isFinite(ts) || now - ts > RECENT_DAYS * DAY) return false;
+        // Le calcul est à refaire dès que cette vente sortira des 7 jours.
+        until = Math.min(until, ts + RECENT_DAYS * DAY + 1);
+        return true;
+      });
       const medAll = median(src.sales.map(s => s.p)), medRecent = median(recent.map(s => s.p));
       const basis = recent.length >= RECENT_MIN ? 'recent' : 'all';
       const sales = basis === 'recent' ? recent : src.sales, own = src.kind === 'own', obs = src.kind === 'obs';
@@ -1459,7 +1469,7 @@
       // Relevé Pro reçu d'un ami : son pseudo, pour le dire au survol.
       out.by = (src.kind === 'pro' && rec && rec.by) || '';
     }
-    priceCache.set(key, out);
+    priceCache.set(key, { out, until });
     return out;
   }
   // Valeur d'une carte : médiane de ses ventes, jamais moins que la défausse ; sans vente connue, la défausse.

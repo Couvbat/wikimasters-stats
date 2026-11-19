@@ -178,6 +178,17 @@ test('lots coupés à 1,5 Mo', async () => {
   assert.equal(t.db.poolQ.length, 0);
 });
 
+test('poolPull : plus de 20 000 ventes observées dans une réponse, toutes reçues', async () => {
+  const pull = {};
+  for (let k = 0; k < 11; k++) {
+    pull['C' + k] = { pro: null, sales: Array.from({ length: 2000 }, (_, i) => [10 + i, new Date(Date.parse(T) - i * 60e3).toISOString(), 0, 1, 'A' + k + '-' + i, 'C']) };
+  }
+  const { t } = setup({ pull });
+  enable(t);
+  await t.poolPull(Object.keys(pull));
+  for (let k = 0; k < 11; k++) assert.equal((t.db.obsSales['C' + k] || []).length, 2000, 'carte C' + k);
+});
+
 // ----- Tâche 5 : réception, enchères déjà connues, relevés Pro sautés -----
 test('poolPull fusionne le relevé Pro (avec son auteur) et les ventes observées', async () => {
   const { t } = setup({ pull: { C1: { pro: { at: Date.now() - MIN, by: 'Marie', sales: [[50, T]] }, sales: [[45, T2, 0, 1, 'A1']] } } });

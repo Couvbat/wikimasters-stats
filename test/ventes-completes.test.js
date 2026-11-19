@@ -172,3 +172,14 @@ test('bulle des pastilles : la courbe montre les 30 dernières ventes', () => {
   assert.equal(b.sales.length, 30);
   assert.match(nbsp(b.lines.join('\n')), /depuis toujours, 100 ventes/);
 });
+
+test('cache des prix : une vente qui sort des 7 jours fait recalculer la valeur', async () => {
+  const { t } = load();
+  const edge = Date.now() - 7 * DAY + 150;
+  t.db.prices = { C1: { at: Date.now(), sales: [{ p: 100, t: iso(ago(1)), r: 'L' }, { p: 100, t: iso(ago(2)), r: 'L' }, { p: 100, t: iso(edge), r: 'L' }].concat(ventes(10, 300, 20)) } };
+  assert.equal(t.priceOf('C1', 'L').basis, 'recent');
+  await new Promise(r => setTimeout(r, 300));
+  const p = t.priceOf('C1', 'L');
+  assert.equal(p.basis, 'all', 'la vente du bord a plus de 7 jours : retour à la valeur depuis toujours');
+  assert.equal(p.nRecent, 2);
+});
