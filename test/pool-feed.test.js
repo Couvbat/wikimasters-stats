@@ -88,9 +88,11 @@ function feedEnv(rows, state = {}) {
     calls.push(u.pathname + u.search);
     if (u.pathname === '/v1/pull') return reply({ cards: {} });
     if (u.pathname === '/v1/profiles') return reply({ profiles: [] });
+    if (u.pathname === '/v1/push') return reply({ added: 1, upgraded: 0, dropped: 0 });
     if (u.pathname !== '/v1/feed') return reply({ error: 'route' }, 404);
     if (state.status) return reply({ error: 'x' }, state.status);
     const since = Number(u.searchParams.get('since')), limit = Number(u.searchParams.get('limit'));
+    if (state.onFetch) state.onFetch(since);
     if (state.fail && state.fail(since)) throw new TypeError('Failed to fetch');
     if (state.body) return reply(state.body);
     const todo = rows.filter(r => r[1] > since).sort((a, b) => a[1] - b[1]);
@@ -101,9 +103,9 @@ function feedEnv(rows, state = {}) {
   };
   return { fetch, calls };
 }
-async function feedLoad(rows, state) {
+async function feedLoad(rows, state, navigator) {
   const f = feedEnv(rows, state);
-  const env = load({ idb: {}, fast: true, fetch: f.fetch });
+  const env = load({ idb: {}, fast: true, fetch: f.fetch, navigator });
   await env.ready;
   Object.assign(env.t.db.pool, { url: POOL + '/', key: KEY, on: true });
   return Object.assign(env, { calls: f.calls });
@@ -129,7 +131,7 @@ test('une page en échec : la position reste à la dernière page fusionnée, pu
   const env = await feedLoad(many(12001), { fail: since => broken && since === 5000 });
   await env.t.poolFeed(true);
   assert.equal(env.t.db.pool.feed.rev, 5000);
-  assert.ok(env.t.db.pool.err);
+  assert.ok(env.t.db.pool.feed.err);
   broken = false;
   await env.t.poolFeed(true);
   assert.equal(env.t.db.pool.feed.rev, 12001);
@@ -139,8 +141,8 @@ test('corps inattendu : échec, position inchangée', async () => {
   const env = await feedLoad(many(10), { body: { hello: 1 } });
   await env.t.poolFeed(true);
   assert.equal(env.t.db.pool.feed.rev, 0);
-  assert.ok(env.t.db.pool.err);
-  assert.ok(env.t.db.pool.retryAt > Date.now());
+  assert.ok(env.t.db.pool.feed.err);
+  assert.ok(env.t.db.pool.feed.retryAt > Date.now());
 });
 
 test('retour à zéro : autre identifiant de pool, position au-delà de max, autre adresse', async () => {
@@ -176,7 +178,7 @@ test('pool en 1.3.0 (404) : fil noté absent, ancienne méthode, nouvel essai au
 
 test('mode secours : pas de fil ; une base neuve a sa position à zéro', () => {
   const { t } = load();
-  assert.deepEqual(plain(t.db.pool.feed), { url: '', pool: '', rev: 0, at: 0, off: 0, got: 0 });
+  assert.deepEqual(plain(t.db.pool.feed), { url: '', pool: '', rev: 0, at: 0, off: 0, got: 0, wait: 0, retryAt: 0, err: '' });
   Object.assign(t.db.pool, { url: POOL, key: KEY, on: true });
   assert.equal(t.feedOn(), false);
 });
@@ -229,4 +231,64 @@ test('ligne d’état : à jour, puis ancienne méthode', async () => {
   env.t.db.pool.feed.off = Date.now();
   env.t.db.pool.feed.at = 0;
   assert.match(env.t.poolLine(), /ancienne méthode \(pool en 1\.3\.0\)/);
+});
+
+// ----- Relecture finale -----
+const { openDb, applyPush, feedRows } = require('../server/db');
+const { parsePush } = require('../server/validate');
+
+test('de bout en bout : le vrai fil du serveur, coupé entre le relevé et ses ventes, garde la date du relevé', () => {
+  const at = Date.parse('2026-11-16T12:00:00Z');
+  const sdb = openDb(':memory:');
+  applyPush(sdb, parsePush({ member: 'Jules', pro: [['C1', at - 1000, [[50, T]]]] }, at), at);
+  applyPush(sdb, parsePush({ member: 'Paul', sales: [['C1', 50, T, 0, 1, 'A1']] }, at), at); // la vente Pro prend un numéro plus grand que son relevé
+  const { t } = load();
+  let since = 0, more = true;
+  while (more) { const p = feedRows(sdb, since, 1); t.applyFeedPage(p); since = p.next; more = p.more; }
+  assert.equal(t.db.prices.C1.at, at - 1000);
+  assert.equal(t.db.prices.C1.by, 'Jules');
+});
+
+test('fil en échec, envois réussis : le fil garde son propre recul et son erreur', async () => {
+  const env = await feedLoad(many(3), { status: 500 });
+  const { t, calls } = env;
+  const feedCalls = () => calls.filter(c => c.startsWith('/v1/feed')).length;
+  t.poolQueue('s', ['C1', 5, T, 0, 1, 'A1', null]);
+  await t.poolTick(Date.now());
+  assert.equal(feedCalls(), 1);
+  assert.ok(t.db.pool.feed.retryAt > Date.now());
+  assert.ok(t.db.pool.feed.err);
+  t.poolQueue('s', ['C2', 6, T, 0, 1, 'A2', null]);
+  await t.poolTick(Date.now() + 15e3);
+  assert.equal(feedCalls(), 1, 'pas de nouvel essai avant la fin du recul');
+  assert.ok(calls.filter(c => c === '/v1/push').length >= 2, 'les envois continuent');
+  assert.ok(t.db.pool.feed.err, 'un envoi réussi n’efface pas l’erreur du fil');
+  assert.match(t.poolLine(), /Fil : /);
+  await t.poolPullMine();
+  assert.equal(feedCalls(), 1, 'ouvrir le panneau ne force pas un nouvel essai');
+});
+
+test('une autre fenêtre remplace les données pendant un passage : il s’arrête sans écraser la position', async () => {
+  const state = {};
+  const env = await feedLoad(many(12001), state);
+  const { t, calls } = env;
+  state.onFetch = since => { if (since === 5000) { const copy = JSON.parse(JSON.stringify(t.db)); t.db = copy; } };
+  await t.poolFeed(true);
+  assert.equal(calls.length, 2, 'pas de troisième page');
+  assert.equal(t.db.pool.feed.rev, 5000);
+  assert.equal(t.db.pool.feed.at, 0, 'passage non terminé : il reprendra au prochain tour');
+});
+
+test('verrou entre fenêtres : une seule fenêtre fait le passage', async () => {
+  const asked = [];
+  let free = false;
+  const navigator = { locks: { request: async (name, opts, cb) => { asked.push([name, opts && opts.ifAvailable]); return cb(free ? { name } : null); } } };
+  const env = await feedLoad(many(3), {}, navigator);
+  assert.equal(await env.t.poolFeed(true), 0);
+  assert.equal(env.calls.length, 0, 'une autre fenêtre tient le verrou : rien n’est demandé');
+  assert.deepEqual(asked, [['wmstats-feed', true]]);
+  free = true;
+  await env.t.poolFeed(true);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.t.db.pool.feed.rev, 3);
 });

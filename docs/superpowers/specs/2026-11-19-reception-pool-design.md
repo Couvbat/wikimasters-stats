@@ -68,6 +68,7 @@ Jules veut que le script reçoive **tout le pool**, mais **seulement ce qui a ch
   ```
 
   - `sorte` vaut `pro`, `exact` ou `prov`.
+  - Une vente `pro` porte en plus, à la fin, la date et l'auteur du relevé Pro de sa carte (`0` et `null` s'il n'y en a pas). Sa ligne a pu prendre un numéro plus grand que celui du relevé, par exemple quand une enchère s'y accroche après coup. Le relevé arrive alors dans une page précédente, avant les ventes qu'il date. *(ajout après la relecture finale)*
   - `next` est le numéro de la dernière ligne rendue. Le script le renvoie comme `since` à la page suivante.
   - `more` dit s'il reste des lignes après cette page.
   - `max` est le plus grand numéro du pool au moment de la réponse.
@@ -83,7 +84,10 @@ Jules veut que le script reçoive **tout le pool**, mais **seulement ce qui a ch
 ### Script 1.28.0 : le passage
 
 - **Quand le fil sert :** le pool est activé, le stockage est IndexedDB (`store.mode === 'idb'`) et le pool connaît `/v1/feed`.
-- **Quand passer :** toutes les 15 minutes, depuis la boucle qui tourne déjà toutes les 15 s (`poolTick`), et à l'ouverture du panneau, à la place de la réception de ta collection. Un seul passage à la fois. Un passage en échec suit le recul déjà en place (`poolFailed` : 1 min, 2, 4… jusqu'à 30 min).
+- **Quand passer :** toutes les 15 minutes, depuis la boucle qui tourne déjà toutes les 15 s (`poolTick`), et à l'ouverture du panneau, à la place de la réception de ta collection.
+  - Un seul passage à la fois. Avec plusieurs fenêtres du site, une seule fait le passage, grâce au verrou du navigateur (`navigator.locks`).
+  - Si une autre fenêtre remplace les données pendant un passage, celui-ci s'arrête, et le tour suivant reprend depuis la position arrivée.
+  - Un passage en échec suit un recul de 1 min, 2, 4… jusqu'à 30 min, comme `poolFailed`. Ce recul et l'erreur sont **propres au fil** : un envoi réussi ne les efface pas, et l'ouverture du panneau ne force pas un nouvel essai pendant le recul. *(précisé après la relecture finale)*
 - **Une page :**
   1. Fusionner les ventes Pro, groupées par carte, avec `mergePro` (auteur par défaut : `groupe`).
      - La date du relevé vient de la ligne `pro` de la même carte, si elle est dans la page.

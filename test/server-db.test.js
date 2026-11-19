@@ -227,3 +227,12 @@ test('fil : l’identifiant du pool est créé une fois et survit à la réouver
   b.close();
   for (const f of [file, file + '-wal', file + '-shm']) fs.rmSync(f, { force: true });
 });
+
+test('fil : une vente Pro porte la date et l’auteur du relevé de sa carte', () => {
+  const db = openDb(':memory:');
+  push(db, { member: 'Jules', pro: [['C1', now - 1000, [[50, T]]]] });
+  push(db, { member: 'Paul', sales: [['C1', 50, T, 0, 1, 'A1']] }); // l'enchère s'accroche à la ligne Pro : nouveau numéro
+  const rows = feedRows(db, 0, 10);
+  assert.deepEqual(rows.pro, [[2, 'C1', now - 1000, 'Jules']]);
+  assert.deepEqual(rows.sales, [[3, 'C1', 50, T, 'pro', 'A1', 0, null, now - 1000, 'Jules']]);
+});

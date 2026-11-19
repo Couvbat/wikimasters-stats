@@ -139,13 +139,20 @@ function pullCards(db, ids) {
 }
 
 // Fil des nouveautés (1.4.0) : les lignes des trois tables dont le numéro de révision dépasse `since`, dans l'ordre des numéros,
-// `limit` au plus en tout. Le script garde `next` et le renvoie comme `since` à la page suivante. Le serveur traite une requête
+// `limit` au plus en tout. Le script garde `next` et le renvoie comme `since` à la page suivante.
+// Une vente Pro porte aussi la date et l'auteur du relevé de sa carte : sa ligne a pu prendre un numéro plus grand que celui du
+// relevé (enchère accrochée après coup), et le relevé arrive alors dans une page précédente, avant les ventes qu'il date. Le serveur traite une requête
 // à la fois et un envoi prend ses numéros dans une seule transaction : toute ligne de numéro ≤ `max` est déjà écrite.
 function feedRows(db, since, limit) {
   const take = limit + 1;
   const rows = [
-    ...db.prepare('SELECT rev, card, price, sold_at, kind, auction, gap, rarity FROM sales WHERE rev > ? ORDER BY rev LIMIT ?').all(since, take)
-      .map(r => ({ rev: Number(r.rev), t: 'sales', v: [Number(r.rev), r.card, r.price, r.sold_at, r.kind, r.auction || '', r.gap, r.rarity || null] })),
+    ...db.prepare("SELECT s.rev, s.card, s.price, s.sold_at, s.kind, s.auction, s.gap, s.rarity, f.at AS fat, f.member AS fby FROM sales s " +
+      "LEFT JOIN pro_fetch f ON f.card = s.card AND s.kind = 'pro' WHERE s.rev > ? ORDER BY s.rev LIMIT ?").all(since, take)
+      .map(r => {
+        const v = [Number(r.rev), r.card, r.price, r.sold_at, r.kind, r.auction || '', r.gap, r.rarity || null];
+        if (r.kind === 'pro') v.push(r.fat == null ? 0 : Number(r.fat), r.fby || null);
+        return { rev: Number(r.rev), t: 'sales', v };
+      }),
     ...db.prepare('SELECT rev, card, at, member FROM pro_fetch WHERE rev > ? ORDER BY rev LIMIT ?').all(since, take)
       .map(r => ({ rev: Number(r.rev), t: 'pro', v: [Number(r.rev), r.card, Number(r.at), r.member || null] })),
     ...db.prepare('SELECT rev, auction FROM unsold_queue WHERE rev > ? ORDER BY rev LIMIT ?').all(since, take)

@@ -116,7 +116,8 @@ const reply = (body, status = 200) => { const r = { ok: status >= 200 && status 
 // fetch(url) : réponse du site simulée (voir reply). fast : les attentes (une requête par seconde) passent tout de suite.
 // storage : contenu du localStorage simulé avant le chargement du script ({ clé: texte }).
 // idb : faux IndexedDB et faux BroadcastChannel (voir fakeIndexedDB) ; sans lui, le navigateur simulé n'en a pas.
-function load({ reject = () => false, fetch = async () => reply({}), fast = false, storage = {}, idb = null } = {}) {
+// navigator : navigator simulé (par exemple navigator.locks), absent par défaut.
+function load({ reject = () => false, fetch = async () => reply({}), fast = false, storage = {}, idb = null, navigator = null } = {}) {
   const store = new Map(Object.entries(storage));
   const localStorage = {
     getItem: k => (store.has(k) ? store.get(k) : null),
@@ -131,6 +132,7 @@ function load({ reject = () => false, fetch = async () => reply({}), fast = fals
   const document = { readyState: 'loading', visibilityState: 'visible', addEventListener() {}, createElement: t => new El(t), createElementNS: (n, t) => new El(t) };
   const ctx = { window, document, localStorage, setInterval: () => 0, clearInterval: () => {}, setTimeout: fast ? (f => setImmediate(f)) : setTimeout, clearTimeout, console, URL, AbortController, Headers,
     location: { href: 'https://www.wiki-masters.com/collection', origin: 'https://www.wiki-masters.com', hash: '', pathname: '/collection' } };
+  if (navigator) ctx.navigator = navigator;
   if (idb) {
     ctx.indexedDB = fakeIndexedDB(idb, idbData, idbStats);
     ctx.BroadcastChannel = fakeBroadcastChannel(idb.bus || fakeBus());

@@ -42,7 +42,8 @@
       pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0,
         // Fil des nouveautés (1.28) : adresse normalisée, identifiant du pool, position, fin du dernier passage réussi,
         // date du dernier 404 (pool encore en 1.3.0), ventes reçues depuis la position 0.
-        feed: { url: '', pool: '', rev: 0, at: 0, off: 0, got: 0 } }, poolQ: []
+        // Le fil a son propre recul après un échec (wait, retryAt) et sa propre erreur : un envoi réussi ne les efface pas.
+        feed: { url: '', pool: '', rev: 0, at: 0, off: 0, got: 0, wait: 0, retryAt: 0, err: '' } }, poolQ: []
     };
   }
   // Réglages de ce que le script ajoute aux pages du site (onglet Réglages). Valeur par défaut si jamais touché.
@@ -1044,14 +1045,14 @@
     saveDb();
   }
   // Toutes les 15 s : l'envoi de la file, et toutes les 15 min un passage du fil des nouveautés (une date de dernier passage
-  // dans le futur, après un changement d'horloge, ne bloque rien). Après un échec, les deux attendent le même recul.
+  // dans le futur, après un changement d'horloge, ne bloque rien). Après un échec, chacun attend son propre recul.
   function poolTick(now) {
     now = now || Date.now();
-    if (!poolOn() || now < num(db.pool.retryAt)) return;
+    if (!poolOn()) return;
     const jobs = [];
-    if (db.poolQ.length) jobs.push(poolFlush(now));
-    const at = num(db.pool.feed && db.pool.feed.at);
-    if (feedOn() && (now - at >= POOL_FEED_EVERY || at > now)) jobs.push(poolFeed().then(n => { if (n) refresh(); }));
+    if (db.poolQ.length && now >= num(db.pool.retryAt)) jobs.push(poolFlush(now));
+    const f = isObj(db.pool.feed) ? db.pool.feed : {}, at = num(f.at);
+    if (feedOn() && now >= num(f.retryAt) && (now - at >= POOL_FEED_EVERY || at > now)) jobs.push(poolFeed().then(n => { if (n) refresh(); }));
     return jobs.length ? Promise.all(jobs) : undefined;
   }
   // À l'activation du partage : tes propres relevés déjà accumulés partent aussi (historique Pro relevé ici, tes ventes et achats).
@@ -1100,20 +1101,22 @@
     const rar = v => (rarOk(v) ? v : null);
     const fetches = new Map(); // carte → [date du relevé, auteur]
     for (const r of rows('pro')) if (okKey(r[1]) && num(r[2]) > 0) fetches.set(r[1], [num(r[2]), typeof r[3] === 'string' ? r[3] : '']);
-    const proSales = new Map(), obs = [], drop = [];
+    const proSales = new Map(), rowFetch = new Map(), obs = [], drop = [];
     for (const r of rows('sales')) {
-      const [, card, price, t, kind, auction, gap, rarity] = r;
+      const [, card, price, t, kind, auction, gap, rarity, fetchAt, fetchBy] = r;
       if (!okKey(card) || !(num(price) > 0) || typeof t !== 'string') continue;
       const auc = okKey(auction) ? auction : '';
       if (kind === 'pro') {
         if (!proSales.has(card)) proSales.set(card, []);
         proSales.get(card).push([price, t, rar(rarity)]);
+        // Pool 1.4.0 : la vente Pro porte la date et l'auteur du relevé de sa carte (le relevé a pu arriver dans une page précédente).
+        if (num(fetchAt) > 0 && !rowFetch.has(card)) rowFetch.set(card, [num(fetchAt), typeof fetchBy === 'string' ? fetchBy : '']);
         if (auc) drop.push(auc); // un provisoire devenu vente Pro : c'est la même vente
       } else if (kind === 'exact' || kind === 'prov') obs.push([card, price, t, num(gap), kind === 'exact' ? 1 : 0, auc, rar(rarity)]);
     }
     const pro = [];
     for (const [card, sales] of proSales) {
-      const f = fetches.get(card);
+      const f = fetches.get(card) || rowFetch.get(card);
       pro.push([card, f ? f[0] : 1, sales, f ? f[1] : '']);
       fetches.delete(card);
     }
@@ -1145,18 +1148,38 @@
   // et part avec elle à l'enregistrement : un passage interrompu reprend là où il s'était arrêté, et une page reçue deux fois ne crée
   // aucun doublon. On repart de zéro (sans rien effacer) si le pool a changé d'identifiant (base recréée, autre pool) ou si la
   // position dépasse son dernier numéro (base restaurée depuis une sauvegarde plus ancienne). Renvoie le nombre apporté.
+  const feedFresh = url => ({ url, pool: '', rev: 0, at: 0, off: 0, got: 0, wait: 0, retryAt: 0, err: '' });
+  // Échec du fil : son erreur, et un recul de plus en plus long (1 min, 2, 4… jusqu'à 30 min), à part de celui des envois.
+  function feedFailed(f, e, now) {
+    f.err = (e && e.message) || 'pool injoignable';
+    f.wait = Math.min(Math.max(num(f.wait) * 2, 6e4), 18e5);
+    f.retryAt = now + f.wait;
+  }
+  // Sans « force » : rien pendant le recul après un échec, ni moins d'une minute après le dernier passage réussi.
+  // Plusieurs fenêtres du site ouvertes : une seule fait le passage (verrou du navigateur), les autres reçoivent ses
+  // enregistrements. Si une autre fenêtre remplace les données pendant un passage, celui-ci s'arrête : sa position n'est plus
+  // la bonne, et le prochain tour reprendra depuis celle qui vient d'arriver.
   async function poolFeed(force) {
     if (!feedOn() || poolState.feeding) return 0;
     const now = Date.now(), url = feedUrl();
-    if (!isObj(db.pool.feed) || db.pool.feed.url !== url) db.pool.feed = { url, pool: '', rev: 0, at: 0, off: 0, got: 0 };
+    if (!isObj(db.pool.feed) || db.pool.feed.url !== url) db.pool.feed = feedFresh(url);
     const f = db.pool.feed, since = now - num(f.at);
     // Une date de dernier passage dans le futur (horloge changée) ne compte pas.
-    if (!force && since >= 0 && since < POOL_FEED_MIN) return 0;
+    if (!force && ((since >= 0 && since < POOL_FEED_MIN) || now < num(f.retryAt))) return 0;
     poolState.feeding = true;
+    try {
+      const locks = typeof navigator !== 'undefined' && navigator && navigator.locks && typeof navigator.locks.request === 'function' ? navigator.locks : null;
+      return locks ? await locks.request('wmstats-feed', { ifAvailable: true }, lock => (lock ? feedPass(f, now) : 0)) : await feedPass(f, now);
+    } finally {
+      poolState.feeding = false;
+    }
+  }
+  async function feedPass(f, now) {
     let added = 0;
     try {
       for (let n = 0; n < 1000; n++) {
-        const j = await poolFetch('/v1/feed?since=' + f.rev + '&limit=' + POOL_FEED_PAGE);
+        const j = await poolFetch('/v1/feed?since=' + num(f.rev) + '&limit=' + POOL_FEED_PAGE);
+        if (db.pool.feed !== f) return added; // données remplacées par une autre fenêtre pendant l'attente
         if (!feedOk(j)) throw new Error('pool : réponse inattendue');
         if ((f.pool && f.pool !== j.pool) || f.rev > j.max) { f.pool = j.pool; f.rev = 0; f.got = 0; continue; }
         f.pool = j.pool;
@@ -1167,18 +1190,15 @@
         if (ui.el.poolInfo && !poolUi.testing) ui.el.poolInfo.textContent = poolLine();
         if (!j.more) break;
       }
-      f.at = Date.now();
-      f.off = 0;
-      poolOk();
+      Object.assign(f, { at: Date.now(), off: 0, err: '', wait: 0, retryAt: 0 });
       db.pool.recv = num(db.pool.recv) + added;
       if (added) resetPrices();
     } catch (e) {
+      if (db.pool.feed !== f) return added;
       if (e && e.status === 404) f.off = Date.now();
-      else poolFailed(e, now);
-    } finally {
-      poolState.feeding = false;
-      saveDb();
+      else feedFailed(f, e, now);
     }
+    saveDb();
     return added;
   }
   const poolNote = e => { db.pool.err = (e && e.message) || 'pool injoignable'; saveDb(); };
@@ -2967,6 +2987,7 @@
     const parts = [];
     if (p.err) parts.push('Dernière erreur : ' + p.err + (num(p.retryAt) > now ? ' (nouvel essai dans ' + Math.ceil((p.retryAt - now) / 6e4) + ' min)' : ''));
     const f = isObj(p.feed) ? p.feed : {};
+    if (f.err && feedOn()) parts.push('Fil : ' + f.err + (num(f.retryAt) > now ? ' (nouvel essai dans ' + Math.ceil((f.retryAt - now) / 6e4) + ' min)' : ''));
     if (poolState.feeding && !num(f.at)) parts.push('réception de tout le pool : ' + fmt(num(f.got)) + ' ventes reçues');
     else if (feedOn() && num(f.at)) parts.push('à jour ' + ago(f.at));
     else if (num(f.off)) parts.push('ancienne méthode (pool en 1.3.0)');
