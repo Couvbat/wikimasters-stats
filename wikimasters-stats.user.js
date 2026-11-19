@@ -39,7 +39,10 @@
       auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
-      pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
+      pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0,
+        // Fil des nouveautés (1.28) : adresse normalisée, identifiant du pool, position, fin du dernier passage réussi,
+        // date du dernier 404 (pool encore en 1.3.0), ventes reçues depuis la position 0.
+        feed: { url: '', pool: '', rev: 0, at: 0, off: 0, got: 0 } }, poolQ: []
     };
   }
   // Réglages de ce que le script ajoute aux pages du site (onglet Réglages). Valeur par défaut si jamais touché.
@@ -119,6 +122,7 @@
     if (!Array.isArray(base.selling)) base.selling = [];
     if (!Array.isArray(base.tagCat)) base.tagCat = [];
     base.pool = Object.assign(defaults().pool, isObj(base.pool) ? base.pool : {});
+    base.pool.feed = Object.assign(defaults().pool.feed, isObj(base.pool.feed) ? base.pool.feed : {});
     if (!Array.isArray(base.poolQ)) base.poolQ = [];
     for (const k of ['cards', 'prices', 'pro', 'auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov']) {
       if (!isObj(base[k])) base[k] = {};
@@ -948,6 +952,9 @@
   const POOL_BATCH = { p: 2000, s: 5000, u: 5000 };
   const POOL_BATCH_BYTES = 1.5e6;     // un envoi reste sous la limite de 2 Mo du pool
   const POOL_PRO_SALES = 200;         // ventes envoyées par relevé Pro : les plus récentes (le pool garde les plus anciennes)
+  const POOL_FEED_EVERY = 15 * 6e4;   // réception du fil des nouveautés (pool 1.4.0)
+  const POOL_FEED_MIN = 6e4;          // au moins une minute entre deux passages non forcés
+  const POOL_FEED_PAGE = 5000;        // lignes par page du fil
   const poolUrlOk = u => /^https:\/\/[^\s/]+/.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u);
   const poolOn = () => !!(db.pool && db.pool.on && db.pool.key && poolUrlOk(db.pool.url || ''));
   // type : 'p' relevé Pro [carte, rareté] ; 's' vente [carte, prix, date, écart, exact, enchère, rareté] ; 'u' enchère finie sans vente.
@@ -1113,6 +1120,59 @@
     for (let k = 0; k < obs.length; k += 20000) added += mergeObserved({ sales: obs.slice(k, k + 20000) });
     for (const r of rows('unsold')) if (okKey(r[1])) drop.push(r[1]);
     return added + dropProvisional(drop);
+  }
+  // ---------- fil des nouveautés (pool 1.4.0, script 1.28) ----------
+  // Tout le pool une première fois, puis seulement ce qui a changé depuis le dernier passage. Il sert quand le pool est activé,
+  // que le stockage est IndexedDB (tout le pool ne tient pas dans les 5 Mo du mode secours) et que le pool connaît le fil.
+  // Un pool encore en 1.3.0 répond 404 : on garde alors l'ancienne réception, et l'on réessaie le fil au bout de 6 h
+  // (ou tout de suite si l'adresse change).
+  const feedUrl = () => (db.pool.url || '').replace(/\/+$/, '');
+  function feedOn() {
+    if (!poolOn() || store.mode !== 'idb') return false;
+    const f = isObj(db.pool.feed) ? db.pool.feed : {};
+    return !(f.url === feedUrl() && num(f.off) > 0 && Date.now() - f.off < POOL_PULL_EVERY);
+  }
+  const feedOk = j => isObj(j) && typeof j.pool === 'string' && j.pool !== '' && Number.isSafeInteger(j.max) && j.max >= 0 &&
+    Number.isSafeInteger(j.next) && j.next >= 0 && Array.isArray(j.sales) && Array.isArray(j.pro) && Array.isArray(j.unsold);
+  // Un passage : les pages se suivent tant que le pool en annonce d'autres. La position n'avance qu'après la fusion de chaque page
+  // et part avec elle à l'enregistrement : un passage interrompu reprend là où il s'était arrêté, et une page reçue deux fois ne crée
+  // aucun doublon. On repart de zéro (sans rien effacer) si le pool a changé d'identifiant (base recréée, autre pool) ou si la
+  // position dépasse son dernier numéro (base restaurée depuis une sauvegarde plus ancienne). Renvoie le nombre apporté.
+  async function poolFeed(force) {
+    if (!feedOn() || poolState.feeding) return 0;
+    const now = Date.now(), url = feedUrl();
+    if (!isObj(db.pool.feed) || db.pool.feed.url !== url) db.pool.feed = { url, pool: '', rev: 0, at: 0, off: 0, got: 0 };
+    const f = db.pool.feed, since = now - num(f.at);
+    // Une date de dernier passage dans le futur (horloge changée) ne compte pas.
+    if (!force && since >= 0 && since < POOL_FEED_MIN) return 0;
+    poolState.feeding = true;
+    let added = 0;
+    try {
+      for (let n = 0; n < 1000; n++) {
+        const j = await poolFetch('/v1/feed?since=' + f.rev + '&limit=' + POOL_FEED_PAGE);
+        if (!feedOk(j)) throw new Error('pool : réponse inattendue');
+        if ((f.pool && f.pool !== j.pool) || f.rev > j.max) { f.pool = j.pool; f.rev = 0; f.got = 0; continue; }
+        f.pool = j.pool;
+        added += applyFeedPage(j);
+        f.rev = j.next;
+        f.got = num(f.got) + j.sales.length;
+        saveDb();
+        if (ui.el.poolInfo && !poolUi.testing) ui.el.poolInfo.textContent = poolLine();
+        if (!j.more) break;
+      }
+      f.at = Date.now();
+      f.off = 0;
+      poolOk();
+      db.pool.recv = num(db.pool.recv) + added;
+      if (added) resetPrices();
+    } catch (e) {
+      if (e && e.status === 404) f.off = Date.now();
+      else poolFailed(e, now);
+    } finally {
+      poolState.feeding = false;
+      saveDb();
+    }
+    return added;
   }
   const poolNote = e => { db.pool.err = (e && e.message) || 'pool injoignable'; saveDb(); };
   // Ta collection et tes souhaits, au plus toutes les 6 h (ou tout de suite si on force).

@@ -76,3 +76,115 @@ test('page : unsold et vente Pro d’une enchère retirent le provisoire', () =>
   assert.equal(t.db.obsSales.C2, undefined);
   assert.equal(t.db.prices.C2.sales[0].p, 25);
 });
+
+// ----- Tâche 5 : le passage -----
+const POOL = 'https://pool.test', KEY = 'cle-du-groupe-assez-longue-123';
+// rows : [[table, rev, ...champs]] ; state : { pool, fail(since), status (du fil seulement), body }.
+function feedEnv(rows, state = {}) {
+  const calls = [];
+  const fetch = async url => {
+    if (!url.startsWith(POOL)) return reply({});
+    const u = new URL(url);
+    calls.push(u.pathname + u.search);
+    if (u.pathname === '/v1/pull') return reply({ cards: {} });
+    if (u.pathname === '/v1/profiles') return reply({ profiles: [] });
+    if (u.pathname !== '/v1/feed') return reply({ error: 'route' }, 404);
+    if (state.status) return reply({ error: 'x' }, state.status);
+    const since = Number(u.searchParams.get('since')), limit = Number(u.searchParams.get('limit'));
+    if (state.fail && state.fail(since)) throw new TypeError('Failed to fetch');
+    if (state.body) return reply(state.body);
+    const todo = rows.filter(r => r[1] > since).sort((a, b) => a[1] - b[1]);
+    const part = todo.slice(0, limit), last = part.length ? part[part.length - 1][1] : since;
+    const pick = k => part.filter(r => r[0] === k).map(r => r.slice(1));
+    return reply({ pool: state.pool || 'p1', max: rows.reduce((m, r) => Math.max(m, r[1]), 0), next: last, more: todo.length > limit,
+      sales: pick('s'), pro: pick('p'), unsold: pick('u') });
+  };
+  return { fetch, calls };
+}
+async function feedLoad(rows, state) {
+  const f = feedEnv(rows, state);
+  const env = load({ idb: {}, fast: true, fetch: f.fetch });
+  await env.ready;
+  Object.assign(env.t.db.pool, { url: POOL + '/', key: KEY, on: true });
+  return Object.assign(env, { calls: f.calls });
+}
+const sale = (rev, card) => ['s', rev, card, 10 + rev, T, 'exact', 'A' + rev, 0, null];
+const many = n => Array.from({ length: n }, (_, i) => sale(i + 1, 'C' + (i % 7)));
+
+test('première réception sur plusieurs pages, puis passage vide', async () => {
+  const env = await feedLoad(many(12001));
+  const { t, calls } = env;
+  await t.poolFeed(true);
+  assert.deepEqual(calls, ['/v1/feed?since=0&limit=5000', '/v1/feed?since=5000&limit=5000', '/v1/feed?since=10000&limit=5000']);
+  assert.equal(t.db.pool.feed.rev, 12001);
+  assert.equal(t.db.pool.feed.got, 12001);
+  assert.equal(t.db.pool.feed.url, POOL, 'adresse normalisée, sans / final');
+  assert.ok(t.db.pool.feed.at > 0);
+  await t.poolFeed(true);
+  assert.equal(calls.at(-1), '/v1/feed?since=12001&limit=5000');
+});
+
+test('une page en échec : la position reste à la dernière page fusionnée, puis reprend sans trou', async () => {
+  let broken = true;
+  const env = await feedLoad(many(12001), { fail: since => broken && since === 5000 });
+  await env.t.poolFeed(true);
+  assert.equal(env.t.db.pool.feed.rev, 5000);
+  assert.ok(env.t.db.pool.err);
+  broken = false;
+  await env.t.poolFeed(true);
+  assert.equal(env.t.db.pool.feed.rev, 12001);
+});
+
+test('corps inattendu : échec, position inchangée', async () => {
+  const env = await feedLoad(many(10), { body: { hello: 1 } });
+  await env.t.poolFeed(true);
+  assert.equal(env.t.db.pool.feed.rev, 0);
+  assert.ok(env.t.db.pool.err);
+  assert.ok(env.t.db.pool.retryAt > Date.now());
+});
+
+test('retour à zéro : autre identifiant de pool, position au-delà de max, autre adresse', async () => {
+  const state = { pool: 'p1' };
+  const env = await feedLoad(many(10), state);
+  const { t, calls } = env;
+  await t.poolFeed(true);
+  t.db.pool.feed.rev = 50; // base restaurée plus ancienne
+  await t.poolFeed(true);
+  assert.equal(t.db.pool.feed.rev, 10);
+  assert.ok(calls.includes('/v1/feed?since=50&limit=5000') && calls.at(-1) === '/v1/feed?since=0&limit=5000');
+  state.pool = 'p2';
+  await t.poolFeed(true);
+  assert.equal(t.db.pool.feed.pool, 'p2');
+  assert.equal(calls.at(-1), '/v1/feed?since=0&limit=5000');
+  t.db.pool.url = POOL; // même adresse sans / : pas de retour à zéro
+  await t.poolFeed(true);
+  assert.equal(calls.at(-1), '/v1/feed?since=10&limit=5000');
+});
+
+test('pool en 1.3.0 (404) : fil noté absent, ancienne méthode, nouvel essai au bout de 6 h', async () => {
+  const env = await feedLoad([], { status: 404 });
+  await env.t.poolFeed(true);
+  assert.equal(env.t.feedOn(), false);
+  assert.ok(env.t.db.pool.feed.off > 0);
+  assert.equal(env.t.db.pool.err, '', 'un 404 du fil n’est pas une erreur du pool');
+  env.t.db.pool.feed.off = Date.now() - 6 * 36e5 - 1;
+  assert.equal(env.t.feedOn(), true);
+  env.t.db.pool.feed.off = Date.now();
+  env.t.db.pool.url = 'https://autre-pool.test';
+  assert.equal(env.t.feedOn(), true, 'le 404 vaut pour une adresse');
+});
+
+test('mode secours : pas de fil ; une base neuve a sa position à zéro', () => {
+  const { t } = load();
+  assert.deepEqual(plain(t.db.pool.feed), { url: '', pool: '', rev: 0, at: 0, off: 0, got: 0 });
+  Object.assign(t.db.pool, { url: POOL, key: KEY, on: true });
+  assert.equal(t.feedOn(), false);
+});
+
+test('deux appels simultanés : une seule série de requêtes ; sans force, pas deux passages en moins d’une minute', async () => {
+  const env = await feedLoad(many(10));
+  await Promise.all([env.t.poolFeed(true), env.t.poolFeed(true)]);
+  assert.equal(env.calls.length, 1);
+  await env.t.poolFeed();
+  assert.equal(env.calls.length, 1);
+});
