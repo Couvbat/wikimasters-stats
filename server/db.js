@@ -36,6 +36,7 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS pro_fetch_rev ON pro_fetch(rev);
     CREATE INDEX IF NOT EXISTS unsold_queue_rev ON unsold_queue(rev);
     INSERT OR IGNORE INTO meta (k, v) VALUES ('rev', '0');
+    INSERT OR IGNORE INTO meta (k, v) VALUES ('pool_id', lower(hex(randomblob(8))));
     UPDATE meta SET v = MAX(CAST(v AS INTEGER), (SELECT COALESCE(MAX(rev), 0) FROM sales), (SELECT COALESCE(MAX(rev), 0) FROM pro_fetch),
       (SELECT COALESCE(MAX(rev), 0) FROM unsold_queue)) WHERE k = 'rev';`);
 }
@@ -137,6 +138,26 @@ function pullCards(db, ids) {
   return { cards };
 }
 
+// Fil des nouveautés (1.4.0) : les lignes des trois tables dont le numéro de révision dépasse `since`, dans l'ordre des numéros,
+// `limit` au plus en tout. Le script garde `next` et le renvoie comme `since` à la page suivante. Le serveur traite une requête
+// à la fois et un envoi prend ses numéros dans une seule transaction : toute ligne de numéro ≤ `max` est déjà écrite.
+function feedRows(db, since, limit) {
+  const take = limit + 1;
+  const rows = [
+    ...db.prepare('SELECT rev, card, price, sold_at, kind, auction, gap, rarity FROM sales WHERE rev > ? ORDER BY rev LIMIT ?').all(since, take)
+      .map(r => ({ rev: Number(r.rev), t: 'sales', v: [Number(r.rev), r.card, r.price, r.sold_at, r.kind, r.auction || '', r.gap, r.rarity || null] })),
+    ...db.prepare('SELECT rev, card, at, member FROM pro_fetch WHERE rev > ? ORDER BY rev LIMIT ?').all(since, take)
+      .map(r => ({ rev: Number(r.rev), t: 'pro', v: [Number(r.rev), r.card, Number(r.at), r.member || null] })),
+    ...db.prepare('SELECT rev, auction FROM unsold_queue WHERE rev > ? ORDER BY rev LIMIT ?').all(since, take)
+      .map(r => ({ rev: Number(r.rev), t: 'unsold', v: [Number(r.rev), r.auction] }))
+  ].sort((a, b) => a.rev - b.rev);
+  const page = rows.slice(0, limit);
+  const out = { pool: getMeta(db, 'pool_id'), max: Number(getMeta(db, 'rev') || 0), next: page.length ? page[page.length - 1].rev : since,
+    more: rows.length > limit, sales: [], pro: [], unsold: [] };
+  for (const r of page) out[r.t].push(r.v);
+  return out;
+}
+
 // Enchères dont le prix final est déjà connu du pool : le client n'a pas besoin de les relire sur le site.
 function knownAuctions(db, ids) {
   const exact = {};
@@ -185,4 +206,4 @@ function setMeta(db, k, v) {
   db.prepare('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(k, String(v));
 }
 
-module.exports = { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember, putProfile, listProfiles, removeProfile, getMeta, setMeta };
+module.exports = { openDb, applyPush, pullCards, feedRows, knownAuctions, poolStats, purgeMember, putProfile, listProfiles, removeProfile, getMeta, setMeta };
