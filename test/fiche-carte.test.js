@@ -362,3 +362,43 @@ test('repères : 20 cartes à 300 ventes se calculent sans geler la page', () =>
   const ms = performance.now() - t0;
   assert.ok(ms < 150, Math.round(ms) + ' ms');
 });
+
+// ----- Relecture Copilot -----
+test('fiche : seulement des nœuds ou du texte passés à replaceChildren, comme le DOM réel le demande', () => {
+  const { t } = load();
+  const bad = [];
+  const strict = name => ({ replaceChildren(...kids) {
+    kids.forEach((k, i) => { if (!(typeof k === 'string' || (k && typeof k === 'object' && k.nodeType))) bad.push(name + '[' + i + '] = ' + (Array.isArray(k) ? 'tableau' : String(k))); });
+  } });
+  t.ui.el.cardHead = strict('cardHead');
+  t.ui.el.cardBody = strict('cardBody');
+  t.ui.el.cardStatus = { textContent: '' };
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 120, 'SR'), sale(2, 900, 'UR')] };
+  t.openCard('C1', { rarity: 'SR', title: 'Paris' }); // avec ventes, moins de 50 : pas de « Tout afficher »
+  t.renderCard();
+  t.openCard('C1', { rarity: 'L', title: 'Paris' }); // sans vente à cette rareté, d'autres raretés en ont
+  t.renderCard();
+  t.openCard('C9', { title: 'X' }); // carte inconnue : aucune autre rareté
+  t.renderCard();
+  assert.deepEqual(bad, []);
+});
+
+test('pastille au clavier : Entrée ou Espace ouvrent la fiche, les autres touches non', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 100)] };
+  const b = t.badgeFor('C1', null, {});
+  b.card.title = 'Paris';
+  const el = {};
+  t.tipData.set(el, b);
+  const calls = [];
+  const ev = key => ({ key, target: { closest: () => el }, preventDefault: () => calls.push('prevent'), stopPropagation: () => calls.push('stop') });
+  t.badgeKey(ev('a'));
+  assert.equal(t.ui.card, null);
+  assert.deepEqual(calls, []);
+  t.badgeKey(ev('Enter'));
+  assert.equal(t.ui.card.id, 'C1');
+  t.ui.card = null;
+  t.badgeKey(ev(' '));
+  assert.equal(t.ui.card.id, 'C1');
+  assert.deepEqual(calls, ['prevent', 'stop', 'prevent', 'stop']);
+});

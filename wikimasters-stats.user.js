@@ -4638,6 +4638,8 @@
     }
     return svg;
   }
+  // replaceChildren du navigateur n'aplatit pas les tableaux et écrirait « null » pour un élément absent : on lui passe une liste propre.
+  const fillEl = (el, ...kids) => el.replaceChildren(...kids.flat(5).filter(k => k != null && k !== false));
   function renderCard() {
     const e = ui.el, c = ui.card;
     if (!c || !e.cardHead || !e.cardBody) return;
@@ -4653,7 +4655,7 @@
       ? [h('span', { class: 'val' }, (price.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(Math.max(price.med, DISCARD))) + ' ₩'), ' ', relCell(price),
         price.mixed ? ' · prix d’autres raretés' : '']
       : h('span', { class: 'val' }, fmt(DISCARD) + ' ₩ (aucune vente connue)');
-    e.cardHead.replaceChildren(h('button', { class: 'b', onclick: closeCard }, '← Retour'), h('h2', null, c.title), rars.map(rarBtn), h('span', null, value));
+    fillEl(e.cardHead, h('button', { class: 'b', onclick: closeCard }, '← Retour'), h('h2', null, c.title), rars.map(rarBtn), h('span', null, value));
     e.cardSearch = h('button', { class: 'b', onclick: cardSearchNow,
       'data-tip': 'Cherche sur le marché qui vend cette carte en ce moment, et à quel prix. Une requête, par le nom de la carte.' }, 'Chercher les annonces de cette carte');
     e.cardPro = proState() === true ? h('button', { class: 'b', onclick: cardProNow,
@@ -4662,7 +4664,7 @@
     const actions = h('div', { class: 'tools' }, e.cardSearch, e.cardPro);
     if (!src.sales.length) {
       const others = rars.filter(r => r !== rarity);
-      e.cardBody.replaceChildren(
+      fillEl(e.cardBody,
         h('div', { class: 'empty' }, 'Aucune vente connue' + (rarOk(rarity) ? ' à cette rareté' : '') + '.'),
         others.length ? h('p', { class: 'line' }, 'Ventes connues en : ', others.map(rarBtn)) : null,
         actions);
@@ -4710,7 +4712,7 @@
     const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, { med7: cues.moment.med7, medBase: cues.moment.medBase }));
     const legend = h('div', { class: 'note' }, '● vente Pro, exacte ou à toi · ○ prix provisoire, un minimum · ◆ bleu : ta vente, ◆ orange : ton achat · ' +
       'pointillés : médiane des 30 jours d’avant, trait orange : celle des 7 derniers jours. Survole un point pour le détail.');
-    e.cardBody.replaceChildren(h('div', { class: 'cues' }, rows), periods, chart, legend, actions, table, more);
+    fillEl(e.cardBody, h('div', { class: 'cues' }, rows), periods, chart, legend, actions, table, more);
   }
 
   function sellList(rows) {
@@ -5222,11 +5224,15 @@
         if (!el) {
           el = document.createElement('span');
           el.className = BADGE;
+          // Un bouton pour le clavier et les lecteurs d'écran : il prend le focus et s'active avec Entrée ou Espace (badgeKey).
+          el.tabIndex = 0;
+          el.setAttribute('role', 'button');
           if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
           card.append(el);
         }
         el.dataset.key = key;
         el.textContent = b.text;
+        el.setAttribute('aria-label', 'Valeur ' + b.text + ' : ouvrir la fiche de la carte');
         b.card.title = title; // le nom lu sur la carte du site, pour la fiche
         tipData.set(el, b);
         // Bulle détaillée (la nôtre) ou bulle simple du navigateur, selon le réglage.
@@ -5250,6 +5256,7 @@
 .wmstats-dim{opacity:.35;filter:grayscale(.8);transition:opacity .15s,filter .15s}
 .wmstats-dim:hover{opacity:1;filter:none}
 .wmstats-glow{box-shadow:0 0 0 2px #10b981,0 0 18px rgba(16,185,129,.55)!important}
+.wmstats-badge:focus-visible{outline:2px solid #34d399;outline-offset:2px}
 #wmstats-tip{position:fixed;z-index:2147483646;display:none;width:max-content;max-width:300px;padding:8px 10px;border-radius:10px;
   background:#0b1210;color:#d1d5db;border:1px solid #23332c;box-shadow:0 8px 24px rgba(0,0,0,.6);
   font:12px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;pointer-events:none;text-align:left}
@@ -5304,6 +5311,10 @@
   function hideTip() { tipFor = null; if (tipEl) tipEl.style.display = 'none'; }
   // Clic sur une de nos pastilles : la fiche de la carte s'ouvre dans le panneau, avec l'annonce si la pastille en porte une.
   // Écouté en phase de capture, avant le lien de la carte du site : le clic ne le suit pas.
+  // Au clavier : une pastille prend le focus (Tab) et s'ouvre avec Entrée ou Espace, comme au clic.
+  function badgeKey(ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') badgeClick(ev);
+  }
   function badgeClick(ev) {
     const el = ev.target && ev.target.closest ? ev.target.closest('.' + BADGE) : null;
     if (!el) return;
@@ -5414,6 +5425,7 @@
     }, true);
     window.addEventListener('scroll', () => { if (tipFor) hideTip(); }, true);
     document.addEventListener('click', badgeClick, true);
+    document.addEventListener('keydown', badgeKey, true);
     overlaySoon();
   }
 
