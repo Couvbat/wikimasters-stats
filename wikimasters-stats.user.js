@@ -1694,6 +1694,80 @@
   const isDeal = c => dealOf(c) > 0;
   // Enchère max conseillée : la valeur médiane. Au-delà, tu paies la carte plus cher que ce qu'elle se vend d'habitude.
   const maxBid = price => (price && price.n ? Math.max(DISCARD, Math.floor(price.med)) : null);
+
+  // ---------- repères de la fiche d'une carte ----------
+  // Des repères sur « maintenant », jamais un verdict : Jules décide. Sous les minimums, « pas assez de ventes » plutôt qu'un chiffre.
+  const CUE = { RECENT_DAYS: 7, RECENT_MIN: 3, BASE_DAYS: 30, BASE_MIN: 5, MOMENT_PCT: 15, SLOPE_DAYS: 30, SLOPE_MIN: 6, SLOPE_MAX: 300, SLOPE_PCT: 5, PACE_DAYS: 30 };
+  // Calcul pur (ne lit pas db), pour se tester seul. sales : [{ p, t }] dans n'importe quel ordre ; une date illisible ou un prix nul
+  // est ignoré, une date future compte comme maintenant. asks : null, ou { list (annonces en cours, toutes raretés), rarity, seenAt }.
+  //   moment : la médiane des 7 derniers jours (3 ventes au moins) face à celle des 30 jours d'avant (5 au moins) ;
+  //   slope : la pente des prix sur 30 jours (6 ventes au moins), robuste aux ventes aberrantes (Theil-Sen sur le logarithme) ;
+  //   pace : le nombre de ventes des 30 derniers jours et la dernière vente ; compete : les annonces à cette rareté.
+  function cardCues(sales, now, asks) {
+    const pts = [];
+    for (const s of Array.isArray(sales) ? sales : []) {
+      const ts = s ? Date.parse(s.t) : NaN;
+      if (Number.isFinite(ts) && num(s.p) > 0) pts.push({ t: Math.min(ts, now), p: num(s.p) });
+    }
+    pts.sort((a, b) => b.t - a.t); // les plus récentes d'abord
+    const age = pt => (now - pt.t) / DAY;
+    const recent = pts.filter(pt => age(pt) <= CUE.RECENT_DAYS);
+    const base = pts.filter(pt => age(pt) > CUE.RECENT_DAYS && age(pt) <= CUE.RECENT_DAYS + CUE.BASE_DAYS);
+    const moment = { state: 'few', pct: null, med7: null, n7: recent.length, medBase: null, nBase: base.length };
+    if (recent.length >= CUE.RECENT_MIN && base.length >= CUE.BASE_MIN) {
+      moment.med7 = median(recent.map(pt => pt.p));
+      moment.medBase = median(base.map(pt => pt.p));
+      moment.pct = Math.round(100 * (moment.med7 / moment.medBase - 1));
+      moment.state = moment.pct >= CUE.MOMENT_PCT ? 'high' : moment.pct <= -CUE.MOMENT_PCT ? 'low' : 'usual';
+    }
+    const win = pts.filter(pt => age(pt) <= CUE.SLOPE_DAYS).slice(0, CUE.SLOPE_MAX);
+    const slope = { state: 'few', pct: null, n: win.length };
+    if (win.length >= CUE.SLOPE_MIN) {
+      const slopes = [];
+      for (let i = 0; i < win.length; i++) for (let j = i + 1; j < win.length; j++)
+        if (win[j].t !== win[i].t) slopes.push((Math.log(win[j].p) - Math.log(win[i].p)) / (win[j].t - win[i].t));
+      if (slopes.length) {
+        slope.pct = Math.round(100 * (Math.exp(median(slopes) * 7 * DAY) - 1)) || 0;
+        slope.state = slope.pct >= CUE.SLOPE_PCT ? 'up' : slope.pct <= -CUE.SLOPE_PCT ? 'down' : 'flat';
+      }
+    }
+    const n30 = pts.filter(pt => age(pt) <= CUE.PACE_DAYS).length;
+    const pace = { n30, perWeek: n30 * 7 / CUE.PACE_DAYS, lastT: pts.length ? pts[0].t : 0 };
+    let compete = null;
+    if (asks) {
+      const want = asks.rarity;
+      const same = (Array.isArray(asks.list) ? asks.list : []).filter(x => x && num(x.a) > 0 && (!rarOk(want) || !rarOk(x.r) || x.r === want));
+      compete = { n: same.length, min: same.length ? Math.min(...same.map(x => x.a)) : null, seenAt: num(asks.seenAt) };
+    }
+    return { moment, slope, pace, compete };
+  }
+  const signedPct = v => (v < 0 ? '−' + Math.abs(v) : '+' + v) + ' %';
+  // Les repères écrits en clair, une ligne chacun, dans l'ordre de la fiche.
+  function cueLines(c) {
+    const m = c.moment, sl = c.slope, pc = c.pace, out = [];
+    out.push({ k: 'moment', label: 'Prix du moment', text: m.state === 'few' ? 'pas assez de ventes pour comparer'
+      : (m.state === 'high' ? 'plus cher que d’habitude (' + signedPct(m.pct) + ')' : m.state === 'low' ? 'moins cher que d’habitude (' + signedPct(m.pct) + ')' : 'dans son habitude') +
+        ' · 7 derniers jours : ' + fmt(Math.round(m.med7)) + ' ₩ (' + plural(m.n7, 'vente', 'ventes') + '), 30 jours d’avant : ' +
+        fmt(Math.round(m.medBase)) + ' ₩ (' + plural(m.nBase, 'vente', 'ventes') + ')' });
+    out.push({ k: 'slope', label: 'Sens', text: sl.state === 'few' ? 'pas assez de ventes sur 30 jours pour dire le sens'
+      : sl.state === 'up' ? 'en hausse (' + signedPct(sl.pct) + ' par semaine)' : sl.state === 'down' ? 'en baisse (' + signedPct(sl.pct) + ' par semaine)' : 'stable' });
+    out.push({ k: 'pace', label: 'Rythme', text: (!pc.n30 ? 'aucune vente en 30 jours'
+      : pc.perWeek >= 1 ? 'se vend environ ' + Math.round(pc.perWeek) + ' fois par semaine' : 'se vend environ ' + pc.n30 + ' fois par mois') +
+      (pc.lastT ? ' · dernière vente ' + ago(pc.lastT) : '') });
+    const cp = c.compete;
+    if (cp) {
+      out.push({ k: 'compete', label: 'Concurrence', text: cp.n ? cp.n + ' en vente, la moins chère à ' + fmt(cp.min) + ' ₩' + (cp.seenAt ? ' · relevé ' + ago(cp.seenAt) : '')
+        : cp.seenAt ? 'aucune annonce connue à cette rareté (relevé ' + ago(cp.seenAt) + ')' : 'annonces jamais cherchées' });
+    }
+    return out;
+  }
+  // Les repères 1 et 2 en court, pour la bulle des pastilles ; '' si aucun des deux n'est calculable.
+  function cueShort(c) {
+    if (!c) return '';
+    const a = { high: 'plus cher que d’habitude', low: 'moins cher que d’habitude', usual: 'dans son habitude' }[c.moment.state];
+    const b = { up: 'en hausse', down: 'en baisse', flat: 'stable' }[c.slope.state];
+    return [a, b].filter(Boolean).join(' · ');
+  }
   // Une enchère dure 12 h au plus : une alerte plus ancienne concerne forcément une enchère terminée.
   const ALERT_TTL = 12 * 36e5;
   // Les alertes récentes dont on ne connaît pas encore le prix, une par carte, les plus récentes d'abord.
