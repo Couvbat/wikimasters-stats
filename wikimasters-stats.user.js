@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.28.0
+// @version      1.29.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.28.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.29.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -1589,6 +1589,30 @@
     if (unknown.length) return { sales: unknown, mixed: false };
     return { sales: list, mixed: true };
   }
+  // La source des ventes d'une carte à une rareté : la première, de la plus sûre à la moins sûre (historique Pro, tes ventes
+  // et achats, fins d'enchères observées), qui a des ventes à la bonne rareté ; à défaut, la première qui a des ventes,
+  // signalée comme mélangée. Partagée par priceOf et la fiche de la carte.
+  function pickSource(cardId, want) {
+    const rec = db.prices[cardId];
+    const sources = [['pro', rec && rec.sales], ['own', db.mySales[cardId]], ['obs', db.obsSales[cardId]]]
+      .map(([kind, list]) => Object.assign({ kind }, salesFor(list, want))).filter(s => s.sales.length);
+    return { rec, src: sources.find(s => !s.mixed) || sources[0] };
+  }
+  // Les ventes de la fiche d'une carte : toute la source de priceOf, pas seulement la fenêtre qui fait la valeur.
+  // La fiche ne mélange jamais les raretés, contrairement à priceOf qui se rabat sur d'autres raretés (fiabilité 0) :
+  // sans vente à cette rareté, elle n'a rien.
+  function cardSource(cardId, rarity) {
+    const { src } = pickSource(cardId, rarOk(rarity) ? rarity : '');
+    return !src || src.mixed ? { kind: null, sales: [] } : { kind: src.kind, sales: src.sales };
+  }
+  // Les raretés qui ont au moins une vente connue (toutes sources), dans l'ordre habituel.
+  function cardRarities(cardId) {
+    const rec = db.prices[cardId], seen = new Set();
+    for (const list of [rec && rec.sales, db.mySales[cardId], db.obsSales[cardId]]) {
+      if (Array.isArray(list)) for (const s of list) if (s && rarOk(s.r)) seen.add(s.r);
+    }
+    return RARITIES.filter(r => seen.has(r));
+  }
   // Prix d'une carte à une rareté donnée (par défaut, sa rareté actuelle) : un exemplaire UR ne se vend pas comme un L.
   // Sources, de la plus sûre à la moins sûre : historique Pro, tes ventes et achats, fins d'enchères observées
   // (par le script ou par un ami). On prend la première qui a des ventes à la bonne rareté ; à défaut, la première qui
@@ -1599,10 +1623,7 @@
     const hit = priceCache.get(key);
     if (hit && Date.now() < hit.until) return hit.out;
     let until = Infinity;
-    const rec = db.prices[cardId];
-    const sources = [['pro', rec && rec.sales], ['own', db.mySales[cardId]], ['obs', db.obsSales[cardId]]]
-      .map(([kind, list]) => Object.assign({ kind }, salesFor(list, want))).filter(s => s.sales.length);
-    const src = sources.find(s => !s.mixed) || sources[0];
+    const { rec, src } = pickSource(cardId, want);
     let out = null;
     if (!src) out = rec && Array.isArray(rec.sales) ? { n: 0, at: rec.at } : null;
     else {
@@ -1673,6 +1694,106 @@
   const isDeal = c => dealOf(c) > 0;
   // Enchère max conseillée : la valeur médiane. Au-delà, tu paies la carte plus cher que ce qu'elle se vend d'habitude.
   const maxBid = price => (price && price.n ? Math.max(DISCARD, Math.floor(price.med)) : null);
+
+  // ---------- repères de la fiche d'une carte ----------
+  // Des repères sur « maintenant », jamais un verdict : Jules décide. Sous les minimums, « pas assez de ventes » plutôt qu'un chiffre.
+  const CUE = { RECENT_DAYS: 7, RECENT_MIN: 3, BASE_DAYS: 30, BASE_MIN: 5, MOMENT_PCT: 15, SLOPE_DAYS: 30, SLOPE_MIN: 6, SLOPE_MAX: 300, SLOPE_PCT: 5, SLOPE_GAP: 1, SLOPE_SPAN: 7, PACE_DAYS: 30 };
+  // Calcul pur (ne lit pas db), pour se tester seul. sales : [{ p, t }] dans n'importe quel ordre ; une date illisible ou un prix nul
+  // est ignoré, une date future compte comme maintenant. asks : null, ou { list (annonces en cours, toutes raretés), rarity, seenAt }.
+  //   moment : la médiane des 7 derniers jours (3 ventes au moins) face à celle des 30 jours d'avant (5 au moins) ;
+  //   slope : la pente des prix sur 30 jours (6 ventes au moins), robuste aux ventes aberrantes (Theil-Sen sur le logarithme) ;
+  //   pace : le nombre de ventes des 30 derniers jours et la dernière vente ; compete : les annonces à cette rareté.
+  function cardCues(sales, now, asks) {
+    const pts = [];
+    for (const s of Array.isArray(sales) ? sales : []) {
+      const ts = s ? Date.parse(s.t) : NaN;
+      if (Number.isFinite(ts) && num(s.p) > 0) pts.push({ t: Math.min(ts, now), p: num(s.p) });
+    }
+    pts.sort((a, b) => b.t - a.t); // les plus récentes d'abord
+    const age = pt => (now - pt.t) / DAY;
+    const recent = pts.filter(pt => age(pt) <= CUE.RECENT_DAYS);
+    const base = pts.filter(pt => age(pt) > CUE.RECENT_DAYS && age(pt) <= CUE.RECENT_DAYS + CUE.BASE_DAYS);
+    const moment = { state: 'few', pct: null, med7: null, n7: recent.length, medBase: null, nBase: base.length };
+    if (recent.length >= CUE.RECENT_MIN && base.length >= CUE.BASE_MIN) {
+      moment.med7 = median(recent.map(pt => pt.p));
+      moment.medBase = median(base.map(pt => pt.p));
+      moment.pct = Math.round(100 * (moment.med7 / moment.medBase - 1));
+      moment.state = moment.pct >= CUE.MOMENT_PCT ? 'high' : moment.pct <= -CUE.MOMENT_PCT ? 'low' : 'usual';
+    }
+    const win = pts.filter(pt => age(pt) <= CUE.SLOPE_DAYS).slice(0, CUE.SLOPE_MAX);
+    const slope = { state: 'few', pct: null, n: win.length };
+    // Des ventes groupées (doublons vendus d'un coup, une rafale de la même heure) ne disent rien du sens : seules comptent les paires
+    // de ventes à un jour d'écart au moins, et les ventes doivent s'étaler sur une semaine au moins.
+    if (win.length >= CUE.SLOPE_MIN && win[0].t - win[win.length - 1].t >= CUE.SLOPE_SPAN * DAY) {
+      const n = win.length, lg = win.map(pt => Math.log(pt.p)), buf = new Float64Array(n * (n - 1) / 2);
+      const ts = win.map(pt => pt.t), gap = CUE.SLOPE_GAP * DAY;
+      let k = 0;
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const dt = ts[j] - ts[i];
+        if (dt >= gap || dt <= -gap) buf[k++] = (lg[j] - lg[i]) / dt;
+      }
+      if (k) {
+        // Médiane des pentes par sélection, sans tout trier : jusqu'à 44 850 paires pour 300 ventes.
+        const med = k % 2 ? kthOf(buf, k, k >> 1) : (kthOf(buf, k, (k >> 1) - 1) + kthOf(buf, k, k >> 1)) / 2;
+        const pct = Math.round(100 * (Math.exp(med * 7 * DAY) - 1));
+        if (Number.isFinite(pct)) {
+          slope.pct = pct || 0;
+          slope.state = slope.pct >= CUE.SLOPE_PCT ? 'up' : slope.pct <= -CUE.SLOPE_PCT ? 'down' : 'flat';
+        }
+      }
+    }
+    const n30 = pts.filter(pt => age(pt) <= CUE.PACE_DAYS).length;
+    const pace = { n30, perWeek: n30 * 7 / CUE.PACE_DAYS, lastT: pts.length ? pts[0].t : 0 };
+    let compete = null;
+    if (asks) {
+      const want = asks.rarity;
+      const same = (Array.isArray(asks.list) ? asks.list : []).filter(x => x && num(x.a) > 0 && (!rarOk(want) || !rarOk(x.r) || x.r === want));
+      compete = { n: same.length, min: same.length ? Math.min(...same.map(x => x.a)) : null, seenAt: num(asks.seenAt) };
+    }
+    return { moment, slope, pace, compete };
+  }
+  // Le k-ième plus petit (à partir de 0) des n premiers éléments d'un tableau typé, réordonné sur place (sélection de Hoare).
+  function kthOf(a, n, k) {
+    let lo = 0, hi = n - 1;
+    while (lo < hi) {
+      const pivot = a[(lo + hi) >> 1];
+      let i = lo, j = hi;
+      while (i <= j) {
+        while (a[i] < pivot) i++;
+        while (a[j] > pivot) j--;
+        if (i <= j) { const x = a[i]; a[i] = a[j]; a[j] = x; i++; j--; }
+      }
+      if (k <= j) hi = j; else if (k >= i) lo = i; else return a[k];
+    }
+    return a[k];
+  }
+  const signedPct = v => (v < 0 ? '−' + Math.abs(v) : '+' + v) + ' %';
+  // Les repères écrits en clair, une ligne chacun, dans l'ordre de la fiche.
+  function cueLines(c) {
+    const m = c.moment, sl = c.slope, pc = c.pace, out = [];
+    out.push({ k: 'moment', label: 'Prix du moment', text: m.state === 'few' ? 'pas assez de ventes pour comparer'
+      : (m.state === 'high' ? 'plus cher que d’habitude (' + signedPct(m.pct) + ')' : m.state === 'low' ? 'moins cher que d’habitude (' + signedPct(m.pct) + ')' : 'dans son habitude') +
+        ' · 7 derniers jours : ' + fmt(Math.round(m.med7)) + ' ₩ (' + plural(m.n7, 'vente', 'ventes') + '), 30 jours d’avant : ' +
+        fmt(Math.round(m.medBase)) + ' ₩ (' + plural(m.nBase, 'vente', 'ventes') + ')' });
+    out.push({ k: 'slope', label: 'Sens', text: sl.state === 'few' ? 'pas assez de ventes sur 30 jours pour dire le sens'
+      : sl.state === 'up' ? 'en hausse (' + signedPct(sl.pct) + ' par semaine)' : sl.state === 'down' ? 'en baisse (' + signedPct(sl.pct) + ' par semaine)' : 'stable' });
+    out.push({ k: 'pace', label: 'Rythme', text: (!pc.n30 ? 'aucune vente en 30 jours'
+      : pc.perWeek >= 1 ? 'se vend environ ' + Math.round(pc.perWeek) + ' fois par semaine' : 'se vend environ ' + pc.n30 + ' fois par mois') +
+      (pc.lastT ? ' · dernière vente ' + ago(pc.lastT) : '') });
+    const cp = c.compete;
+    if (cp) {
+      out.push({ k: 'compete', label: 'Concurrence', text: cp.n ? cp.n + ' en vente, la moins chère à ' + fmt(cp.min) + ' ₩' + (cp.seenAt ? ' · relevé ' + ago(cp.seenAt) : '')
+        : cp.seenAt ? 'aucune annonce connue à cette rareté (relevé ' + ago(cp.seenAt) + ')' : 'annonces jamais cherchées' });
+    }
+    return out;
+  }
+  // Les repères 1 et 2 en court, pour la bulle des pastilles ; '' si aucun des deux n'est calculable.
+  function cueShort(c) {
+    if (!c) return '';
+    const a = { high: 'plus cher que d’habitude', low: 'moins cher que d’habitude', usual: 'dans son habitude' }[c.moment.state];
+    const b = { up: 'en hausse', down: 'en baisse', flat: 'stable' }[c.slope.state];
+    return [a, b].filter(Boolean).join(' · ');
+  }
   // Une enchère dure 12 h au plus : une alerte plus ancienne concerne forcément une enchère terminée.
   const ALERT_TTL = 12 * 36e5;
   // Les alertes récentes dont on ne connaît pas encore le prix, une par carte, les plus récentes d'abord.
@@ -2747,7 +2868,9 @@
   const ui = {
     open: false, tab: 'home', chosen: new Set(['L', 'UR', 'SR']),
     sortKey: 'total', sortDir: -1, text: '', rarity: '', friend: '', frRarity: '',
-    wishRarity: '', wishAvail: false, wishOpen: new Set(), wishAll: false, tradeOpen: new Set(), metric: 0, sorts: {}, el: {}
+    wishRarity: '', wishAvail: false, wishOpen: new Set(), wishAll: false, tradeOpen: new Set(), metric: 0, sorts: {}, el: {},
+    // Fiche d'une carte ouverte dans le panneau (voir openCard), ou null.
+    card: null
   };
   const SVG = 'http://www.w3.org/2000/svg';
   function s(tag, attrs, ...kids) {
@@ -2910,6 +3033,18 @@
     .chart text{font-size:11px;fill:#8b9a94;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
     .tip{position:absolute;top:6px;transform:translateX(-50%);background:#1c2622;border:1px solid #33413b;border-radius:6px;
       padding:4px 8px;font-size:12px;color:#e5e7eb;white-space:nowrap;pointer-events:none;display:none}
+    .cbtn{background:none;border:0;padding:0 2px;margin-left:4px;cursor:pointer;font-size:13px;opacity:.7}
+    .cbtn:hover{opacity:1}
+    .card-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px}
+    .card-head h2{font-size:16px;margin:0;font-weight:700}
+    .card-head .val{font-weight:700;font-size:15px}
+    .rbtn{background:none;border:0;padding:0;cursor:pointer;opacity:.5}
+    .rbtn.on,.rbtn:hover{opacity:1}
+    .rbtn.on .r{outline:2px solid #34d399;outline-offset:1px}
+    .cues{display:flex;flex-direction:column;gap:5px;margin:4px 0 12px;color:#cbd5d1}
+    .cue b{color:#e5e7eb;font-weight:600}
+    .periods{display:flex;gap:6px;margin:6px 0}
+    button.b.on{border-color:#34d399;color:#34d399}
   `;
 
   const REL = ['Douteux', 'Moyen', 'Fiable'];
@@ -2943,7 +3078,7 @@
   const medCell = (m, n) => (n ? fmt(Math.round(m)) + ' ₩ · ' + plural(n, 'vente', 'ventes') : '—');
   const COLS = [
     { k: 'title', t: 'Carte', get: r => r.title.toLowerCase(),
-      cell: r => [r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title) : r.title,
+      cell: r => [r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title) : r.title, cardBtn(r.cardId, r.rarity, r.title),
         r.shiny ? ' ✨' : '', r.starred ? ' ★' : ''] },
     { k: 'rarity', t: 'Rareté', get: r => { const i = RARITIES.indexOf(r.rarity); return i < 0 ? 99 : i; }, cell: r => rarBadge(r.rarity) },
     { k: 'count', t: 'Ex.', get: r => r.count, cell: r => r.count },
@@ -3023,6 +3158,7 @@
     if (e.storeInfo) e.storeInfo.textContent = storeLine();
     for (const el of [e.autoInfo, e.autoInfo2]) if (el) el.textContent = autoLine();
     for (const b of [e.updAll, e.updAll2]) if (b) b.disabled = job.running;
+    syncCardButtons();
     if (!e.load) return;
     const pro = proState();
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
@@ -3072,7 +3208,7 @@
     const root = host.attachShadow({ mode: 'open' });
     const e = ui.el;
     e.host = host;
-    for (const k of ['status', 'sellStatus', 'frStatus', 'salesStatus', 'wishStatus', 'dataStatus']) e[k] = h('div', { class: 'status' });
+    for (const k of ['status', 'sellStatus', 'frStatus', 'salesStatus', 'wishStatus', 'dataStatus', 'cardStatus']) e[k] = h('div', { class: 'status' });
     for (const k of ['tiles', 'pullTiles', 'salesTiles', 'wishTiles']) e[k] = h('div', { class: 'tiles' });
     for (const k of ['rar', 'market']) e[k] = h('div', { class: 'rar' });
     for (const k of ['table', 'sellTable', 'pullBody', 'frBody', 'salesBody', 'wishBody', 'trendBody']) e[k] = h('div', { class: 'scroll' });
@@ -3387,7 +3523,9 @@
       e.dataStatus,
       h('div', { class: 'note' }, 'Garde ce fichier pour toi : il contient des prix issus de ton compte.'));
 
-    const views = TABS.map(([k]) => e['view_' + k]);
+    // Fiche d'une carte : une vue du panneau hors de la barre d'onglets (voir openCard).
+    e.view_card = h('div', { style: 'display:none' }, (e.cardHead = h('div', { class: 'card-head' })), e.cardStatus, (e.cardBody = h('div', { class: 'scroll' })));
+    const views = TABS.map(([k]) => e['view_' + k]).concat([e.view_card]);
     e.back = h('div', { class: 'back', onclick: ev => { if (ev.target === e.back) toggle(false); } },
       h('div', { class: 'panel' },
         h('header', null,
@@ -3431,17 +3569,26 @@
     setTab(ui.tab);
   }
 
-  function setTab(t) {
-    ui.tab = t;
+  // La vue affichée : la fiche d'une carte quand elle est ouverte, sinon l'onglet en cours.
+  function showView() {
+    if (!ui.el.host) return;
     for (const [k] of TABS) {
-      ui.el['view_' + k].style.display = k === t ? '' : 'none';
-      ui.el['tab_' + k].classList.toggle('on', k === t);
+      ui.el['view_' + k].style.display = !ui.card && k === ui.tab ? '' : 'none';
+      ui.el['tab_' + k].classList.toggle('on', !ui.card && k === ui.tab);
     }
+    if (ui.el.view_card) ui.el.view_card.style.display = ui.card ? '' : 'none';
+  }
+  function setTab(t) {
+    ui.card = null; // cliquer un onglet ferme la fiche
+    ui.tab = t;
+    showView();
     refresh();
   }
   function toggle(force) {
     ui.open = force == null ? !ui.open : force;
     ui.el.back.classList.toggle('open', ui.open);
+    // Fermer le panneau ferme aussi la fiche : le bouton 📊 rouvre l'onglet d'où l'on venait.
+    if (!ui.open && ui.card) { ui.tab = ui.card.from || ui.tab; ui.card = null; showView(); }
     if (ui.open) { checkUpdate(false); renderUpdate(); poolPullMine(); }
     refresh();
   }
@@ -3459,6 +3606,7 @@
       ? 'Collection vue le ' + new Date(db.collectionAt).toLocaleString('fr-FR')
       : 'Collection pas encore chargée') + saveWarning();
     syncButtons();
+    if (ui.card) return renderCard();
     ({ home: renderHome, col: renderCol, sell: renderSell, sales: renderSales, trades: renderTrades, wish: renderWish, pulls: renderPulls,
       trend: renderTrend, friends: renderFriends, opts: () => {}, data: () => {} })[ui.tab]();
   }
@@ -3953,7 +4101,7 @@
     e.wishBody.replaceChildren(
       sortTable('wish', [
         { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(),
-          cell: c => [multi(c) ? h('span', { class: 'caret' }, isOpen(c) ? '▾' : '▸') : h('span', { class: 'caret' }), c.title,
+          cell: c => [multi(c) ? h('span', { class: 'caret' }, isOpen(c) ? '▾' : '▸') : h('span', { class: 'caret' }), c.title, cardBtn(c.id, c.rarity, c.title),
             multi(c) ? h('span', { class: 'tag', title: c.ask.other ? 'Dont ' + plural(c.ask.other, 'annonce', 'annonces') + ' d’une autre rareté : déplie la ligne pour les voir.' : '' },
               c.ask.list.length + ' annonces' + (c.ask.other ? ' (' + c.ask.other + ' autre rareté)' : '')) : null,
             isDeal(c) ? h('span', { class: 'tag deal', title: 'L’annonce la moins chère est ' + dealOf(c) + ' % sous la valeur médiane de sa rareté (' +
@@ -4368,6 +4516,205 @@
   }
 
   // ----- onglet À vendre -----
+  // ----- fiche d'une carte : une vue du panneau, hors de la barre d'onglets -----
+  // ui.card : { id, rarity, title, au (l'annonce d'où l'on vient, ou null), from (onglet d'origine), period (courbe), all (liste complète) }.
+  // Des repères sur « maintenant », jamais un verdict. Tout se calcule à l'ouverture et à chaque redessin.
+  function cardTitle(cardId, fallback) {
+    const c = Object.values(db.cards).find(x => x && x.cardId === cardId && x.title && x.title !== '?');
+    if (c) return c.title;
+    const w = db.wish[cardId];
+    if (w && w[0] && w[0] !== '?') return w[0];
+    return (typeof fallback === 'string' && fallback.trim()) || '?';
+  }
+  // Petit bouton 📈 à côté du nom d'une carte : ouvre sa fiche.
+  function cardBtn(cardId, rarity, title) {
+    return h('button', { class: 'cbtn', title: 'Fiche de la carte : repères, courbe et ventes', onclick: () => openCard(cardId, { rarity, title }) }, '📈');
+  }
+  // Rareté de la fiche : celle demandée (la ligne du panneau, ou l'annonce de la pastille), sinon ton exemplaire (non shiny
+  // d'abord), sinon la rareté connue de la carte, sinon la première qui a des ventes.
+  function openCard(cardId, opts) {
+    opts = opts || {};
+    const mine = Object.values(db.cards).filter(c => c && c.cardId === cardId && rarOk(c.rarity)).sort((a, b) => !!a.shiny - !!b.shiny);
+    const rarity = rarOk(opts.rarity) ? opts.rarity : mine.length ? mine[0].rarity : rarityOf(cardId) || cardRarities(cardId)[0] || '';
+    ui.card = { id: cardId, rarity, title: cardTitle(cardId, opts.title), au: opts.au || null, from: ui.card ? ui.card.from : ui.tab, period: null, all: false };
+    setStatus('', 'cardStatus');
+    showView();
+    if (!ui.el.host) return;
+    if (!ui.open) toggle(true); else refresh();
+  }
+  function closeCard() { setTab(ui.card ? ui.card.from : ui.tab); }
+  // La recherche d'annonces se fait par le nom : impossible tant qu'il est inconnu.
+  function syncCardButtons() {
+    const e = ui.el;
+    if (e.cardSearch) e.cardSearch.disabled = job.running || !ui.card || ui.card.title === '?';
+    if (e.cardPro) e.cardPro.disabled = job.running;
+  }
+  async function cardSearchNow() {
+    const c = ui.card;
+    if (!c || job.running || c.title === '?') return;
+    await marketSearch([[c.id, c.title]], 'Annonces', 'sans annonce', 'cardStatus');
+    if (ui.card && ui.card.id === c.id) renderCard();
+  }
+  async function cardProNow() {
+    const c = ui.card;
+    if (!c || job.running) return;
+    await fetchPricesFor([[c.id, c.rarity]], 'cardStatus', 'carte', 'cartes');
+    if (ui.card && ui.card.id === c.id) renderCard();
+  }
+  // ----- courbe de la fiche : SVG fait main, axe des dates réel (les ventes ne sont pas régulièrement espacées) -----
+  const CHART_PERIODS = [['7', '7 j', 7], ['30', '30 j', 30], ['90', '90 j', 90], ['all', 'tout', 0]];
+  // 30 jours par défaut, tout s'il y a moins de 10 ventes sur 30 jours.
+  function defaultPeriod(sales, now) {
+    const n = (Array.isArray(sales) ? sales : []).filter(x => { const t = Date.parse(x && x.t); return Number.isFinite(t) && now - t <= 30 * DAY; }).length;
+    return n >= 10 ? '30' : 'all';
+  }
+  // Bornes de l'axe des prix : 2e et 98e centiles (interpolés), pour qu'une vente aberrante n'écrase pas les autres ;
+  // le minimum et le maximum sous 10 valeurs. Des valeurs toutes égales gardent un écart d'un ₩ de chaque côté.
+  function chartBounds(values) {
+    const v = values.filter(Number.isFinite).sort((a, b) => a - b);
+    if (!v.length) return [0, 1];
+    const q = f => { const i = f * (v.length - 1), k = Math.floor(i); return k + 1 < v.length ? v[k] + (v[k + 1] - v[k]) * (i - k) : v[k]; };
+    let lo = v.length < 10 ? v[0] : q(0.02), hi = v.length < 10 ? v[v.length - 1] : q(0.98);
+    if (hi - lo < 1) { lo -= 1; hi += 1; }
+    return [lo, hi];
+  }
+  // Tes ventes (s) et tes achats (b) de la carte, à prix connu, à cette rareté ou de rareté inconnue, sans les shiny ;
+  // du plus ancien au plus récent. Ils ont leur propre marque sur la courbe.
+  function cardMarks(cardId, rarity) {
+    const out = [];
+    for (const a of Object.values(db.auctions)) {
+      if (!Array.isArray(a) || (a[0] !== 's' && a[0] !== 'b') || a[1] !== cardId || typeof a[6] !== 'number' || a[8]) continue;
+      if (rarOk(rarity) && rarOk(a[3]) && a[3] !== rarity) continue;
+      const t = Date.parse(a[7]);
+      if (Number.isFinite(t)) out.push({ t, p: a[6], k: a[0] });
+    }
+    return out.sort((x, y) => x.t - y.t);
+  }
+  const POINT_KIND = { pro: 'Pro', exact: 'exacte', prov: 'provisoire', own: 'toi', s: 'ta vente', b: 'ton achat' };
+  // points : [{ t (ms), p, k: pro|exact|prov|own }] ; marks : [{ t, p, k: s|b }] ; lines : { med7, medBase } (null sous les minimums).
+  function cardChart(points, marks, period, now, lines) {
+    const W = 760, H = 220, L = 54, R = 12, T = 10, B = 26;
+    const per = CHART_PERIODS.find(x => x[0] === period) || CHART_PERIODS[1];
+    const x0 = per[2] ? now - per[2] * DAY : Math.min(now - DAY, ...points.concat(marks).map(pt => pt.t));
+    const inRange = pt => pt.t >= x0 && pt.t <= now;
+    const pts = points.filter(inRange), mks = marks.filter(inRange);
+    const svg = s('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', role: 'img' });
+    if (!pts.length && !mks.length) {
+      svg.append(s('text', { x: W / 2, y: H / 2, 'text-anchor': 'middle' }, 'aucune vente sur cette période'));
+      return svg;
+    }
+    const [lo, hi] = chartBounds(pts.concat(mks).map(pt => pt.p));
+    const X = t => L + (t - x0) / Math.max(1, now - x0) * (W - L - R);
+    // Une vente hors bornes est dessinée au bord, en rouge.
+    const Y = p => T + (hi - Math.min(hi, Math.max(lo, p))) / (hi - lo) * (H - T - B);
+    const tip = pt => s('title', null, fmtDate(pt.t) + ' · ' + fmt(pt.p) + ' ₩ · ' + POINT_KIND[pt.k]);
+    svg.append(
+      s('line', { x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: '#33413b' }),
+      s('text', { x: L - 6, y: Y(hi) + 4, 'text-anchor': 'end' }, fmt(Math.round(hi)) + ' ₩'),
+      s('text', { x: L - 6, y: Y(lo) + 4, 'text-anchor': 'end' }, fmt(Math.round(lo)) + ' ₩'),
+      s('text', { x: L, y: H - 8 }, fmtDate(x0)),
+      s('text', { x: W - R, y: H - 8, 'text-anchor': 'end' }, fmtDate(now)));
+    // Le repère 1 : la médiane des 30 jours d'avant en pointillés, celle des 7 derniers jours en trait plein.
+    const seg = (from, to, v, dashed) => {
+      from = Math.max(from, x0);
+      if (v == null || to <= from) return;
+      const a = { x1: X(from), x2: X(to), y1: Y(v), y2: Y(v), stroke: dashed ? '#9ca3af' : '#f59e0b', 'stroke-width': 1.5 };
+      if (dashed) a['stroke-dasharray'] = '4 4';
+      svg.append(s('line', a));
+    };
+    seg(now - 37 * DAY, now - 7 * DAY, lines && lines.medBase, true);
+    seg(now - 7 * DAY, now, lines && lines.med7, false);
+    // Une vente Pro, exacte ou à toi : point plein ; un prix provisoire, qui n'est qu'un minimum : point creux.
+    for (const pt of pts) {
+      const color = pt.p < lo || pt.p > hi ? '#f87171' : '#34d399';
+      svg.append(s('circle', pt.k === 'prov'
+        ? { cx: X(pt.t), cy: Y(pt.p), r: 3.2, fill: 'none', stroke: color, 'stroke-width': 1.5 }
+        : { cx: X(pt.t), cy: Y(pt.p), r: 3.2, fill: color }, tip(pt)));
+    }
+    for (const m of mks) {
+      const x = X(m.t), y = Y(m.p), d = 5;
+      svg.append(s('path', { d: 'M' + x + ' ' + (y - d) + 'L' + (x + d) + ' ' + y + 'L' + x + ' ' + (y + d) + 'L' + (x - d) + ' ' + y + 'Z',
+        fill: m.k === 's' ? '#60a5fa' : '#f59e0b' }, tip(m)));
+    }
+    return svg;
+  }
+  // replaceChildren du navigateur n'aplatit pas les tableaux et écrirait « null » pour un élément absent : on lui passe une liste propre.
+  const fillEl = (el, ...kids) => el.replaceChildren(...kids.flat(5).filter(k => k != null && k !== false));
+  function renderCard() {
+    const e = ui.el, c = ui.card;
+    if (!c || !e.cardHead || !e.cardBody) return;
+    const now = Date.now(), id = c.id, rarity = c.rarity;
+    const src = cardSource(id, rarity), price = priceOf(id, rarity);
+    const rars = cardRarities(id);
+    if (rarOk(rarity) && !rars.includes(rarity)) rars.push(rarity);
+    rars.sort((a, b) => rarOrder(a) - rarOrder(b));
+    const pick = r => { c.rarity = r; c.period = null; c.all = false; renderCard(); };
+    const rarBtn = r => h('button', { class: 'rbtn' + (r === rarity ? ' on' : ''), title: 'Fiche en ' + r, onclick: () => pick(r) }, rarBadge(r));
+    // La valeur comme partout, y compris le « ≈ » d'un prix tiré d'autres raretés.
+    const value = price && price.n
+      ? [h('span', { class: 'val' }, (price.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(Math.max(price.med, DISCARD))) + ' ₩'), ' ', relCell(price),
+        price.mixed ? ' · prix d’autres raretés' : '']
+      : h('span', { class: 'val' }, fmt(DISCARD) + ' ₩ (aucune vente connue)');
+    fillEl(e.cardHead, h('button', { class: 'b', onclick: closeCard }, '← Retour'), h('h2', null, c.title), rars.map(rarBtn), h('span', null, value));
+    e.cardSearch = h('button', { class: 'b', onclick: cardSearchNow,
+      'data-tip': 'Cherche sur le marché qui vend cette carte en ce moment, et à quel prix. Une requête, par le nom de la carte.' }, 'Chercher les annonces de cette carte');
+    e.cardPro = proState() === true ? h('button', { class: 'b', onclick: cardProNow,
+      'data-tip': 'Compte Pro. Relit l’historique des ventes de cette carte à cette rareté. Une requête.' }, 'Relever l’historique Pro') : null;
+    syncCardButtons();
+    const actions = h('div', { class: 'tools' }, e.cardSearch, e.cardPro);
+    if (!src.sales.length) {
+      const others = rars.filter(r => r !== rarity);
+      fillEl(e.cardBody,
+        h('div', { class: 'empty' }, 'Aucune vente connue' + (rarOk(rarity) ? ' à cette rareté' : '') + '.'),
+        others.length ? h('p', { class: 'line' }, 'Ventes connues en : ', others.map(rarBtn)) : null,
+        actions);
+      return;
+    }
+    const ask = askOf(id, rarity);
+    const seenAt = db.wishSeen[id] || (ask && ask.t) || 0;
+    const cues = cardCues(src.sales, now, { list: ask ? ask.list : [], rarity, seenAt });
+    const line = (label, kids) => h('div', { class: 'cue' }, h('b', null, label + ' :'), ' ', kids);
+    const rows = cueLines(cues).map(l => line(l.label, l.text));
+    // Pour une carte à toi : ce qu'elle t'a coûté (exemplaire non shiny à cette rareté) et ce que la vendre à sa valeur rapporterait.
+    if (Object.values(db.cards).some(x => x && x.cardId === id && x.rarity === rarity && !x.shiny)) {
+      const o = originOf(id, rarity, false, now);
+      rows.push(line('Pour toi', [originText(o), ' · la vendre à sa valeur : ', profitTag(valueOf(id, rarity) - o.cost, o.approx, o.kind === 'guess' ? GUESS_TIP : '')]));
+    }
+    // Ouverte depuis une pastille posée sur une annonce : ce que vaut cette annonce, face à la valeur de sa rareté.
+    const au = c.au;
+    if (au) {
+      const p = au.s ? null : priceForAsk(id, au, price);
+      let kids;
+      if (au.s) kids = 'carte shiny : le site ne distingue pas les ventes shiny, pas de comparaison';
+      else if (!p || !p.n) kids = 'aucune vente connue à sa rareté';
+      else {
+        const med = Math.max(p.med, DISCARD), pct = Math.round(100 * (au.a / med - 1)), deal = dealPct(au, p);
+        kids = ['annonce à ' + fmt(au.a) + ' ₩, ' + (pct < 0 ? -pct + ' % sous la valeur' : pct > 0 ? pct + ' % au-dessus de la valeur' : 'au niveau de la valeur'),
+          deal ? [' ', h('span', { class: 'tag deal' }, 'bonne affaire −' + deal + ' %')] : null,
+          ' · enchère max conseillée : ' + fmt(maxBid(p)) + ' ₩'];
+      }
+      rows.push(line('Face à l’annonce', kids));
+    }
+    const kindOf = s => (src.kind === 'pro' ? 'Pro' : src.kind === 'own' ? 'toi' : s.x ? 'exacte' : 'provisoire');
+    const table = sortTable('card', [
+      { t: 'Date', left: true, get: s => isoT(s.t), cell: s => fmtDate(s.t) },
+      { t: 'Prix', get: s => s.p, cell: s => fmt(s.p) + ' ₩' },
+      { t: 'Rareté', asc: true, get: s => rarOrder(s.r), cell: s => (rarOk(s.r) ? rarBadge(s.r) : '—') },
+      { t: 'Sorte', asc: true, get: kindOf, cell: kindOf }
+    ], src.sales, renderCard, { limit: c.all ? 0 : 50 });
+    const more = !c.all && src.sales.length > 50
+      ? h('button', { class: 'b', onclick: () => { c.all = true; renderCard(); } }, 'Tout afficher (' + src.sales.length + ')') : null;
+    const period = c.period || defaultPeriod(src.sales, now);
+    const ptKind = x => (src.kind === 'pro' ? 'pro' : src.kind === 'own' ? 'own' : x.x ? 'exact' : 'prov');
+    const points = src.sales.map(x => ({ t: Math.min(Date.parse(x.t), now), p: x.p, k: ptKind(x) })).filter(pt => Number.isFinite(pt.t));
+    const periods = h('div', { class: 'periods' }, CHART_PERIODS.map(([k, label]) =>
+      h('button', { class: 'b' + (k === period ? ' on' : ''), onclick: () => { c.period = k; renderCard(); } }, label)));
+    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, { med7: cues.moment.med7, medBase: cues.moment.medBase }));
+    const legend = h('div', { class: 'note' }, '● vente Pro, exacte ou à toi · ○ prix provisoire, un minimum · ◆ bleu : ta vente, ◆ orange : ton achat · ' +
+      'pointillés : médiane des 30 jours d’avant, trait orange : celle des 7 derniers jours. Survole un point pour le détail.');
+    fillEl(e.cardBody, h('div', { class: 'cues' }, rows), periods, chart, legend, actions, table, more);
+  }
+
   function sellList(rows) {
     const selling = new Set(db.market.selling || []);
     const s = db.sell;
@@ -4414,7 +4761,7 @@
       { t: '#', asc: true, get: r => rankOf.get(r), cell: r => rankOf.get(r) },
       { t: 'Carte', left: true, asc: true, get: r => r.title.toLowerCase(),
         cell: r => [h('a', { class: 'go', href: sellLink(r.cardId), target: '_blank', rel: 'noopener',
-          title: 'Ouvrir le formulaire de mise en vente sur le site' }, r.title, ' ↗'),
+          title: 'Ouvrir le formulaire de mise en vente sur le site' }, r.title, ' ↗'), cardBtn(r.cardId, r.rarity, r.title),
         r.shiny ? ' ✨' : '', r.starred ? ' ★' : '', r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null] },
       { t: 'Rareté', asc: true, get: r => rarOrder(r.rarity), cell: r => rarBadge(r.rarity) },
       { t: 'Ex.', get: r => r.count, cell: r => r.count },
@@ -4778,7 +5125,24 @@
     return '';
   }
   const SPARK_MAX = 30; // ventes dessinées au plus dans la courbe de la bulle
+  // Repères de la bulle, gardés en cache : recalculés seulement quand les ventes de la carte changent (source, nombre, date de la
+  // plus récente) ou au bout de 10 minutes, et pas à chaque rafraîchissement du panneau.
+  const cueCache = new Map();
+  function cuesOf(cardId, rarity) {
+    const src = cardSource(cardId, rarity);
+    if (!src.sales.length) return null;
+    const key = cardId + '|' + (rarity || ''), sig = src.kind + '|' + src.sales.length + '|' + src.sales[0].t;
+    const now = Date.now(), hit = cueCache.get(key);
+    if (hit && hit.sig === sig && now < hit.until) return hit.cues;
+    if (cueCache.size > 2000) cueCache.clear();
+    const cues = cardCues(src.sales, now, null);
+    // 10 minutes, plus jusqu'à 2 minutes au hasard : les cartes d'une même page ne se recalculent pas toutes au même moment.
+    cueCache.set(key, { sig, until: now + 6e5 + Math.floor(Math.random() * 12e4), cues });
+    return cues;
+  }
   function badgeFor(cardId, au, mine) {
+    // La rareté évaluée par la pastille : celle de l'annonce, sinon la rareté connue de la carte. La fiche s'ouvre à la même.
+    const cueRar = au && rarOk(au.r) ? au.r : rarityOf(cardId);
     // Une annonce se juge à la valeur de la rareté de son exemplaire.
     const p = au && rarOk(au.r) ? priceOf(cardId, au.r) : priceOf(cardId);
     if (!p) return null;
@@ -4795,6 +5159,9 @@
       lines.push('Valeur : ' + fmt(Math.round(med)) + ' ₩ (' + (p.basis === 'recent' ? '7 derniers jours, ' : 'depuis toujours, ') + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + (p.mixed ? ', ventes d’autres raretés' : p.r ? ', en ' + p.r : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
       const other = otherValue(p);
       if (other) lines.push(other);
+      // Les repères 1 et 2 de la fiche, en court, quand l'un des deux est calculable.
+      const short = cueShort(cuesOf(cardId, cueRar));
+      if (short) lines.push('Repères : ' + short);
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
         if (au.s) {
@@ -4826,7 +5193,9 @@
       }
     }
     if (have) { text += ' ✓'; lines.push('Tu l’as déjà' + (have.count > 1 ? ' (' + have.count + ' exemplaires)' : '') + '.'); }
-    return { text, border, bg, lines, flag, sales: p.n ? p.sales.slice(0, SPARK_MAX) : null, med: p.n ? Math.max(p.med, DISCARD) : 0 };
+    lines.push('Clic : fiche de la carte');
+    return { text, border, bg, lines, flag, sales: p.n ? p.sales.slice(0, SPARK_MAX) : null, med: p.n ? Math.max(p.med, DISCARD) : 0,
+      card: { id: cardId, au: au || null, rarity: cueRar } };
   }
   function scanCards() {
     scanTimer = 0;
@@ -4855,16 +5224,21 @@
         if (!el) {
           el = document.createElement('span');
           el.className = BADGE;
+          // Un bouton pour le clavier et les lecteurs d'écran : il prend le focus et s'active avec Entrée ou Espace (badgeKey).
+          el.tabIndex = 0;
+          el.setAttribute('role', 'button');
           if (getComputedStyle(card).position === 'static') card.style.position = 'relative';
           card.append(el);
         }
         el.dataset.key = key;
         el.textContent = b.text;
+        el.setAttribute('aria-label', 'Valeur ' + b.text + ' : ouvrir la fiche de la carte');
+        b.card.title = title; // le nom lu sur la carte du site, pour la fiche
         tipData.set(el, b);
         // Bulle détaillée (la nôtre) ou bulle simple du navigateur, selon le réglage.
         if (native) el.title = 'WikiMasters Stats\n' + b.lines.join('\n'); else el.removeAttribute('title');
         el.style.cssText = 'position:absolute;top:6px;right:6px;z-index:40;padding:1px 7px;border-radius:999px;' +
-          'font:700 11px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:#fff;white-space:nowrap;pointer-events:auto;cursor:help;' +
+          'font:700 11px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:#fff;white-space:nowrap;pointer-events:auto;cursor:pointer;' +
           'box-shadow:0 1px 4px rgba(0,0,0,.6);background:' + b.bg + ';border:1.5px solid ' + b.border;
       }
     }
@@ -4882,6 +5256,7 @@
 .wmstats-dim{opacity:.35;filter:grayscale(.8);transition:opacity .15s,filter .15s}
 .wmstats-dim:hover{opacity:1;filter:none}
 .wmstats-glow{box-shadow:0 0 0 2px #10b981,0 0 18px rgba(16,185,129,.55)!important}
+.wmstats-badge:focus-visible{outline:2px solid #34d399;outline-offset:2px}
 #wmstats-tip{position:fixed;z-index:2147483646;display:none;width:max-content;max-width:300px;padding:8px 10px;border-radius:10px;
   background:#0b1210;color:#d1d5db;border:1px solid #23332c;box-shadow:0 8px 24px rgba(0,0,0,.6);
   font:12px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;pointer-events:none;text-align:left}
@@ -4934,6 +5309,23 @@
     tipEl.style.top = y + 'px';
   }
   function hideTip() { tipFor = null; if (tipEl) tipEl.style.display = 'none'; }
+  // Clic sur une de nos pastilles : la fiche de la carte s'ouvre dans le panneau, avec l'annonce si la pastille en porte une.
+  // Écouté en phase de capture, avant le lien de la carte du site : le clic ne le suit pas.
+  // Au clavier : une pastille prend le focus (Tab) et s'ouvre avec Entrée ou Espace, comme au clic.
+  function badgeKey(ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') badgeClick(ev);
+  }
+  function badgeClick(ev) {
+    const el = ev.target && ev.target.closest ? ev.target.closest('.' + BADGE) : null;
+    if (!el) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    hideTip();
+    const b = tipData.get(el), card = b && b.card;
+    if (!card) return;
+    const au = card.au;
+    openCard(card.id, { rarity: card.rarity, au: au && au.a != null ? au : null, title: card.title });
+  }
 
   // ---------- valeur des échanges sur la page Échanges du site ----------
   // Lecture seule : le script ajoute une ligne de texte, il ne touche ni aux cartes choisies ni aux boutons.
@@ -5032,6 +5424,8 @@
       if (el && !el.title) { if (el !== tipFor) showTip(el); } else if (tipFor) hideTip();
     }, true);
     window.addEventListener('scroll', () => { if (tipFor) hideTip(); }, true);
+    document.addEventListener('click', badgeClick, true);
+    document.addEventListener('keydown', badgeKey, true);
     overlaySoon();
   }
 

@@ -41,7 +41,7 @@ Le panneau a onze onglets. Dans tous les tableaux, un clic sur un en-tête de co
 
 ### Valeur sur les cartes du site
 
-Sur les pages du site (Collection, Marché, Toutes les cartes, boosters…), chaque carte dont le prix est connu porte une petite pastille en haut à droite : sa valeur médiane. Le contour dit la fiabilité (vert fiable, orange moyen, gris douteux), « ≈ » signale un prix douteux et « ✓ » une carte que tu as déjà. Sur le Marché, la pastille compare aussi avec le prix de l'annonce : verte « −40 % » pour une bonne affaire, rouge « trop cher » quand l'annonce atteint déjà la valeur. Survole la pastille : une bulle donne le nombre de ventes, l'enchère max conseillée, la marge, et une petite courbe des dernières ventes (médiane en pointillés). Une carte jamais relevée n'a pas de pastille.
+Sur les pages du site (Collection, Marché, Toutes les cartes, boosters…), chaque carte dont le prix est connu porte une petite pastille en haut à droite : sa valeur médiane. Le contour dit la fiabilité (vert fiable, orange moyen, gris douteux), « ≈ » signale un prix douteux et « ✓ » une carte que tu as déjà. Sur le Marché, la pastille compare aussi avec le prix de l'annonce : verte « −40 % » pour une bonne affaire, rouge « trop cher » quand l'annonce atteint déjà la valeur. Survole la pastille : une bulle donne le nombre de ventes, l'enchère max conseillée, la marge, et une petite courbe des dernières ventes (médiane en pointillés). Elle reprend aussi deux repères en court, par exemple « Repères : plus cher que d'habitude · en baisse ». **Un clic sur la pastille ouvre la fiche de la carte** dans le panneau (voir plus bas), sans suivre le lien du site. Une carte jamais relevée n'a pas de pastille.
 
 Sur l'onglet **Mes enchères** du Marché :
 
@@ -51,6 +51,21 @@ Sur l'onglet **Mes enchères** du Marché :
 Une carte **shiny** en vente porte « ✦ » au lieu d'une comparaison : l'historique du site ne dit pas quelles ventes étaient shiny, donc la valeur affichée est celle d'une carte normale. Les enchères shiny sont aussi exclues des prix observés et de tes ventes, pour ne pas fausser la valeur des cartes normales.
 
 **Sur la page Échanges du site**, chaque échange affiche sa valeur : ce que tu donnes, ce que tu reçois, l'écart (wikibidous compris). Dans la fenêtre « Échanger avec… », le total se met à jour en haut au fur et à mesure que tu choisis les cartes des deux côtés. Le script n'ajoute qu'une ligne de texte : il ne choisit rien et n'envoie rien.
+
+### Fiche d'une carte
+
+Pour savoir si une carte vaut le coup d'être vendue ou achetée maintenant. On l'ouvre avec le petit bouton 📈 à côté du nom d'une carte (onglets Collection, À vendre et Souhaits), ou d'un clic sur une pastille du site ; « ← Retour » ou un onglet la referment. Elle donne **des repères, pas des conseils** : à toi de décider.
+
+La fiche porte sur une carte et une rareté (des pastilles en haut passent aux autres raretés qui ont des ventes). Ses ventes sont celles qui font la valeur affichée partout : l'historique Pro, sinon tes ventes et achats, sinon les prix observés, sans jamais mélanger les raretés. Sous les minimums, elle dit « pas assez de ventes » plutôt qu'un chiffre.
+
+- **Prix du moment** : la médiane des 7 derniers jours (3 ventes au moins) face à celle des 30 jours d'avant (5 au moins). « Plus cher que d'habitude » à +15 % et au-delà, « moins cher » à −15 %, sinon « dans son habitude ».
+- **Sens** : la pente des prix sur 30 jours (6 ventes au moins, étalées sur une semaine au moins), en % par semaine, peu sensible à une vente aberrante ; des ventes groupées sur un même jour ne se comparent pas entre elles. « En hausse » à +5 % par semaine, « en baisse » à −5 %, sinon « stable ».
+- **Rythme** : combien de fois la carte se vend par semaine (ou par mois), et sa dernière vente.
+- **Concurrence** : les annonces en cours connues à cette rareté, la moins chère, et l'âge du relevé.
+- **Pour toi**, si tu as la carte : ce qu'elle t'a coûté, et ce que la vendre à sa valeur te rapporterait.
+- **Face à l'annonce**, si tu viens d'une pastille du Marché : l'écart avec la valeur, la bonne affaire éventuelle, l'enchère max conseillée.
+
+Dessous, une **courbe** des ventes sur 7 jours, 30 jours, 90 jours ou tout (point creux : prix provisoire, un minimum ; losanges : tes ventes et tes achats ; les deux médianes du prix du moment), puis la **liste des ventes**, triable. Deux boutons font une requête chacun, sur ton clic : « Chercher les annonces de cette carte » et, pour un compte Pro, « Relever l'historique Pro ».
 
 ### Réglages
 
