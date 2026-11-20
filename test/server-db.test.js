@@ -3,7 +3,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember, putProfile, listProfiles, removeProfile } = require('../server/db');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+const { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember, putProfile, listProfiles, removeProfile, feedRows, getMeta } = require('../server/db');
 const { parsePush, parseProfile } = require('../server/validate');
 
 const now = Date.parse('2026-11-16T12:00:00Z');
@@ -181,4 +182,74 @@ test('parseProfile refuse ce qui ne va pas', () => {
   assert.equal(status(prof('U2', 'Paul', [['C1', 'T', 'L', 0]])), 400);
   assert.equal(status(prof('U2', '')), 400);
   assert.equal(status(prof('__proto__', 'Paul')), 400);
+});
+
+// ----- Fil des nouveautés (pool 1.4.0) -----
+test('fil : tout, dans l’ordre des numéros, page par page, sans trou ni doublon', () => {
+  const db = openDb(':memory:');
+  push(db, { member: 'Jules', pro: [['C1', now - 1000, [[50, T], [40, T3]]]] }); // rev 1, 2 (ventes), 3 (relevé)
+  push(db, { member: 'Paul', sales: [['C2', 30, T, 10, 0, 'A1', 'SR']], unsold: ['A9'] }); // rev 4 (vente), 5 (unsold)
+  const p1 = feedRows(db, 0, 3);
+  assert.equal(p1.more, true);
+  assert.equal(p1.next, 3);
+  assert.equal(p1.max, 5);
+  assert.deepEqual(p1.sales.map(r => r[0]), [1, 2]);
+  assert.deepEqual(p1.pro, [[3, 'C1', now - 1000, 'Jules']]);
+  const p2 = feedRows(db, p1.next, 3);
+  assert.equal(p2.more, false);
+  assert.equal(p2.next, 5);
+  assert.deepEqual(p2.sales, [[4, 'C2', 30, T, 'prov', 'A1', 10, 'SR']]);
+  assert.deepEqual(p2.unsold, [[5, 'A9']]);
+  assert.deepEqual(feedRows(db, 5, 3), { pool: p1.pool, max: 5, next: 5, more: false, sales: [], pro: [], unsold: [] });
+});
+
+test('fil : un provisoire devenu final revient avec un numéro plus grand', () => {
+  const db = openDb(':memory:');
+  push(db, { member: 'A', sales: [['C1', 30, T, 10, 0, 'A1']] });
+  const before = feedRows(db, 0, 100);
+  push(db, { member: 'B', sales: [['C1', 45, T2, 0, 1, 'A1']] });
+  const after = feedRows(db, before.next, 100);
+  assert.equal(after.sales.length, 1);
+  assert.equal(after.sales[0][4], 'exact');
+  assert.equal(after.sales[0][2], 45);
+  assert.ok(after.sales[0][0] > before.next);
+});
+
+test('fil : l’identifiant du pool est créé une fois et survit à la réouverture', () => {
+  const file = path.join(os.tmpdir(), 'wm-feed-' + process.pid + '.db');
+  const a = openDb(file);
+  const id = getMeta(a, 'pool_id');
+  assert.match(id, /^[0-9a-f]{16}$/);
+  assert.equal(feedRows(a, 0, 10).pool, id);
+  a.close();
+  const b = openDb(file);
+  assert.equal(getMeta(b, 'pool_id'), id);
+  b.close();
+  for (const f of [file, file + '-wal', file + '-shm']) fs.rmSync(f, { force: true });
+});
+
+test('fil : base d’avant 1.1, un même numéro dans plusieurs tables, une page ne coupe pas entre eux', () => {
+  const db = openDb(':memory:');
+  push(db, { member: 'Jules', pro: [['C1', now - 1000, [[50, T], [40, T3]]]] }); // ventes 1, 2 ; relevé 3
+  push(db, { member: 'Paul', unsold: ['A9'] }); // 4
+  // La migration d'avant 1.1 numérotait les ventes par leur id et les relevés par leur rowid : les numéros se croisent.
+  db.exec('UPDATE pro_fetch SET rev = 1; UPDATE unsold_queue SET rev = 1;');
+  const got = { sales: [], pro: [], unsold: [] };
+  let since = 0, more = true, n = 0;
+  while (more && n++ < 10) {
+    const p = feedRows(db, since, 1);
+    for (const k of ['sales', 'pro', 'unsold']) got[k].push(...p[k].map(r => r[0]));
+    since = p.next;
+    more = p.more;
+  }
+  assert.deepEqual(got, { sales: [1, 2], pro: [1], unsold: [1] });
+});
+
+test('fil : une vente Pro porte la date et l’auteur du relevé de sa carte', () => {
+  const db = openDb(':memory:');
+  push(db, { member: 'Jules', pro: [['C1', now - 1000, [[50, T]]]] });
+  push(db, { member: 'Paul', sales: [['C1', 50, T, 0, 1, 'A1']] }); // l'enchère s'accroche à la ligne Pro : nouveau numéro
+  const rows = feedRows(db, 0, 10);
+  assert.deepEqual(rows.pro, [[2, 'C1', now - 1000, 'Jules']]);
+  assert.deepEqual(rows.sales, [[3, 'C1', 50, T, 'pro', 'A1', 0, null, now - 1000, 'Jules']]);
 });

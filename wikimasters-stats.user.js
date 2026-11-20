@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.27.0
+// @version      1.28.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -39,7 +39,11 @@
       auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
-      pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0 }, poolQ: []
+      pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0,
+        // Fil des nouveautés (1.28) : adresse normalisée, identifiant du pool, position, fin du dernier passage réussi,
+        // date du dernier 404 (pool encore en 1.3.0), ventes reçues depuis la position 0.
+        // Le fil a son propre recul après un échec (wait, retryAt) et sa propre erreur : un envoi réussi ne les efface pas.
+        feed: { url: '', pool: '', rev: 0, at: 0, off: 0, got: 0, wait: 0, retryAt: 0, err: '' } }, poolQ: []
     };
   }
   // Réglages de ce que le script ajoute aux pages du site (onglet Réglages). Valeur par défaut si jamais touché.
@@ -47,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.27.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.28.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -119,6 +123,7 @@
     if (!Array.isArray(base.selling)) base.selling = [];
     if (!Array.isArray(base.tagCat)) base.tagCat = [];
     base.pool = Object.assign(defaults().pool, isObj(base.pool) ? base.pool : {});
+    base.pool.feed = Object.assign(defaults().pool.feed, isObj(base.pool.feed) ? base.pool.feed : {});
     if (!Array.isArray(base.poolQ)) base.poolQ = [];
     for (const k of ['cards', 'prices', 'pro', 'auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov']) {
       if (!isObj(base[k])) base[k] = {};
@@ -638,7 +643,9 @@
   // donne son prix final exact : « Relever les prix finaux » le lit et remplace le prix provisoire (x = 1 : exact).
   const OBS_NEAR = 30;      // au-delà de 30 min avant la fin, le prix vu est trop incertain pour les niveaux par rareté
   const MAX_OBS = 6000;     // enchères en cours suivies
-  const MAX_OBS_CARDS = 8000;
+  // Cartes dont on garde les ventes observées : tout le pool en IndexedDB (1.28), 8 000 en mode secours (5 Mo).
+  const OBS_CARDS_IDB = 50000, OBS_CARDS_LOCAL = 8000;
+  const obsCardsMax = () => (store.mode === 'idb' ? OBS_CARDS_IDB : OBS_CARDS_LOCAL);
   const MAX_FINQ = 3000;    // enchères finies en attente de leur prix final
   // Pendant une fusion en bloc (pool, fichier ami), les cartes touchées : leurs ventes sont triées et dédoublonnées une fois, à la fin.
   let obsBatch = null;
@@ -650,7 +657,18 @@
     if (same) {
       if (!sale.x || same.x) return false;
       list = list.filter(x => x !== same);
-    } else if (list.some(x => x.t === sale.t && x.p === sale.p)) return false;
+    } else {
+      // Même date, même prix : la même vente. Un prix exact rend exact le provisoire déjà gardé, comme le fait le pool.
+      const twin = list.find(x => x.t === sale.t && x.p === sale.p);
+      if (twin) {
+        if (!sale.x || twin.x) return false;
+        twin.x = 1;
+        twin.g = Math.max(0, Math.round(num(sale.g)));
+        if (okKey(sale.i) && !twin.i) twin.i = sale.i;
+        if (obsBatch) obsBatch.add(cardId); else db.obsSales[cardId] = keepAll(list);
+        return true;
+      }
+    }
     const item = { p: sale.p, t: str(sale.t, 40), g: Math.max(0, Math.round(num(sale.g))) };
     if (okKey(sale.i)) item.i = sale.i;
     if (sale.x) item.x = 1;
@@ -690,9 +708,9 @@
       ids.sort((x, y) => db.obs[x][4] - db.obs[y][4]).slice(0, ids.length - MAX_OBS).forEach(id => delete db.obs[id]);
     }
     const cards = Object.keys(db.obsSales);
-    if (cards.length > MAX_OBS_CARDS) {
+    if (cards.length > obsCardsMax()) {
       cards.sort((x, y) => (db.obsSales[x][0].t < db.obsSales[y][0].t ? -1 : 1))
-        .slice(0, cards.length - MAX_OBS_CARDS).forEach(id => delete db.obsSales[id]);
+        .slice(0, cards.length - obsCardsMax()).forEach(id => delete db.obsSales[id]);
     }
     return changed;
   }
@@ -752,6 +770,26 @@
       return 0;
     });
   }
+  // Enchères que le pool a retirées (finie sans vente, ou provisoire remplacé par une vente déjà connue) : leur prix provisoire
+  // disparaît aussi d'ici, et le site n'a plus rien à apprendre sur elles. Un prix exact n'est jamais retiré. Leur observation
+  // encore en attente part aussi : sinon settleObserved recréerait le provisoire, la demande de prix final et l'envoi au pool.
+  // Renvoie le nombre de ventes retirées.
+  function dropProvisional(auctions) {
+    const want = new Set((Array.isArray(auctions) ? auctions : []).filter(okKey));
+    if (!want.size) return 0;
+    for (const id of want) { delete db.finQ[id]; delete db.obs[id]; }
+    const gone = s => !!s && !s.x && !!s.i && want.has(s.i);
+    let dropped = 0;
+    for (const cardId of Object.keys(db.obsSales)) {
+      const list = db.obsSales[cardId];
+      if (!Array.isArray(list) || !list.some(gone)) continue;
+      const kept = list.filter(s => !gone(s));
+      dropped += list.length - kept.length;
+      if (kept.length) db.obsSales[cardId] = kept; else delete db.obsSales[cardId];
+    }
+    if (dropped) resetPrices();
+    return dropped;
+  }
   // Les fins d'enchères observées, pour le fichier ami et la sauvegarde. L'historique Pro voyage à part (voir proExport).
   function observedExport() {
     const sales = [];
@@ -786,9 +824,9 @@
       if (list.length) db.obsRar[r] = list.sort((x, y) => y[1] - x[1]).slice(0, 400);
     }
     const cards = Object.keys(db.obsSales);
-    if (cards.length > MAX_OBS_CARDS) {
+    if (cards.length > obsCardsMax()) {
       cards.sort((x, y) => (db.obsSales[x][0].t < db.obsSales[y][0].t ? -1 : 1))
-        .slice(0, cards.length - MAX_OBS_CARDS).forEach(id => delete db.obsSales[id]);
+        .slice(0, cards.length - obsCardsMax()).forEach(id => delete db.obsSales[id]);
     }
     return added;
   }
@@ -810,9 +848,10 @@
     let added = 0;
     for (const e of list.slice(0, 20000)) {
       if (!Array.isArray(e) || !okKey(e[0]) || !(num(e[1]) > 0) || !Array.isArray(e[2])) continue;
-      // Une vente sans date lisible ne compte pas, comme dans mergeObserved.
+      // Une vente sans date lisible ne compte pas, comme dans mergeObserved. keepAll trie de la plus récente à la plus ancienne
+      // avant de garder les 2 000 premières : la liste reçue peut venir dans n'importe quel ordre (le fil la donne de la plus ancienne).
       const sales = keepAll(e[2].filter(s => Array.isArray(s) && num(s[0]) > 0 && typeof s[1] === 'string' && Number.isFinite(Date.parse(s[1])))
-        .slice(0, MAX_SALES_PER_CARD).map(s => (rarOk(s[2]) ? { p: s[0], t: str(s[1], 40), r: s[2] } : { p: s[0], t: str(s[1], 40) })));
+        .map(s => (rarOk(s[2]) ? { p: s[0], t: str(s[1], 40), r: s[2] } : { p: s[0], t: str(s[1], 40) })));
       if (!sales.length) continue;
       const at = Math.min(e[1], now), cur = isObj(db.prices[e[0]]) ? db.prices[e[0]] : null;
       const curSales = cur && Array.isArray(cur.sales) ? cur.sales : [];
@@ -916,6 +955,9 @@
   const POOL_BATCH = { p: 2000, s: 5000, u: 5000 };
   const POOL_BATCH_BYTES = 1.5e6;     // un envoi reste sous la limite de 2 Mo du pool
   const POOL_PRO_SALES = 200;         // ventes envoyées par relevé Pro : les plus récentes (le pool garde les plus anciennes)
+  const POOL_FEED_EVERY = 15 * 6e4;   // réception du fil des nouveautés (pool 1.4.0)
+  const POOL_FEED_MIN = 6e4;          // au moins une minute entre deux passages non forcés
+  const POOL_FEED_PAGE = 5000;        // lignes par page du fil
   const poolUrlOk = u => /^https:\/\/[^\s/]+/.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(u);
   const poolOn = () => !!(db.pool && db.pool.on && db.pool.key && poolUrlOk(db.pool.url || ''));
   // type : 'p' relevé Pro [carte, rareté] ; 's' vente [carte, prix, date, écart, exact, enchère, rareté] ; 'u' enchère finie sans vente.
@@ -1004,9 +1046,16 @@
     poolState.flushing = false;
     saveDb();
   }
+  // Toutes les 15 s : l'envoi de la file, et toutes les 15 min un passage du fil des nouveautés (une date de dernier passage
+  // dans le futur, après un changement d'horloge, ne bloque rien). Après un échec, chacun attend son propre recul.
   function poolTick(now) {
     now = now || Date.now();
-    if (poolOn() && db.poolQ.length && now >= num(db.pool.retryAt)) return poolFlush(now);
+    if (!poolOn()) return;
+    const jobs = [];
+    if (db.poolQ.length && now >= num(db.pool.retryAt)) jobs.push(poolFlush(now));
+    const f = isObj(db.pool.feed) ? db.pool.feed : {}, at = num(f.at);
+    if (feedOn() && now >= num(f.retryAt) && (now - at >= POOL_FEED_EVERY || at > now)) jobs.push(poolFeed().then(n => { if (n) refresh(); }));
+    return jobs.length ? Promise.all(jobs) : undefined;
   }
   // À l'activation du partage : tes propres relevés déjà accumulés partent aussi (historique Pro relevé ici, tes ventes et achats).
   function poolBackfill() {
@@ -1041,6 +1090,117 @@
     db.pool.recv = num(db.pool.recv) + added;
     db.pool.err = '';
     if (added) resetPrices();
+    saveDb();
+    return added;
+  }
+  // Une page du fil (1.28) : ventes Pro, ventes observées, relevés Pro, enchères à retirer, fusionnés comme la réception carte par
+  // carte (rien de ce qui est reçu ne repart). Renvoie le nombre de ventes, de relevés et de retraits qui ont changé quelque chose.
+  // Une vente Pro reçue sans la date de son relevé est rangée à la date 1 (« relevé très ancien »), comme le fait le relais entre
+  // pools : la vraie date arrive avec la ligne du relevé, dans cette page ou une suivante. Une sorte inconnue est ignorée.
+  function applyFeedPage(page) {
+    if (!isObj(page)) return 0;
+    const rows = k => (Array.isArray(page[k]) ? page[k].filter(Array.isArray) : []);
+    const rar = v => (rarOk(v) ? v : null);
+    const fetches = new Map(); // carte → [date du relevé, auteur]
+    for (const r of rows('pro')) if (okKey(r[1]) && num(r[2]) > 0) fetches.set(r[1], [num(r[2]), typeof r[3] === 'string' ? r[3] : '']);
+    const proSales = new Map(), rowFetch = new Map(), obs = [], drop = [];
+    for (const r of rows('sales')) {
+      const [, card, price, t, kind, auction, gap, rarity, fetchAt, fetchBy] = r;
+      if (!okKey(card) || !(num(price) > 0) || typeof t !== 'string') continue;
+      const auc = okKey(auction) ? auction : '';
+      if (kind === 'pro') {
+        if (!proSales.has(card)) proSales.set(card, []);
+        proSales.get(card).push([price, t, rar(rarity)]);
+        // Pool 1.4.0 : la vente Pro porte la date et l'auteur du relevé de sa carte (le relevé a pu arriver dans une page précédente).
+        if (num(fetchAt) > 0 && !rowFetch.has(card)) rowFetch.set(card, [num(fetchAt), typeof fetchBy === 'string' ? fetchBy : '']);
+        if (auc) drop.push(auc); // un provisoire devenu vente Pro : c'est la même vente
+      } else if (kind === 'exact' || kind === 'prov') obs.push([card, price, t, num(gap), kind === 'exact' ? 1 : 0, auc, rar(rarity)]);
+    }
+    const pro = [];
+    for (const [card, sales] of proSales) {
+      const f = fetches.get(card) || rowFetch.get(card);
+      pro.push([card, f ? f[0] : 1, sales, f ? f[1] : '']);
+      fetches.delete(card);
+    }
+    // Relevé sans vente dans la page : il date les ventes Pro déjà connues de la carte, s'il est plus récent (mergePro ignore une
+    // entrée sans ventes). Une carte sans aucune vente Pro connue ne reçoit pas de relevé vide.
+    for (const [card, [at, by]] of fetches) {
+      const cur = db.prices[card];
+      if (isObj(cur) && Array.isArray(cur.sales) && cur.sales.length && num(cur.at) < at) pro.push([card, at, cur.sales.map(s => [s.p, s.t, s.r || null]), by]);
+    }
+    let added = mergePro(pro, 'groupe');
+    for (let k = 0; k < obs.length; k += 20000) added += mergeObserved({ sales: obs.slice(k, k + 20000) });
+    for (const r of rows('unsold')) if (okKey(r[1])) drop.push(r[1]);
+    return added + dropProvisional(drop);
+  }
+  // ---------- fil des nouveautés (pool 1.4.0, script 1.28) ----------
+  // Tout le pool une première fois, puis seulement ce qui a changé depuis le dernier passage. Il sert quand le pool est activé,
+  // que le stockage est IndexedDB (tout le pool ne tient pas dans les 5 Mo du mode secours) et que le pool connaît le fil.
+  // Un pool encore en 1.3.0 répond 404 : on garde alors l'ancienne réception, et l'on réessaie le fil au bout de 6 h
+  // (ou tout de suite si l'adresse change).
+  const feedUrl = () => (db.pool.url || '').replace(/\/+$/, '');
+  function feedOn() {
+    if (!poolOn() || store.mode !== 'idb') return false;
+    const f = isObj(db.pool.feed) ? db.pool.feed : {};
+    return !(f.url === feedUrl() && num(f.off) > 0 && Date.now() - f.off < POOL_PULL_EVERY);
+  }
+  const feedOk = j => isObj(j) && typeof j.pool === 'string' && j.pool !== '' && Number.isSafeInteger(j.max) && j.max >= 0 &&
+    Number.isSafeInteger(j.next) && j.next >= 0 && Array.isArray(j.sales) && Array.isArray(j.pro) && Array.isArray(j.unsold);
+  // Un passage : les pages se suivent tant que le pool en annonce d'autres. La position n'avance qu'après la fusion de chaque page
+  // et part avec elle à l'enregistrement : un passage interrompu reprend là où il s'était arrêté, et une page reçue deux fois ne crée
+  // aucun doublon. On repart de zéro (sans rien effacer) si le pool a changé d'identifiant (base recréée, autre pool) ou si la
+  // position dépasse son dernier numéro (base restaurée depuis une sauvegarde plus ancienne). Renvoie le nombre apporté.
+  const feedFresh = url => ({ url, pool: '', rev: 0, at: 0, off: 0, got: 0, wait: 0, retryAt: 0, err: '' });
+  // Échec du fil : son erreur, et un recul de plus en plus long (1 min, 2, 4… jusqu'à 30 min), à part de celui des envois.
+  function feedFailed(f, e, now) {
+    f.err = (e && e.message) || 'pool injoignable';
+    f.wait = Math.min(Math.max(num(f.wait) * 2, 6e4), 18e5);
+    f.retryAt = now + f.wait;
+  }
+  // Sans « force » : rien pendant le recul après un échec, ni moins d'une minute après le dernier passage réussi.
+  // Plusieurs fenêtres du site ouvertes : une seule fait le passage (verrou du navigateur), les autres reçoivent ses
+  // enregistrements. Si une autre fenêtre remplace les données pendant un passage, celui-ci s'arrête : sa position n'est plus
+  // la bonne, et le prochain tour reprendra depuis celle qui vient d'arriver.
+  async function poolFeed(force) {
+    if (!feedOn() || poolState.feeding) return 0;
+    const now = Date.now(), url = feedUrl();
+    if (!isObj(db.pool.feed) || db.pool.feed.url !== url) db.pool.feed = feedFresh(url);
+    const f = db.pool.feed, since = now - num(f.at);
+    // Une date de dernier passage dans le futur (horloge changée) ne compte pas.
+    if (!force && ((since >= 0 && since < POOL_FEED_MIN) || now < num(f.retryAt))) return 0;
+    poolState.feeding = true;
+    try {
+      const locks = typeof navigator !== 'undefined' && navigator && navigator.locks && typeof navigator.locks.request === 'function' ? navigator.locks : null;
+      return locks ? await locks.request('wmstats-feed', { ifAvailable: true }, lock => (lock ? feedPass(f) : 0)) : await feedPass(f);
+    } finally {
+      poolState.feeding = false;
+    }
+  }
+  async function feedPass(f) {
+    let added = 0;
+    try {
+      for (let n = 0; n < 1000; n++) {
+        const j = await poolFetch('/v1/feed?since=' + num(f.rev) + '&limit=' + POOL_FEED_PAGE);
+        if (db.pool.feed !== f) return added; // données remplacées par une autre fenêtre pendant l'attente
+        if (!feedOk(j)) throw new Error('pool : réponse inattendue');
+        if ((f.pool && f.pool !== j.pool) || f.rev > j.max) { f.pool = j.pool; f.rev = 0; f.got = 0; continue; }
+        f.pool = j.pool;
+        added += applyFeedPage(j);
+        f.rev = j.next;
+        f.got = num(f.got) + j.sales.length;
+        saveDb();
+        if (ui.el.poolInfo && !poolUi.testing) ui.el.poolInfo.textContent = poolLine();
+        if (!j.more) break;
+      }
+      Object.assign(f, { at: Date.now(), off: 0, err: '', wait: 0, retryAt: 0 });
+      db.pool.recv = num(db.pool.recv) + added;
+      if (added) resetPrices();
+    } catch (e) {
+      if (db.pool.feed !== f) return added;
+      // Le recul part de l'échec, pas du début du passage : plusieurs pages ont pu prendre plus que la première minute de recul.
+      if (e && e.status === 404) f.off = Date.now();
+      else feedFailed(f, e, Date.now());
+    }
     saveDb();
     return added;
   }
@@ -1160,20 +1320,26 @@
   }
   async function poolPullMine(force) {
     if (!poolOn()) return;
+    // Pool 1.4.0 : le fil tient tout le pool à jour, à son propre rythme (au plus un passage par minute sans « force »).
+    if (feedOn() && await poolFeed(force)) refresh();
     const now = Date.now();
     if (!force && now - num(db.pool.pullAt) < POOL_PULL_EVERY) return;
     db.pool.pullAt = now;
-    const ids = new Set(Object.keys(db.wish));
-    for (const c of Object.values(db.cards)) if (c && okKey(c.cardId)) ids.add(c.cardId);
-    try { if (await poolPull([...ids])) refresh(); } catch (e) { poolNote(e); }
+    // Sans fil (pool encore en 1.3.0, ou mode secours) : ta collection et tes souhaits, carte par carte, comme avant.
+    if (!feedOn()) {
+      const ids = new Set(Object.keys(db.wish));
+      for (const c of Object.values(db.cards)) if (c && okKey(c.cardId)) ids.add(c.cardId);
+      try { if (await poolPull([...ids])) refresh(); } catch (e) { poolNote(e); }
+    }
     // La case vaut pour tous les comptes du navigateur : décochée depuis un autre compte, le profil publié par celui-ci est retiré ici.
     if (!db.pool.share && isObj(db.pool.published) && Object.keys(db.pool.published).length) await poolRemoveProfile();
     await poolPullProfiles();
   }
   // Cartes affichées par le site sans aucun prix connu : regroupées pendant 2 s, chacune demandée une seule fois par visite.
   const poolWanted = { queue: new Set(), asked: new Set(), timer: 0 };
+  // Inutile quand le fil sert : tout le pool est déjà là.
   function poolWant(id) {
-    if (!poolOn() || !okKey(id) || poolWanted.asked.has(id)) return;
+    if (!poolOn() || feedOn() || !okKey(id) || poolWanted.asked.has(id)) return;
     poolWanted.asked.add(id);
     poolWanted.queue.add(id);
     if (poolWanted.timer) return;
@@ -1202,8 +1368,9 @@
     return sales.length;
   }
   // Avant de demander des historiques Pro au site : ceux que le groupe a relevés il y a moins de 24 h suffisent.
+  // Inutile quand le fil sert : les prix du groupe ont au plus 15 min.
   async function poolPrefetch(ids) {
-    if (!poolOn() || !ids || !ids.length) return;
+    if (!poolOn() || feedOn() || !ids || !ids.length) return;
     try { await poolPull(ids); } catch (e) { poolNote(e); }
   }
 
@@ -2822,6 +2989,11 @@
     if (!poolOn()) return 'Remplis l’adresse (https://…) et la clé, puis « Tester ».';
     const parts = [];
     if (p.err) parts.push('Dernière erreur : ' + p.err + (num(p.retryAt) > now ? ' (nouvel essai dans ' + Math.ceil((p.retryAt - now) / 6e4) + ' min)' : ''));
+    const f = isObj(p.feed) ? p.feed : {};
+    if (f.err && feedOn()) parts.push('Fil : ' + f.err + (num(f.retryAt) > now ? ' (nouvel essai dans ' + Math.ceil((f.retryAt - now) / 6e4) + ' min)' : ''));
+    if (poolState.feeding && !num(f.at)) parts.push('réception de tout le pool : ' + fmt(num(f.got)) + ' ventes reçues');
+    else if (feedOn() && num(f.at)) parts.push('à jour ' + ago(f.at));
+    else if (num(f.off)) parts.push('ancienne méthode (pool en 1.3.0)');
     parts.push(plural(num(p.sent), 'prix envoyé', 'prix envoyés') + ', ' + plural(num(p.recv), 'reçu', 'reçus') + (db.poolQ.length ? ', ' + fmt(db.poolQ.length) + ' en attente' : ''));
     if (p.pushAt) parts.push('dernier envoi ' + ago(p.pushAt));
     return parts.join(' · ') + '.';
@@ -3190,7 +3362,8 @@
           chk('Partager ma collection et mes souhaits avec le groupe', 'Seulement ta collection et ta liste de souhaits, rien d’autre de ton compte. ' +
             'Tous les membres qui ont la clé les voient dans leur onglet Amis, et tu vois ceux qui partagent. Il faut un pseudo (onglet Amis). Décocher retire ton profil du pool.',
             !!db.pool.share, ev => { const el = ev.target; setProfileShare(el.checked).then(() => { el.checked = !!db.pool.share; }); }),
-          chk('Partager et recevoir les prix', 'Envoie les prix que tu relèves, y compris ceux déjà accumulés, et reçoit ceux du groupe pour ta collection, tes souhaits et les cartes affichées.',
+          chk('Partager et recevoir les prix', 'Envoie les prix que tu relèves, y compris ceux déjà accumulés, et reçoit ceux du groupe, toutes cartes confondues ' +
+            '(seulement ta collection, tes souhaits et les cartes affichées quand le pool est encore en 1.3.0).',
             !!db.pool.on, ev => { db.pool.on = ev.target.checked; if (poolOn()) { poolBackfill(); poolPullMine(true); } saveDb(); syncButtons(); }),
           (e.poolInfo = h('span', { class: 'sub' }, poolLine()))),
         group('Mise à jour', 'Tampermonkey met le script à jour tout seul, une fois par jour. Ces boutons servent à ne pas attendre.',

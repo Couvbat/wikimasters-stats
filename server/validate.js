@@ -57,6 +57,19 @@ function parseIds(v, max) {
   return [...new Set(v.filter(okId))];
 }
 
+// Paramètres du fil (GET /v1/feed) : since, entier ≥ 0 (0 s'il manque) ; limit, de 1 à 10 000 (5 000 s'il manque).
+const FEED_LIMIT = 5000, FEED_MAX = 10000;
+function parseFeedQuery(params) {
+  const int = (name, dflt, min, max) => {
+    const raw = params.get(name);
+    if (raw == null) return dflt;
+    const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isSafeInteger(n) || n < min || n > max) throw httpError(400, name + ' invalide');
+    return n;
+  };
+  return { since: int('since', 0, 0, Number.MAX_SAFE_INTEGER), limit: int('limit', FEED_LIMIT, 1, FEED_MAX) };
+}
+
 // Profil d'un membre qui partage sa collection : [carte, titre, rareté, exemplaires] et [carte, titre, rareté], rien d'autre.
 // Une entrée invalide refuse tout le profil. Rareté inconnue : null ('?' du script compris).
 function parseProfile(body) {
@@ -81,4 +94,4 @@ function parseProfile(body) {
   return { id: body.id, pseudo, at: Math.round(body.at), cards: entries('cards', LIMITS.profileCards, true), wish: entries('wish', LIMITS.profileWish, false) };
 }
 
-module.exports = { parsePush, parseIds, parseProfile, httpError, okId, LIMITS };
+module.exports = { parsePush, parseIds, parseProfile, parseFeedQuery, httpError, okId, LIMITS };

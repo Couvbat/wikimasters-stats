@@ -36,6 +36,7 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS pro_fetch_rev ON pro_fetch(rev);
     CREATE INDEX IF NOT EXISTS unsold_queue_rev ON unsold_queue(rev);
     INSERT OR IGNORE INTO meta (k, v) VALUES ('rev', '0');
+    INSERT OR IGNORE INTO meta (k, v) VALUES ('pool_id', lower(hex(randomblob(8))));
     UPDATE meta SET v = MAX(CAST(v AS INTEGER), (SELECT COALESCE(MAX(rev), 0) FROM sales), (SELECT COALESCE(MAX(rev), 0) FROM pro_fetch),
       (SELECT COALESCE(MAX(rev), 0) FROM unsold_queue)) WHERE k = 'rev';`);
 }
@@ -137,6 +138,39 @@ function pullCards(db, ids) {
   return { cards };
 }
 
+// Fil des nouveautés (1.4.0) : les lignes des trois tables dont le numéro de révision dépasse `since`, dans l'ordre des numéros,
+// `limit` au plus en tout. Le script garde `next` et le renvoie comme `since` à la page suivante.
+// Une vente Pro porte aussi la date et l'auteur du relevé de sa carte : sa ligne a pu prendre un numéro plus grand que celui du
+// relevé (enchère accrochée après coup), et le relevé arrive alors dans une page précédente, avant les ventes qu'il date. Le serveur traite une requête
+// à la fois et un envoi prend ses numéros dans une seule transaction : toute ligne de numéro ≤ `max` est déjà écrite.
+function feedRows(db, since, limit) {
+  const take = limit + 1;
+  const rows = [
+    ...db.prepare("SELECT s.rev, s.card, s.price, s.sold_at, s.kind, s.auction, s.gap, s.rarity, f.at AS fat, f.member AS fby FROM sales s " +
+      "LEFT JOIN pro_fetch f ON f.card = s.card AND s.kind = 'pro' WHERE s.rev > ? ORDER BY s.rev LIMIT ?").all(since, take)
+      .map(r => {
+        const v = [Number(r.rev), r.card, r.price, r.sold_at, r.kind, r.auction || '', r.gap, r.rarity || null];
+        if (r.kind === 'pro') v.push(r.fat == null ? 0 : Number(r.fat), r.fby || null);
+        return { rev: Number(r.rev), t: 'sales', v };
+      }),
+    ...db.prepare('SELECT rev, card, at, member FROM pro_fetch WHERE rev > ? ORDER BY rev LIMIT ?').all(since, take)
+      .map(r => ({ rev: Number(r.rev), t: 'pro', v: [Number(r.rev), r.card, Number(r.at), r.member || null] })),
+    ...db.prepare('SELECT rev, auction FROM unsold_queue WHERE rev > ? ORDER BY rev LIMIT ?').all(since, take)
+      .map(r => ({ rev: Number(r.rev), t: 'unsold', v: [Number(r.rev), r.auction] }))
+  ].sort((a, b) => a.rev - b.rev);
+  // Une base d'avant 1.1 a pu donner le même numéro à une vente, un relevé et une enchère invendue (la migration numérotait les
+  // ventes par leur id, les relevés par leur rowid). La page ne coupe jamais entre deux lignes de même numéro : la suivante
+  // (numéros > next) sauterait les autres. Elle a donc au plus limit + 2 lignes. Chaque table rend limit + 1 lignes, et un
+  // numéro y est unique : toutes les lignes du dernier numéro de la page sont déjà lues.
+  let end = Math.min(limit, rows.length);
+  while (end > 0 && end < rows.length && rows[end].rev === rows[end - 1].rev) end++;
+  const page = rows.slice(0, end);
+  const out = { pool: getMeta(db, 'pool_id'), max: Number(getMeta(db, 'rev') || 0), next: page.length ? page[page.length - 1].rev : since,
+    more: rows.length > end, sales: [], pro: [], unsold: [] };
+  for (const r of page) out[r.t].push(r.v);
+  return out;
+}
+
 // Enchères dont le prix final est déjà connu du pool : le client n'a pas besoin de les relire sur le site.
 function knownAuctions(db, ids) {
   const exact = {};
@@ -185,4 +219,4 @@ function setMeta(db, k, v) {
   db.prepare('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(k, String(v));
 }
 
-module.exports = { openDb, applyPush, pullCards, knownAuctions, poolStats, purgeMember, putProfile, listProfiles, removeProfile, getMeta, setMeta };
+module.exports = { openDb, applyPush, pullCards, feedRows, knownAuctions, poolStats, purgeMember, putProfile, listProfiles, removeProfile, getMeta, setMeta };

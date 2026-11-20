@@ -36,7 +36,7 @@ test('health répond sans clé', async () => {
   const r = await req('GET', '/v1/health');
   assert.equal(r.status, 200);
   assert.deepEqual(r.json, { ok: true, version: VERSION });
-  assert.equal(VERSION, '1.3.0');
+  assert.equal(VERSION, '1.4.0');
 });
 
 test('push : sans clé ou mauvaise clé, 401 ; bonne clé, 200', async () => {
@@ -113,6 +113,20 @@ test('profils par HTTP : sans clé 401, mal formé 400', async () => {
   assert.ok(!(await req('GET', '/v1/profiles', { headers: auth })).json.profiles.some(x => x.id === 'U5'));
 });
 
-test('health : version 1.3.0', async () => {
-  assert.equal((await req('GET', '/v1/health')).json.version, '1.3.0');
+test('health : version 1.4.0', async () => {
+  assert.equal((await req('GET', '/v1/health')).json.version, '1.4.0');
+});
+
+test('fil : demande la clé, rend les pages, refuse les paramètres invalides', async () => {
+  assert.equal((await req('GET', '/v1/feed?since=0')).status, 401);
+  await req('POST', '/v1/push', { headers: auth, body: { member: 'Jules', sales: [['C1', 30, '2026-11-15T10:00:00.000Z', 0, 1, 'A1']] } });
+  const r = await req('GET', '/v1/feed?since=0', { headers: auth });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.sales.length, 1);
+  assert.equal(r.json.sales[0][1], 'C1');
+  assert.match(r.json.pool, /^[0-9a-f]{16}$/);
+  assert.equal(r.json.more, false);
+  assert.equal((await req('GET', '/v1/feed', { headers: auth })).status, 200, 'since absent : 0');
+  for (const q of ['since=-1', 'since=abc', 'since=1.5', 'since=0&limit=0', 'since=0&limit=10001', 'since=99999999999999999999'])
+    assert.equal((await req('GET', '/v1/feed?' + q, { headers: auth })).status, 400, q);
 });

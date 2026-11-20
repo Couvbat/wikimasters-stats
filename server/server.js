@@ -5,11 +5,11 @@
 'use strict';
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { openDb, applyPush, pullCards, knownAuctions, poolStats, putProfile, listProfiles, removeProfile } = require('./db');
-const { parsePush, parseIds, parseProfile, httpError, okId } = require('./validate');
+const { openDb, applyPush, pullCards, feedRows, knownAuctions, poolStats, putProfile, listProfiles, removeProfile } = require('./db');
+const { parsePush, parseIds, parseProfile, parseFeedQuery, httpError, okId } = require('./validate');
 const { syncOnce, syncStatus } = require('./sync');
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const MAX_BODY = 2 * 1024 * 1024;
 const MAX_PULL = 500, MAX_KNOWN = 1000;
 
@@ -83,11 +83,13 @@ function createHandler({ db, groupKey, allowedOrigins, now = Date.now, perMinute
       const route = req.method + ' ' + url.pathname;
       // En mode relais, l'état de la synchronisation vers le NAS (sans son adresse ni sa clé).
       if (route === 'GET /v1/health') return send(200, upstreamStatus ? { ok: true, version: VERSION, upstream: upstreamStatus() } : { ok: true, version: VERSION });
-      const routes = new Set(['GET /v1/stats', 'POST /v1/push', 'POST /v1/pull', 'POST /v1/known', 'POST /v1/profile', 'GET /v1/profiles', 'POST /v1/profile/remove']);
+      const routes = new Set(['GET /v1/stats', 'GET /v1/feed', 'POST /v1/push', 'POST /v1/pull', 'POST /v1/known', 'POST /v1/profile', 'GET /v1/profiles', 'POST /v1/profile/remove']);
       if (!routes.has(route)) return send(404, { error: 'route inconnue' });
       if (!sameKey(req.headers['x-group-key'], groupKey)) return send(401, { error: 'clé de groupe absente ou fausse' });
       if (route === 'GET /v1/stats') return send(200, poolStats(db));
       if (route === 'GET /v1/profiles') return send(200, listProfiles(db));
+      // Fil des nouveautés : tout ce qui a changé après le numéro `since`, page par page.
+      if (route === 'GET /v1/feed') { const q = parseFeedQuery(url.searchParams); return send(200, feedRows(db, q.since, q.limit)); }
       const body = await readJson(req);
       // Profils (amis par le pool) : collection et souhaits des membres qui ont choisi de les partager.
       if (route === 'POST /v1/profile') { putProfile(db, parseProfile(body), now()); return send(200, { ok: true }); }
