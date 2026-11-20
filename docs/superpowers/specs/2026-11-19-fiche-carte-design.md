@@ -80,6 +80,7 @@ Tous les seuils sont des choix de Claude, regroupés en constantes pour pouvoir 
 2. **Le sens.**
    - On calcule la pente des prix sur les 30 derniers jours (au moins 6 ventes), exprimée en % par semaine.
    - La pente est robuste aux ventes aberrantes : médiane des pentes entre paires de ventes (Theil-Sen), sur le logarithme du prix. On garde au plus les 300 ventes les plus récentes de la fenêtre.
+   - Seules comptent les paires de ventes à un jour d'écart au moins, et les ventes doivent s'étaler sur 7 jours au moins : une rafale de ventes le même jour (doublons vendus d'un coup) n'affirme pas de sens *(choix de Claude, à la relecture finale)*.
    - +5 % par semaine ou plus : « **en hausse** (+X % par semaine) ».
    - −5 % ou moins : « **en baisse** ».
    - Entre les deux : « **stable** ».

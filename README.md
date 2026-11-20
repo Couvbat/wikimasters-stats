@@ -59,7 +59,7 @@ Pour savoir si une carte vaut le coup d'être vendue ou achetée maintenant. On 
 La fiche porte sur une carte et une rareté (des pastilles en haut passent aux autres raretés qui ont des ventes). Ses ventes sont celles qui font la valeur affichée partout : l'historique Pro, sinon tes ventes et achats, sinon les prix observés, sans jamais mélanger les raretés. Sous les minimums, elle dit « pas assez de ventes » plutôt qu'un chiffre.
 
 - **Prix du moment** : la médiane des 7 derniers jours (3 ventes au moins) face à celle des 30 jours d'avant (5 au moins). « Plus cher que d'habitude » à +15 % et au-delà, « moins cher » à −15 %, sinon « dans son habitude ».
-- **Sens** : la pente des prix sur 30 jours (6 ventes au moins), en % par semaine, peu sensible à une vente aberrante. « En hausse » à +5 % par semaine, « en baisse » à −5 %, sinon « stable ».
+- **Sens** : la pente des prix sur 30 jours (6 ventes au moins, étalées sur une semaine au moins), en % par semaine, peu sensible à une vente aberrante ; des ventes groupées sur un même jour ne se comparent pas entre elles. « En hausse » à +5 % par semaine, « en baisse » à −5 %, sinon « stable ».
 - **Rythme** : combien de fois la carte se vend par semaine (ou par mois), et sa dernière vente.
 - **Concurrence** : les annonces en cours connues à cette rareté, la moins chère, et l'âge du relevé.
 - **Pour toi**, si tu as la carte : ce qu'elle t'a coûté, et ce que la vendre à sa valeur te rapporterait.
