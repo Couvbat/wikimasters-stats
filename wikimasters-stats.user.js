@@ -4535,6 +4535,83 @@
     await fetchPricesFor([[c.id, c.rarity]], 'cardStatus', 'carte', 'cartes');
     if (ui.card && ui.card.id === c.id) renderCard();
   }
+  // ----- courbe de la fiche : SVG fait main, axe des dates réel (les ventes ne sont pas régulièrement espacées) -----
+  const CHART_PERIODS = [['7', '7 j', 7], ['30', '30 j', 30], ['90', '90 j', 90], ['all', 'tout', 0]];
+  // 30 jours par défaut, tout s'il y a moins de 10 ventes sur 30 jours.
+  function defaultPeriod(sales, now) {
+    const n = (Array.isArray(sales) ? sales : []).filter(x => { const t = Date.parse(x && x.t); return Number.isFinite(t) && now - t <= 30 * DAY; }).length;
+    return n >= 10 ? '30' : 'all';
+  }
+  // Bornes de l'axe des prix : 2e et 98e centiles (interpolés), pour qu'une vente aberrante n'écrase pas les autres ;
+  // le minimum et le maximum sous 10 valeurs. Des valeurs toutes égales gardent un écart d'un ₩ de chaque côté.
+  function chartBounds(values) {
+    const v = values.filter(Number.isFinite).sort((a, b) => a - b);
+    if (!v.length) return [0, 1];
+    const q = f => { const i = f * (v.length - 1), k = Math.floor(i); return k + 1 < v.length ? v[k] + (v[k + 1] - v[k]) * (i - k) : v[k]; };
+    let lo = v.length < 10 ? v[0] : q(0.02), hi = v.length < 10 ? v[v.length - 1] : q(0.98);
+    if (hi - lo < 1) { lo -= 1; hi += 1; }
+    return [lo, hi];
+  }
+  // Tes ventes (s) et tes achats (b) de la carte, à prix connu, à cette rareté ou de rareté inconnue, sans les shiny ;
+  // du plus ancien au plus récent. Ils ont leur propre marque sur la courbe.
+  function cardMarks(cardId, rarity) {
+    const out = [];
+    for (const a of Object.values(db.auctions)) {
+      if (!Array.isArray(a) || (a[0] !== 's' && a[0] !== 'b') || a[1] !== cardId || typeof a[6] !== 'number' || a[8]) continue;
+      if (rarOk(rarity) && rarOk(a[3]) && a[3] !== rarity) continue;
+      const t = Date.parse(a[7]);
+      if (Number.isFinite(t)) out.push({ t, p: a[6], k: a[0] });
+    }
+    return out.sort((x, y) => x.t - y.t);
+  }
+  const POINT_KIND = { pro: 'Pro', exact: 'exacte', prov: 'provisoire', own: 'toi', s: 'ta vente', b: 'ton achat' };
+  // points : [{ t (ms), p, k: pro|exact|prov|own }] ; marks : [{ t, p, k: s|b }] ; lines : { med7, medBase } (null sous les minimums).
+  function cardChart(points, marks, period, now, lines) {
+    const W = 760, H = 220, L = 54, R = 12, T = 10, B = 26;
+    const per = CHART_PERIODS.find(x => x[0] === period) || CHART_PERIODS[1];
+    const x0 = per[2] ? now - per[2] * DAY : Math.min(now - DAY, ...points.concat(marks).map(pt => pt.t));
+    const inRange = pt => pt.t >= x0 && pt.t <= now;
+    const pts = points.filter(inRange), mks = marks.filter(inRange);
+    const svg = s('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', role: 'img' });
+    if (!pts.length && !mks.length) {
+      svg.append(s('text', { x: W / 2, y: H / 2, 'text-anchor': 'middle' }, 'aucune vente sur cette période'));
+      return svg;
+    }
+    const [lo, hi] = chartBounds(pts.concat(mks).map(pt => pt.p));
+    const X = t => L + (t - x0) / Math.max(1, now - x0) * (W - L - R);
+    // Une vente hors bornes est dessinée au bord, en rouge.
+    const Y = p => T + (hi - Math.min(hi, Math.max(lo, p))) / (hi - lo) * (H - T - B);
+    const tip = pt => s('title', null, fmtDate(pt.t) + ' · ' + fmt(pt.p) + ' ₩ · ' + POINT_KIND[pt.k]);
+    svg.append(
+      s('line', { x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: '#33413b' }),
+      s('text', { x: L - 6, y: Y(hi) + 4, 'text-anchor': 'end' }, fmt(Math.round(hi)) + ' ₩'),
+      s('text', { x: L - 6, y: Y(lo) + 4, 'text-anchor': 'end' }, fmt(Math.round(lo)) + ' ₩'),
+      s('text', { x: L, y: H - 8 }, fmtDate(x0)),
+      s('text', { x: W - R, y: H - 8, 'text-anchor': 'end' }, fmtDate(now)));
+    // Le repère 1 : la médiane des 30 jours d'avant en pointillés, celle des 7 derniers jours en trait plein.
+    const seg = (from, to, v, dashed) => {
+      from = Math.max(from, x0);
+      if (v == null || to <= from) return;
+      const a = { x1: X(from), x2: X(to), y1: Y(v), y2: Y(v), stroke: dashed ? '#9ca3af' : '#f59e0b', 'stroke-width': 1.5 };
+      if (dashed) a['stroke-dasharray'] = '4 4';
+      svg.append(s('line', a));
+    };
+    seg(now - 37 * DAY, now - 7 * DAY, lines && lines.medBase, true);
+    seg(now - 7 * DAY, now, lines && lines.med7, false);
+    // Une vente Pro, exacte ou à toi : point plein ; un prix provisoire, qui n'est qu'un minimum : point creux.
+    for (const pt of pts) {
+      const color = pt.p < lo || pt.p > hi ? '#f87171' : '#34d399';
+      svg.append(s('circle', pt.k === 'prov'
+        ? { cx: X(pt.t), cy: Y(pt.p), r: 3.2, fill: 'none', stroke: color, 'stroke-width': 1.5 }
+        : { cx: X(pt.t), cy: Y(pt.p), r: 3.2, fill: color }, tip(pt)));
+    }
+    for (const m of mks) {
+      const x = X(m.t), y = Y(m.p), d = 5;
+      svg.append(s('path', { d: 'M' + x + ' ' + (y - d) + 'L' + (x + d) + ' ' + y + 'L' + x + ' ' + (y + d) + 'L' + (x - d) + ' ' + y + 'Z',
+        fill: m.k === 's' ? '#60a5fa' : '#f59e0b' }, tip(m)));
+    }
+    return svg;
+  }
   function renderCard() {
     const e = ui.el, c = ui.card;
     if (!c || !e.cardHead || !e.cardBody) return;
@@ -4599,7 +4676,15 @@
     ], src.sales, renderCard, { limit: c.all ? 0 : 50 });
     const more = !c.all && src.sales.length > 50
       ? h('button', { class: 'b', onclick: () => { c.all = true; renderCard(); } }, 'Tout afficher (' + src.sales.length + ')') : null;
-    e.cardBody.replaceChildren(h('div', { class: 'cues' }, rows), actions, table, more);
+    const period = c.period || defaultPeriod(src.sales, now);
+    const ptKind = x => (src.kind === 'pro' ? 'pro' : src.kind === 'own' ? 'own' : x.x ? 'exact' : 'prov');
+    const points = src.sales.map(x => ({ t: Math.min(Date.parse(x.t), now), p: x.p, k: ptKind(x) })).filter(pt => Number.isFinite(pt.t));
+    const periods = h('div', { class: 'periods' }, CHART_PERIODS.map(([k, label]) =>
+      h('button', { class: 'b' + (k === period ? ' on' : ''), onclick: () => { c.period = k; renderCard(); } }, label)));
+    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, { med7: cues.moment.med7, medBase: cues.moment.medBase }));
+    const legend = h('div', { class: 'note' }, '● vente Pro, exacte ou à toi · ○ prix provisoire, un minimum · ◆ bleu : ta vente, ◆ orange : ton achat · ' +
+      'pointillés : médiane des 30 jours d’avant, trait orange : celle des 7 derniers jours. Survole un point pour le détail.');
+    e.cardBody.replaceChildren(h('div', { class: 'cues' }, rows), periods, chart, legend, actions, table, more);
   }
 
   function sellList(rows) {

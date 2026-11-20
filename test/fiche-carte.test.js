@@ -228,3 +228,50 @@ test('fiche d’une carte inconnue partout : aucune vente, pas de plantage', () 
   assert.match(text(), /Aucune vente connue/);
   assert.doesNotMatch(text(), /NaN|undefined|Infinity/);
 });
+
+// ----- Tâche 4 : la courbe -----
+test('courbe : axe des prix borné aux 2e et 98e centiles, sauf avec peu de ventes', () => {
+  const { t } = load();
+  const [lo, hi] = t.chartBounds(Array.from({ length: 49 }, (_, i) => 100 + i).concat([10000]));
+  assert.ok(lo >= 100 && lo < 102, String(lo));
+  assert.ok(hi >= 148 && hi < 1000, 'la vente aberrante ne fixe pas le haut de l’axe : ' + hi);
+  assert.deepEqual(plain(t.chartBounds([10, 1000, 500])), [10, 1000]);
+  assert.deepEqual(plain(t.chartBounds([100, 100, 100])), [99, 101]);
+});
+
+test('courbe : 30 jours par défaut, tout s’il y a moins de 10 ventes en 30 jours', () => {
+  const { t } = load();
+  assert.equal(t.defaultPeriod(Array.from({ length: 10 }, (_, i) => sale(i, 100)), NOW), '30');
+  assert.equal(t.defaultPeriod(Array.from({ length: 9 }, (_, i) => sale(i, 100)).concat([sale(60, 100)]), NOW), 'all');
+});
+
+test('courbe : tes ventes et achats à la rareté affichée, sans les shiny ni les invendues', () => {
+  const { t } = load();
+  t.db.auctions = {
+    S1: ['s', 'C1', 'Paris', 'SR', 50, 50, 130, iso(3), 0],
+    B1: ['b', 'C1', 'Paris', 'SR', 50, 50, 90, iso(9), 0],
+    B2: ['b', 'C1', 'Paris', 'UR', 50, 50, 900, iso(5), 0],
+    B3: ['b', 'C1', 'Paris', 'SR', 50, 50, 400, iso(4), 1],
+    U1: ['u', 'C1', 'Paris', 'SR', 50, 50, null, iso(2), 0]
+  };
+  assert.deepEqual(plain(t.cardMarks('C1', 'SR')).map(m => [m.k, m.p]), [['b', 90], ['s', 130]]);
+});
+
+test('courbe : point creux pour un provisoire, segments des deux médianes, détail au survol', () => {
+  const { t } = load();
+  const pts = [{ t: NOW - DAY, p: 120, k: 'pro' }, { t: NOW - 2 * DAY, p: 110, k: 'prov' }, { t: NOW - 12 * DAY, p: 100, k: 'exact' }];
+  const svg = t.cardChart(pts, [{ t: NOW - 3 * DAY, p: 115, k: 's' }], '30', NOW, { med7: 115, medBase: 100 });
+  const circles = find(svg, n => n.tagName === 'circle');
+  assert.equal(circles.length, 3);
+  assert.equal(circles.filter(c => c.attrs.fill === 'none').length, 1, 'le provisoire est creux');
+  assert.equal(find(svg, n => n.tagName === 'line' && n.attrs['stroke-dasharray']).length, 1, 'médiane des 30 jours d’avant en pointillés');
+  assert.equal(find(svg, n => n.tagName === 'path').length, 1, 'ta vente en losange');
+  assert.match(nb(textOf(svg)), /provisoire/);
+  assert.match(nb(textOf(svg)), /ta vente/);
+});
+
+test('courbe : ventes toutes au même prix, l’axe ne s’écrase pas', () => {
+  const { t } = load();
+  const svg = t.cardChart([1, 2, 3].map(d => ({ t: NOW - d * DAY, p: 100, k: 'pro' })), [], '30', NOW, { med7: null, medBase: null });
+  for (const c of find(svg, n => n.tagName === 'circle')) assert.ok(Number.isFinite(Number(c.attrs.cy)), c.attrs.cy);
+});
