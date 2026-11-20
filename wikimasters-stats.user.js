@@ -1697,7 +1697,7 @@
 
   // ---------- repères de la fiche d'une carte ----------
   // Des repères sur « maintenant », jamais un verdict : Jules décide. Sous les minimums, « pas assez de ventes » plutôt qu'un chiffre.
-  const CUE = { RECENT_DAYS: 7, RECENT_MIN: 3, BASE_DAYS: 30, BASE_MIN: 5, MOMENT_PCT: 15, SLOPE_DAYS: 30, SLOPE_MIN: 6, SLOPE_MAX: 300, SLOPE_PCT: 5, PACE_DAYS: 30 };
+  const CUE = { RECENT_DAYS: 7, RECENT_MIN: 3, BASE_DAYS: 30, BASE_MIN: 5, MOMENT_PCT: 15, SLOPE_DAYS: 30, SLOPE_MIN: 6, SLOPE_MAX: 300, SLOPE_PCT: 5, SLOPE_GAP: 1, SLOPE_SPAN: 7, PACE_DAYS: 30 };
   // Calcul pur (ne lit pas db), pour se tester seul. sales : [{ p, t }] dans n'importe quel ordre ; une date illisible ou un prix nul
   // est ignoré, une date future compte comme maintenant. asks : null, ou { list (annonces en cours, toutes raretés), rarity, seenAt }.
   //   moment : la médiane des 7 derniers jours (3 ventes au moins) face à celle des 30 jours d'avant (5 au moins) ;
@@ -1722,13 +1722,24 @@
     }
     const win = pts.filter(pt => age(pt) <= CUE.SLOPE_DAYS).slice(0, CUE.SLOPE_MAX);
     const slope = { state: 'few', pct: null, n: win.length };
-    if (win.length >= CUE.SLOPE_MIN) {
-      const slopes = [];
-      for (let i = 0; i < win.length; i++) for (let j = i + 1; j < win.length; j++)
-        if (win[j].t !== win[i].t) slopes.push((Math.log(win[j].p) - Math.log(win[i].p)) / (win[j].t - win[i].t));
-      if (slopes.length) {
-        slope.pct = Math.round(100 * (Math.exp(median(slopes) * 7 * DAY) - 1)) || 0;
-        slope.state = slope.pct >= CUE.SLOPE_PCT ? 'up' : slope.pct <= -CUE.SLOPE_PCT ? 'down' : 'flat';
+    // Des ventes groupées (doublons vendus d'un coup, une rafale de la même heure) ne disent rien du sens : seules comptent les paires
+    // de ventes à un jour d'écart au moins, et les ventes doivent s'étaler sur une semaine au moins.
+    if (win.length >= CUE.SLOPE_MIN && win[0].t - win[win.length - 1].t >= CUE.SLOPE_SPAN * DAY) {
+      const n = win.length, lg = win.map(pt => Math.log(pt.p)), buf = new Float64Array(n * (n - 1) / 2);
+      const ts = win.map(pt => pt.t), gap = CUE.SLOPE_GAP * DAY;
+      let k = 0;
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const dt = ts[j] - ts[i];
+        if (dt >= gap || dt <= -gap) buf[k++] = (lg[j] - lg[i]) / dt;
+      }
+      if (k) {
+        // Médiane des pentes par sélection, sans tout trier : jusqu'à 44 850 paires pour 300 ventes.
+        const med = k % 2 ? kthOf(buf, k, k >> 1) : (kthOf(buf, k, (k >> 1) - 1) + kthOf(buf, k, k >> 1)) / 2;
+        const pct = Math.round(100 * (Math.exp(med * 7 * DAY) - 1));
+        if (Number.isFinite(pct)) {
+          slope.pct = pct || 0;
+          slope.state = slope.pct >= CUE.SLOPE_PCT ? 'up' : slope.pct <= -CUE.SLOPE_PCT ? 'down' : 'flat';
+        }
       }
     }
     const n30 = pts.filter(pt => age(pt) <= CUE.PACE_DAYS).length;
@@ -1740,6 +1751,21 @@
       compete = { n: same.length, min: same.length ? Math.min(...same.map(x => x.a)) : null, seenAt: num(asks.seenAt) };
     }
     return { moment, slope, pace, compete };
+  }
+  // Le k-ième plus petit (à partir de 0) des n premiers éléments d'un tableau typé, réordonné sur place (sélection de Hoare).
+  function kthOf(a, n, k) {
+    let lo = 0, hi = n - 1;
+    while (lo < hi) {
+      const pivot = a[(lo + hi) >> 1];
+      let i = lo, j = hi;
+      while (i <= j) {
+        while (a[i] < pivot) i++;
+        while (a[j] > pivot) j--;
+        if (i <= j) { const x = a[i]; a[i] = a[j]; a[j] = x; i++; j--; }
+      }
+      if (k <= j) hi = j; else if (k >= i) lo = i; else return a[k];
+    }
+    return a[k];
   }
   const signedPct = v => (v < 0 ? '−' + Math.abs(v) : '+' + v) + ' %';
   // Les repères écrits en clair, une ligne chacun, dans l'ordre de la fiche.
@@ -5108,10 +5134,13 @@
     if (hit && hit.sig === sig && now < hit.until) return hit.cues;
     if (cueCache.size > 2000) cueCache.clear();
     const cues = cardCues(src.sales, now, null);
-    cueCache.set(key, { sig, until: now + 6e5, cues });
+    // 10 minutes, plus jusqu'à 2 minutes au hasard : les cartes d'une même page ne se recalculent pas toutes au même moment.
+    cueCache.set(key, { sig, until: now + 6e5 + Math.floor(Math.random() * 12e4), cues });
     return cues;
   }
   function badgeFor(cardId, au, mine) {
+    // La rareté évaluée par la pastille : celle de l'annonce, sinon la rareté connue de la carte. La fiche s'ouvre à la même.
+    const cueRar = au && rarOk(au.r) ? au.r : rarityOf(cardId);
     // Une annonce se juge à la valeur de la rareté de son exemplaire.
     const p = au && rarOk(au.r) ? priceOf(cardId, au.r) : priceOf(cardId);
     if (!p) return null;
@@ -5129,7 +5158,7 @@
       const other = otherValue(p);
       if (other) lines.push(other);
       // Les repères 1 et 2 de la fiche, en court, quand l'un des deux est calculable.
-      const short = cueShort(cuesOf(cardId, au && rarOk(au.r) ? au.r : rarityOf(cardId)));
+      const short = cueShort(cuesOf(cardId, cueRar));
       if (short) lines.push('Repères : ' + short);
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
@@ -5164,7 +5193,7 @@
     if (have) { text += ' ✓'; lines.push('Tu l’as déjà' + (have.count > 1 ? ' (' + have.count + ' exemplaires)' : '') + '.'); }
     lines.push('Clic : fiche de la carte');
     return { text, border, bg, lines, flag, sales: p.n ? p.sales.slice(0, SPARK_MAX) : null, med: p.n ? Math.max(p.med, DISCARD) : 0,
-      card: { id: cardId, au: au || null } };
+      card: { id: cardId, au: au || null, rarity: cueRar } };
   }
   function scanCards() {
     scanTimer = 0;
@@ -5284,7 +5313,7 @@
     const b = tipData.get(el), card = b && b.card;
     if (!card) return;
     const au = card.au;
-    openCard(card.id, { rarity: au && rarOk(au.r) ? au.r : undefined, au: au && au.a != null ? au : null, title: card.title });
+    openCard(card.id, { rarity: card.rarity, au: au && au.a != null ? au : null, title: card.title });
   }
 
   // ---------- valeur des échanges sur la page Échanges du site ----------

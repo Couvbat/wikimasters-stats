@@ -327,3 +327,38 @@ test('clic ailleurs sur la page : rien n’est intercepté', () => {
   assert.deepEqual(calls, []);
   assert.equal(t.ui.card, null);
 });
+
+// ----- Relecture finale -----
+test('repère 2 : des ventes groupées en quelques heures ou jours ne donnent pas de sens', () => {
+  const { t } = load();
+  const s = sales => t.cardCues(sales, NOW, null).slope;
+  const h = (hours, p) => ({ p, t: new Date(NOW - DAY - hours * 36e5).toISOString(), r: 'SR' });
+  assert.equal(s([0, 0.5, 1, 1.5, 2, 3].map((x, i) => h(x, 130 - i * 6))).state, 'few', '6 ventes en 3 heures');
+  assert.equal(s([0, 0.003, 0.006, 0.009, 0.012, 0.015].map((x, i) => h(x, 2000 / Math.pow(2, i)))).state, 'few', '6 ventes en une minute');
+  assert.equal(s(Array.from({ length: 8 }, (_, i) => sale(0.25 * i, 1000 - i * 60))).state, 'few', '8 ventes en 2 jours');
+  const c = s([...[0, 0.5, 1, 1.5, 2, 3].map((x, i) => h(x, 130 - i * 6)), sale(10, 100), sale(20, 100)]);
+  assert.ok(Number.isFinite(c.pct) && Math.abs(c.pct) < 100, String(c.pct));
+  assert.doesNotMatch(t.cueLines(t.cardCues([0, 0.003, 0.006, 0.009, 0.012, 0.015].map((x, i) => h(x, 2000 / Math.pow(2, i))), NOW, null)).map(l => l.text).join(' '), /Infinity|NaN/);
+});
+
+test('clic sur une pastille sans annonce : la fiche s’ouvre à la rareté de la pastille', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 100, 'SR'), sale(2, 900, 'UR')] };
+  t.db.cards = { a: { cardId: 'C1', title: 'Paris', rarity: 'SR', count: 1, shiny: false }, b: { cardId: 'C1', title: 'Paris', rarity: 'UR', count: 1, shiny: false } };
+  const b = t.badgeFor('C1', null, {});
+  const el = {};
+  t.tipData.set(el, b);
+  t.badgeClick({ target: { closest: () => el }, preventDefault() {}, stopPropagation() {} });
+  assert.equal(t.ui.card.rarity, t.rarityOf('C1'), 'la rareté que la pastille a évaluée');
+  assert.equal(t.ui.card.rarity, 'UR');
+});
+
+test('repères : 20 cartes à 300 ventes se calculent sans geler la page', () => {
+  const { t } = load();
+  const sales = Array.from({ length: 300 }, (_, i) => ({ p: 100 + (i * 37) % 50, t: new Date(NOW - (i / 10) * DAY - 36e5).toISOString(), r: 'SR' }));
+  t.cardCues(sales, NOW, null);
+  const t0 = performance.now();
+  for (let k = 0; k < 20; k++) t.cardCues(sales, NOW, null);
+  const ms = performance.now() - t0;
+  assert.ok(ms < 150, Math.round(ms) + ' ms');
+});
