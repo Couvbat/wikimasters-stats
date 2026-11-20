@@ -275,3 +275,55 @@ test('courbe : ventes toutes au même prix, l’axe ne s’écrase pas', () => {
   const svg = t.cardChart([1, 2, 3].map(d => ({ t: NOW - d * DAY, p: 100, k: 'pro' })), [], '30', NOW, { med7: null, medBase: null });
   for (const c of find(svg, n => n.tagName === 'circle')) assert.ok(Number.isFinite(Number(c.attrs.cy)), c.attrs.cy);
 });
+
+// ----- Tâche 5 : pastilles et bulle -----
+test('bulle : les repères en court, et le clic vers la fiche', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 130), sale(2, 130), sale(3, 130), ...base5(100)] };
+  const lines = t.badgeFor('C1', null, {}).lines.map(nb);
+  assert.ok(lines.includes('Repères : plus cher que d’habitude · en hausse'), lines.join('\n'));
+  assert.equal(lines[lines.length - 1], 'Clic : fiche de la carte');
+});
+
+test('bulle : sans assez de ventes, pas de ligne de repères', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 130), sale(2, 120)] };
+  const lines = t.badgeFor('C1', null, {}).lines;
+  assert.ok(!lines.some(l => l.startsWith('Repères')));
+  assert.ok(lines.includes('Clic : fiche de la carte'));
+});
+
+test('bulle : de nouvelles ventes changent les repères sans attendre', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 100), sale(2, 100), sale(3, 100), ...base5(100)] };
+  assert.ok(t.badgeFor('C1', null, {}).lines.map(nb).includes('Repères : dans son habitude · stable'));
+  t.mergePro([['C1', NOW, [[150, iso(0.5), 'SR'], [150, iso(0.6), 'SR'], [150, iso(0.7), 'SR'], [150, iso(0.8), 'SR']]]]);
+  assert.ok(t.badgeFor('C1', null, {}).lines.map(nb).some(l => /^Repères : plus cher que d’habitude/.test(l)));
+});
+
+test('clic sur une pastille : la fiche s’ouvre à la rareté de l’annonce, sans suivre le lien du site', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 120, 'UR'), sale(2, 100, 'SR')] };
+  t.db.cards.X1 = { cardId: 'C1', title: 'Paris', rarity: 'SR', count: 1, shiny: false };
+  t.ui.tab = 'col';
+  const b = t.badgeFor('C1', { a: 90, b: false, r: 'UR', i: 'A1' }, {});
+  assert.equal(b.card.id, 'C1');
+  b.card.title = 'Paris';
+  const el = {};
+  t.tipData.set(el, b);
+  const calls = [];
+  t.badgeClick({ target: { closest: () => el }, preventDefault: () => calls.push('prevent'), stopPropagation: () => calls.push('stop') });
+  assert.deepEqual(calls, ['prevent', 'stop']);
+  assert.equal(t.ui.card.id, 'C1');
+  assert.equal(t.ui.card.rarity, 'UR', 'la rareté de l’annonce, comme la pastille');
+  assert.equal(t.ui.card.au.a, 90);
+  assert.equal(t.ui.card.from, 'col');
+});
+
+test('clic ailleurs sur la page : rien n’est intercepté', () => {
+  const { t } = load();
+  const calls = [];
+  t.badgeClick({ target: { closest: () => null }, preventDefault: () => calls.push('prevent'), stopPropagation: () => calls.push('stop') });
+  assert.deepEqual(calls, []);
+  assert.equal(t.ui.card, null);
+});

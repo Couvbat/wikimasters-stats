@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.28.0
+// @version      1.29.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.28.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.29.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -5097,6 +5097,20 @@
     return '';
   }
   const SPARK_MAX = 30; // ventes dessinées au plus dans la courbe de la bulle
+  // Repères de la bulle, gardés en cache : recalculés seulement quand les ventes de la carte changent (source, nombre, date de la
+  // plus récente) ou au bout de 10 minutes, et pas à chaque rafraîchissement du panneau.
+  const cueCache = new Map();
+  function cuesOf(cardId, rarity) {
+    const src = cardSource(cardId, rarity);
+    if (!src.sales.length) return null;
+    const key = cardId + '|' + (rarity || ''), sig = src.kind + '|' + src.sales.length + '|' + src.sales[0].t;
+    const now = Date.now(), hit = cueCache.get(key);
+    if (hit && hit.sig === sig && now < hit.until) return hit.cues;
+    if (cueCache.size > 2000) cueCache.clear();
+    const cues = cardCues(src.sales, now, null);
+    cueCache.set(key, { sig, until: now + 6e5, cues });
+    return cues;
+  }
   function badgeFor(cardId, au, mine) {
     // Une annonce se juge à la valeur de la rareté de son exemplaire.
     const p = au && rarOk(au.r) ? priceOf(cardId, au.r) : priceOf(cardId);
@@ -5114,6 +5128,9 @@
       lines.push('Valeur : ' + fmt(Math.round(med)) + ' ₩ (' + (p.basis === 'recent' ? '7 derniers jours, ' : 'depuis toujours, ') + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + (p.mixed ? ', ventes d’autres raretés' : p.r ? ', en ' + p.r : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
       const other = otherValue(p);
       if (other) lines.push(other);
+      // Les repères 1 et 2 de la fiche, en court, quand l'un des deux est calculable.
+      const short = cueShort(cuesOf(cardId, au && rarOk(au.r) ? au.r : rarityOf(cardId)));
+      if (short) lines.push('Repères : ' + short);
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));
         if (au.s) {
@@ -5145,7 +5162,9 @@
       }
     }
     if (have) { text += ' ✓'; lines.push('Tu l’as déjà' + (have.count > 1 ? ' (' + have.count + ' exemplaires)' : '') + '.'); }
-    return { text, border, bg, lines, flag, sales: p.n ? p.sales.slice(0, SPARK_MAX) : null, med: p.n ? Math.max(p.med, DISCARD) : 0 };
+    lines.push('Clic : fiche de la carte');
+    return { text, border, bg, lines, flag, sales: p.n ? p.sales.slice(0, SPARK_MAX) : null, med: p.n ? Math.max(p.med, DISCARD) : 0,
+      card: { id: cardId, au: au || null } };
   }
   function scanCards() {
     scanTimer = 0;
@@ -5179,11 +5198,12 @@
         }
         el.dataset.key = key;
         el.textContent = b.text;
+        b.card.title = title; // le nom lu sur la carte du site, pour la fiche
         tipData.set(el, b);
         // Bulle détaillée (la nôtre) ou bulle simple du navigateur, selon le réglage.
         if (native) el.title = 'WikiMasters Stats\n' + b.lines.join('\n'); else el.removeAttribute('title');
         el.style.cssText = 'position:absolute;top:6px;right:6px;z-index:40;padding:1px 7px;border-radius:999px;' +
-          'font:700 11px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:#fff;white-space:nowrap;pointer-events:auto;cursor:help;' +
+          'font:700 11px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;color:#fff;white-space:nowrap;pointer-events:auto;cursor:pointer;' +
           'box-shadow:0 1px 4px rgba(0,0,0,.6);background:' + b.bg + ';border:1.5px solid ' + b.border;
       }
     }
@@ -5253,6 +5273,19 @@
     tipEl.style.top = y + 'px';
   }
   function hideTip() { tipFor = null; if (tipEl) tipEl.style.display = 'none'; }
+  // Clic sur une de nos pastilles : la fiche de la carte s'ouvre dans le panneau, avec l'annonce si la pastille en porte une.
+  // Écouté en phase de capture, avant le lien de la carte du site : le clic ne le suit pas.
+  function badgeClick(ev) {
+    const el = ev.target && ev.target.closest ? ev.target.closest('.' + BADGE) : null;
+    if (!el) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    hideTip();
+    const b = tipData.get(el), card = b && b.card;
+    if (!card) return;
+    const au = card.au;
+    openCard(card.id, { rarity: au && rarOk(au.r) ? au.r : undefined, au: au && au.a != null ? au : null, title: card.title });
+  }
 
   // ---------- valeur des échanges sur la page Échanges du site ----------
   // Lecture seule : le script ajoute une ligne de texte, il ne touche ni aux cartes choisies ni aux boutons.
@@ -5351,6 +5384,7 @@
       if (el && !el.title) { if (el !== tipFor) showTip(el); } else if (tipFor) hideTip();
     }, true);
     window.addEventListener('scroll', () => { if (tipFor) hideTip(); }, true);
+    document.addEventListener('click', badgeClick, true);
     overlaySoon();
   }
 
