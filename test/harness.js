@@ -18,7 +18,7 @@ const EXPOSE = [
   'store', 'ready', 'storeLine', 'whenReady', 'priceDue', 'dueCards', 'missingIds', 'routinePass', 'updateAll', 'autoLine',
   'ingestWish', 'profileBody', 'poolSendProfile', 'poolRemoveProfile', 'setProfileShare', 'applyProfiles', 'poolPullProfiles',
   'keepAll', 'COLS', 'obsCardsMax', 'dropProvisional', 'applyFeedPage', 'feedOn', 'poolFeed', 'poolLine',
-  'cardSource', 'cardRarities', 'cardCues', 'cueLines', 'cueShort'
+  'cardSource', 'cardRarities', 'cardCues', 'cueLines', 'cueShort', 'openCard', 'closeCard', 'renderCard', 'setTab', 'toggle', 'syncButtons'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +

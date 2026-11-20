@@ -119,3 +119,112 @@ test('repères : date illisible ignorée, date future comptée comme maintenant,
   assert.equal(t.cardCues(same, NOW, null).slope.state, 'few', 'aucune paire de dates différentes');
   for (const s of [odd, same]) assert.doesNotMatch(t.cueLines(t.cardCues(s, NOW, null)).map(l => l.text).join(' '), /NaN|undefined|Infinity/);
 });
+
+// ----- Tâche 3 : la fiche dans le panneau -----
+// Faux éléments de la fiche ; renvoie une fonction qui lit tout son texte.
+function fiche(t) {
+  const out = {};
+  for (const k of ['cardHead', 'cardBody']) t.ui.el[k] = { replaceChildren(...kids) { out[k] = kids; } };
+  t.ui.el.cardStatus = { textContent: '' };
+  return Object.assign(() => nb(textOf([out.cardHead, out.cardBody])), { out });
+}
+
+test('fiche : repères, ce que la carte t’a coûté et ce que la vendre rapporterait', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 120), sale(2, 120), sale(3, 120), ...base5(100)] };
+  t.db.cards.X1 = { cardId: 'C1', title: 'Paris', rarity: 'SR', count: 1, shiny: false };
+  t.db.auctions.B1 = ['b', 'C1', 'Paris', 'SR', 50, 80, 80, iso(20), 0];
+  const text = fiche(t);
+  t.openCard('C1');
+  t.renderCard();
+  const s = text();
+  assert.match(s, /Paris/);
+  assert.match(s, /Prix du moment/);
+  assert.match(s, /plus cher que d’habitude \(\+20 %\)/);
+  assert.match(s, /achetée 80 ₩/);
+  assert.match(s, /\+40 ₩/);
+  assert.doesNotMatch(s, /\b(vends|achète)\b/i);
+});
+
+test('fiche ouverte depuis une annonce : écart à la valeur, bonne affaire et enchère max', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 120), sale(2, 120), sale(3, 120)] };
+  const text = fiche(t);
+  t.openCard('C1', { rarity: 'SR', au: { a: 70, b: false, r: 'SR', i: 'A1' }, title: 'Paris' });
+  t.renderCard();
+  const s = text();
+  assert.match(s, /Face à l’annonce/);
+  assert.match(s, /42 % sous la valeur/);
+  assert.match(s, /bonne affaire −42 %/);
+  assert.match(s, /enchère max conseillée : 120 ₩/);
+});
+
+test('fiche : aucune vente à cette rareté, pas de mélange, et les raretés qui en ont', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 900, 'UR'), sale(2, 950, 'UR')] };
+  const text = fiche(t);
+  t.openCard('C1', { rarity: 'SR', title: 'Paris' });
+  t.renderCard();
+  const s = text();
+  assert.match(s, /Aucune vente connue à cette rareté/);
+  assert.match(s, /Ventes connues en : .*UR/);
+  assert.doesNotMatch(s, /\b(900|950)\b/, 'aucune vente UR listée comme vente SR');
+});
+
+test('fiche : les 50 ventes les plus récentes, puis toutes', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: Array.from({ length: 80 }, (_, i) => sale(i * 0.5, 100 + i)) };
+  const text = fiche(t);
+  t.openCard('C1', { rarity: 'SR', title: 'Paris' });
+  t.renderCard();
+  const rows = () => find(text.out.cardBody, n => n.tagName === 'tbody').reduce((a, b) => a + b.children.length, 0);
+  assert.equal(rows(), 50);
+  assert.match(text(), /Tout afficher \(80\)/);
+  t.ui.card.all = true;
+  t.renderCard();
+  assert.equal(rows(), 80);
+});
+
+test('fiche : ← Retour et un onglet ramènent à l’onglet d’origine, fermer le panneau ferme la fiche', () => {
+  const { t } = load();
+  t.ui.el.back = { classList: { toggle() {} } };
+  t.ui.tab = 'wish';
+  t.openCard('C1', { title: 'Paris' });
+  assert.equal(t.ui.card.from, 'wish');
+  t.closeCard();
+  assert.equal(t.ui.card, null);
+  assert.equal(t.ui.tab, 'wish');
+  t.openCard('C1', { title: 'Paris' });
+  t.setTab('col');
+  assert.equal(t.ui.card, null);
+  assert.equal(t.ui.tab, 'col');
+  t.openCard('C1', { title: 'Paris' });
+  t.ui.open = true;
+  t.toggle(false);
+  assert.equal(t.ui.card, null);
+});
+
+test('fiche : actions grisées pendant un autre traitement, et recherche impossible sans le nom', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 120)] };
+  fiche(t);
+  t.openCard('C1', { rarity: 'SR', title: 'Paris' });
+  t.job.running = true;
+  t.renderCard();
+  assert.equal(t.ui.el.cardSearch.disabled, true);
+  t.job.running = false;
+  t.syncButtons();
+  assert.equal(t.ui.el.cardSearch.disabled, false);
+  t.openCard('C9', { rarity: 'SR' });
+  t.renderCard();
+  assert.equal(t.ui.el.cardSearch.disabled, true, 'nom inconnu : la recherche par nom est impossible');
+});
+
+test('fiche d’une carte inconnue partout : aucune vente, pas de plantage', () => {
+  const { t } = load();
+  const text = fiche(t);
+  t.openCard('C404');
+  t.renderCard();
+  assert.match(text(), /Aucune vente connue/);
+  assert.doesNotMatch(text(), /NaN|undefined|Infinity/);
+});

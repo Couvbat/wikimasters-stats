@@ -2842,7 +2842,9 @@
   const ui = {
     open: false, tab: 'home', chosen: new Set(['L', 'UR', 'SR']),
     sortKey: 'total', sortDir: -1, text: '', rarity: '', friend: '', frRarity: '',
-    wishRarity: '', wishAvail: false, wishOpen: new Set(), wishAll: false, tradeOpen: new Set(), metric: 0, sorts: {}, el: {}
+    wishRarity: '', wishAvail: false, wishOpen: new Set(), wishAll: false, tradeOpen: new Set(), metric: 0, sorts: {}, el: {},
+    // Fiche d'une carte ouverte dans le panneau (voir openCard), ou null.
+    card: null
   };
   const SVG = 'http://www.w3.org/2000/svg';
   function s(tag, attrs, ...kids) {
@@ -3005,6 +3007,18 @@
     .chart text{font-size:11px;fill:#8b9a94;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
     .tip{position:absolute;top:6px;transform:translateX(-50%);background:#1c2622;border:1px solid #33413b;border-radius:6px;
       padding:4px 8px;font-size:12px;color:#e5e7eb;white-space:nowrap;pointer-events:none;display:none}
+    .cbtn{background:none;border:0;padding:0 2px;margin-left:4px;cursor:pointer;font-size:13px;opacity:.7}
+    .cbtn:hover{opacity:1}
+    .card-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px}
+    .card-head h2{font-size:16px;margin:0;font-weight:700}
+    .card-head .val{font-weight:700;font-size:15px}
+    .rbtn{background:none;border:0;padding:0;cursor:pointer;opacity:.5}
+    .rbtn.on,.rbtn:hover{opacity:1}
+    .rbtn.on .r{outline:2px solid #34d399;outline-offset:1px}
+    .cues{display:flex;flex-direction:column;gap:5px;margin:4px 0 12px;color:#cbd5d1}
+    .cue b{color:#e5e7eb;font-weight:600}
+    .periods{display:flex;gap:6px;margin:6px 0}
+    button.b.on{border-color:#34d399;color:#34d399}
   `;
 
   const REL = ['Douteux', 'Moyen', 'Fiable'];
@@ -3038,7 +3052,7 @@
   const medCell = (m, n) => (n ? fmt(Math.round(m)) + ' ₩ · ' + plural(n, 'vente', 'ventes') : '—');
   const COLS = [
     { k: 'title', t: 'Carte', get: r => r.title.toLowerCase(),
-      cell: r => [r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title) : r.title,
+      cell: r => [r.url ? h('a', { href: r.url, target: '_blank', rel: 'noopener' }, r.title) : r.title, cardBtn(r.cardId, r.rarity, r.title),
         r.shiny ? ' ✨' : '', r.starred ? ' ★' : ''] },
     { k: 'rarity', t: 'Rareté', get: r => { const i = RARITIES.indexOf(r.rarity); return i < 0 ? 99 : i; }, cell: r => rarBadge(r.rarity) },
     { k: 'count', t: 'Ex.', get: r => r.count, cell: r => r.count },
@@ -3118,6 +3132,7 @@
     if (e.storeInfo) e.storeInfo.textContent = storeLine();
     for (const el of [e.autoInfo, e.autoInfo2]) if (el) el.textContent = autoLine();
     for (const b of [e.updAll, e.updAll2]) if (b) b.disabled = job.running;
+    syncCardButtons();
     if (!e.load) return;
     const pro = proState();
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
@@ -3167,7 +3182,7 @@
     const root = host.attachShadow({ mode: 'open' });
     const e = ui.el;
     e.host = host;
-    for (const k of ['status', 'sellStatus', 'frStatus', 'salesStatus', 'wishStatus', 'dataStatus']) e[k] = h('div', { class: 'status' });
+    for (const k of ['status', 'sellStatus', 'frStatus', 'salesStatus', 'wishStatus', 'dataStatus', 'cardStatus']) e[k] = h('div', { class: 'status' });
     for (const k of ['tiles', 'pullTiles', 'salesTiles', 'wishTiles']) e[k] = h('div', { class: 'tiles' });
     for (const k of ['rar', 'market']) e[k] = h('div', { class: 'rar' });
     for (const k of ['table', 'sellTable', 'pullBody', 'frBody', 'salesBody', 'wishBody', 'trendBody']) e[k] = h('div', { class: 'scroll' });
@@ -3482,7 +3497,9 @@
       e.dataStatus,
       h('div', { class: 'note' }, 'Garde ce fichier pour toi : il contient des prix issus de ton compte.'));
 
-    const views = TABS.map(([k]) => e['view_' + k]);
+    // Fiche d'une carte : une vue du panneau hors de la barre d'onglets (voir openCard).
+    e.view_card = h('div', { style: 'display:none' }, (e.cardHead = h('div', { class: 'card-head' })), e.cardStatus, (e.cardBody = h('div', { class: 'scroll' })));
+    const views = TABS.map(([k]) => e['view_' + k]).concat([e.view_card]);
     e.back = h('div', { class: 'back', onclick: ev => { if (ev.target === e.back) toggle(false); } },
       h('div', { class: 'panel' },
         h('header', null,
@@ -3526,17 +3543,26 @@
     setTab(ui.tab);
   }
 
-  function setTab(t) {
-    ui.tab = t;
+  // La vue affichée : la fiche d'une carte quand elle est ouverte, sinon l'onglet en cours.
+  function showView() {
+    if (!ui.el.host) return;
     for (const [k] of TABS) {
-      ui.el['view_' + k].style.display = k === t ? '' : 'none';
-      ui.el['tab_' + k].classList.toggle('on', k === t);
+      ui.el['view_' + k].style.display = !ui.card && k === ui.tab ? '' : 'none';
+      ui.el['tab_' + k].classList.toggle('on', !ui.card && k === ui.tab);
     }
+    if (ui.el.view_card) ui.el.view_card.style.display = ui.card ? '' : 'none';
+  }
+  function setTab(t) {
+    ui.card = null; // cliquer un onglet ferme la fiche
+    ui.tab = t;
+    showView();
     refresh();
   }
   function toggle(force) {
     ui.open = force == null ? !ui.open : force;
     ui.el.back.classList.toggle('open', ui.open);
+    // Fermer le panneau ferme aussi la fiche : le bouton 📊 rouvre l'onglet d'où l'on venait.
+    if (!ui.open && ui.card) { ui.tab = ui.card.from || ui.tab; ui.card = null; showView(); }
     if (ui.open) { checkUpdate(false); renderUpdate(); poolPullMine(); }
     refresh();
   }
@@ -3554,6 +3580,7 @@
       ? 'Collection vue le ' + new Date(db.collectionAt).toLocaleString('fr-FR')
       : 'Collection pas encore chargée') + saveWarning();
     syncButtons();
+    if (ui.card) return renderCard();
     ({ home: renderHome, col: renderCol, sell: renderSell, sales: renderSales, trades: renderTrades, wish: renderWish, pulls: renderPulls,
       trend: renderTrend, friends: renderFriends, opts: () => {}, data: () => {} })[ui.tab]();
   }
@@ -4048,7 +4075,7 @@
     e.wishBody.replaceChildren(
       sortTable('wish', [
         { t: 'Carte', left: true, asc: true, get: c => c.title.toLowerCase(),
-          cell: c => [multi(c) ? h('span', { class: 'caret' }, isOpen(c) ? '▾' : '▸') : h('span', { class: 'caret' }), c.title,
+          cell: c => [multi(c) ? h('span', { class: 'caret' }, isOpen(c) ? '▾' : '▸') : h('span', { class: 'caret' }), c.title, cardBtn(c.id, c.rarity, c.title),
             multi(c) ? h('span', { class: 'tag', title: c.ask.other ? 'Dont ' + plural(c.ask.other, 'annonce', 'annonces') + ' d’une autre rareté : déplie la ligne pour les voir.' : '' },
               c.ask.list.length + ' annonces' + (c.ask.other ? ' (' + c.ask.other + ' autre rareté)' : '')) : null,
             isDeal(c) ? h('span', { class: 'tag deal', title: 'L’annonce la moins chère est ' + dealOf(c) + ' % sous la valeur médiane de sa rareté (' +
@@ -4463,6 +4490,118 @@
   }
 
   // ----- onglet À vendre -----
+  // ----- fiche d'une carte : une vue du panneau, hors de la barre d'onglets -----
+  // ui.card : { id, rarity, title, au (l'annonce d'où l'on vient, ou null), from (onglet d'origine), period (courbe), all (liste complète) }.
+  // Des repères sur « maintenant », jamais un verdict. Tout se calcule à l'ouverture et à chaque redessin.
+  function cardTitle(cardId, fallback) {
+    const c = Object.values(db.cards).find(x => x && x.cardId === cardId && x.title && x.title !== '?');
+    if (c) return c.title;
+    const w = db.wish[cardId];
+    if (w && w[0] && w[0] !== '?') return w[0];
+    return (typeof fallback === 'string' && fallback.trim()) || '?';
+  }
+  // Petit bouton 📈 à côté du nom d'une carte : ouvre sa fiche.
+  function cardBtn(cardId, rarity, title) {
+    return h('button', { class: 'cbtn', title: 'Fiche de la carte : repères, courbe et ventes', onclick: () => openCard(cardId, { rarity, title }) }, '📈');
+  }
+  // Rareté de la fiche : celle demandée (la ligne du panneau, ou l'annonce de la pastille), sinon ton exemplaire (non shiny
+  // d'abord), sinon la rareté connue de la carte, sinon la première qui a des ventes.
+  function openCard(cardId, opts) {
+    opts = opts || {};
+    const mine = Object.values(db.cards).filter(c => c && c.cardId === cardId && rarOk(c.rarity)).sort((a, b) => !!a.shiny - !!b.shiny);
+    const rarity = rarOk(opts.rarity) ? opts.rarity : mine.length ? mine[0].rarity : rarityOf(cardId) || cardRarities(cardId)[0] || '';
+    ui.card = { id: cardId, rarity, title: cardTitle(cardId, opts.title), au: opts.au || null, from: ui.card ? ui.card.from : ui.tab, period: null, all: false };
+    setStatus('', 'cardStatus');
+    showView();
+    if (!ui.el.host) return;
+    if (!ui.open) toggle(true); else refresh();
+  }
+  function closeCard() { setTab(ui.card ? ui.card.from : ui.tab); }
+  // La recherche d'annonces se fait par le nom : impossible tant qu'il est inconnu.
+  function syncCardButtons() {
+    const e = ui.el;
+    if (e.cardSearch) e.cardSearch.disabled = job.running || !ui.card || ui.card.title === '?';
+    if (e.cardPro) e.cardPro.disabled = job.running;
+  }
+  async function cardSearchNow() {
+    const c = ui.card;
+    if (!c || job.running || c.title === '?') return;
+    await marketSearch([[c.id, c.title]], 'Annonces', 'sans annonce', 'cardStatus');
+    if (ui.card && ui.card.id === c.id) renderCard();
+  }
+  async function cardProNow() {
+    const c = ui.card;
+    if (!c || job.running) return;
+    await fetchPricesFor([[c.id, c.rarity]], 'cardStatus', 'carte', 'cartes');
+    if (ui.card && ui.card.id === c.id) renderCard();
+  }
+  function renderCard() {
+    const e = ui.el, c = ui.card;
+    if (!c || !e.cardHead || !e.cardBody) return;
+    const now = Date.now(), id = c.id, rarity = c.rarity;
+    const src = cardSource(id, rarity), price = priceOf(id, rarity);
+    const rars = cardRarities(id);
+    if (rarOk(rarity) && !rars.includes(rarity)) rars.push(rarity);
+    rars.sort((a, b) => rarOrder(a) - rarOrder(b));
+    const pick = r => { c.rarity = r; c.period = null; c.all = false; renderCard(); };
+    const rarBtn = r => h('button', { class: 'rbtn' + (r === rarity ? ' on' : ''), title: 'Fiche en ' + r, onclick: () => pick(r) }, rarBadge(r));
+    // La valeur comme partout, y compris le « ≈ » d'un prix tiré d'autres raretés.
+    const value = price && price.n
+      ? [h('span', { class: 'val' }, (price.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(Math.max(price.med, DISCARD))) + ' ₩'), ' ', relCell(price),
+        price.mixed ? ' · prix d’autres raretés' : '']
+      : h('span', { class: 'val' }, fmt(DISCARD) + ' ₩ (aucune vente connue)');
+    e.cardHead.replaceChildren(h('button', { class: 'b', onclick: closeCard }, '← Retour'), h('h2', null, c.title), rars.map(rarBtn), h('span', null, value));
+    e.cardSearch = h('button', { class: 'b', onclick: cardSearchNow,
+      'data-tip': 'Cherche sur le marché qui vend cette carte en ce moment, et à quel prix. Une requête, par le nom de la carte.' }, 'Chercher les annonces de cette carte');
+    e.cardPro = proState() === true ? h('button', { class: 'b', onclick: cardProNow,
+      'data-tip': 'Compte Pro. Relit l’historique des ventes de cette carte à cette rareté. Une requête.' }, 'Relever l’historique Pro') : null;
+    syncCardButtons();
+    const actions = h('div', { class: 'tools' }, e.cardSearch, e.cardPro);
+    if (!src.sales.length) {
+      const others = rars.filter(r => r !== rarity);
+      e.cardBody.replaceChildren(
+        h('div', { class: 'empty' }, 'Aucune vente connue' + (rarOk(rarity) ? ' à cette rareté' : '') + '.'),
+        others.length ? h('p', { class: 'line' }, 'Ventes connues en : ', others.map(rarBtn)) : null,
+        actions);
+      return;
+    }
+    const ask = askOf(id, rarity);
+    const seenAt = db.wishSeen[id] || (ask && ask.t) || 0;
+    const cues = cardCues(src.sales, now, { list: ask ? ask.list : [], rarity, seenAt });
+    const line = (label, kids) => h('div', { class: 'cue' }, h('b', null, label + ' :'), ' ', kids);
+    const rows = cueLines(cues).map(l => line(l.label, l.text));
+    // Pour une carte à toi : ce qu'elle t'a coûté (exemplaire non shiny à cette rareté) et ce que la vendre à sa valeur rapporterait.
+    if (Object.values(db.cards).some(x => x && x.cardId === id && x.rarity === rarity && !x.shiny)) {
+      const o = originOf(id, rarity, false, now);
+      rows.push(line('Pour toi', [originText(o), ' · la vendre à sa valeur : ', profitTag(valueOf(id, rarity) - o.cost, o.approx, o.kind === 'guess' ? GUESS_TIP : '')]));
+    }
+    // Ouverte depuis une pastille posée sur une annonce : ce que vaut cette annonce, face à la valeur de sa rareté.
+    const au = c.au;
+    if (au) {
+      const p = au.s ? null : priceForAsk(id, au, price);
+      let kids;
+      if (au.s) kids = 'carte shiny : le site ne distingue pas les ventes shiny, pas de comparaison';
+      else if (!p || !p.n) kids = 'aucune vente connue à sa rareté';
+      else {
+        const med = Math.max(p.med, DISCARD), pct = Math.round(100 * (au.a / med - 1)), deal = dealPct(au, p);
+        kids = ['annonce à ' + fmt(au.a) + ' ₩, ' + (pct < 0 ? -pct + ' % sous la valeur' : pct > 0 ? pct + ' % au-dessus de la valeur' : 'au niveau de la valeur'),
+          deal ? [' ', h('span', { class: 'tag deal' }, 'bonne affaire −' + deal + ' %')] : null,
+          ' · enchère max conseillée : ' + fmt(maxBid(p)) + ' ₩'];
+      }
+      rows.push(line('Face à l’annonce', kids));
+    }
+    const kindOf = s => (src.kind === 'pro' ? 'Pro' : src.kind === 'own' ? 'toi' : s.x ? 'exacte' : 'provisoire');
+    const table = sortTable('card', [
+      { t: 'Date', left: true, get: s => isoT(s.t), cell: s => fmtDate(s.t) },
+      { t: 'Prix', get: s => s.p, cell: s => fmt(s.p) + ' ₩' },
+      { t: 'Rareté', asc: true, get: s => rarOrder(s.r), cell: s => (rarOk(s.r) ? rarBadge(s.r) : '—') },
+      { t: 'Sorte', asc: true, get: kindOf, cell: kindOf }
+    ], src.sales, renderCard, { limit: c.all ? 0 : 50 });
+    const more = !c.all && src.sales.length > 50
+      ? h('button', { class: 'b', onclick: () => { c.all = true; renderCard(); } }, 'Tout afficher (' + src.sales.length + ')') : null;
+    e.cardBody.replaceChildren(h('div', { class: 'cues' }, rows), actions, table, more);
+  }
+
   function sellList(rows) {
     const selling = new Set(db.market.selling || []);
     const s = db.sell;
@@ -4509,7 +4648,7 @@
       { t: '#', asc: true, get: r => rankOf.get(r), cell: r => rankOf.get(r) },
       { t: 'Carte', left: true, asc: true, get: r => r.title.toLowerCase(),
         cell: r => [h('a', { class: 'go', href: sellLink(r.cardId), target: '_blank', rel: 'noopener',
-          title: 'Ouvrir le formulaire de mise en vente sur le site' }, r.title, ' ↗'),
+          title: 'Ouvrir le formulaire de mise en vente sur le site' }, r.title, ' ↗'), cardBtn(r.cardId, r.rarity, r.title),
         r.shiny ? ' ✨' : '', r.starred ? ' ★' : '', r.count > 1 ? h('span', { class: 'tag' }, 'doublon') : null] },
       { t: 'Rareté', asc: true, get: r => rarOrder(r.rarity), cell: r => rarBadge(r.rarity) },
       { t: 'Ex.', get: r => r.count, cell: r => r.count },
