@@ -1589,6 +1589,30 @@
     if (unknown.length) return { sales: unknown, mixed: false };
     return { sales: list, mixed: true };
   }
+  // La source des ventes d'une carte à une rareté : la première, de la plus sûre à la moins sûre (historique Pro, tes ventes
+  // et achats, fins d'enchères observées), qui a des ventes à la bonne rareté ; à défaut, la première qui a des ventes,
+  // signalée comme mélangée. Partagée par priceOf et la fiche de la carte.
+  function pickSource(cardId, want) {
+    const rec = db.prices[cardId];
+    const sources = [['pro', rec && rec.sales], ['own', db.mySales[cardId]], ['obs', db.obsSales[cardId]]]
+      .map(([kind, list]) => Object.assign({ kind }, salesFor(list, want))).filter(s => s.sales.length);
+    return { rec, src: sources.find(s => !s.mixed) || sources[0] };
+  }
+  // Les ventes de la fiche d'une carte : toute la source de priceOf, pas seulement la fenêtre qui fait la valeur.
+  // La fiche ne mélange jamais les raretés, contrairement à priceOf qui se rabat sur d'autres raretés (fiabilité 0) :
+  // sans vente à cette rareté, elle n'a rien.
+  function cardSource(cardId, rarity) {
+    const { src } = pickSource(cardId, rarOk(rarity) ? rarity : '');
+    return !src || src.mixed ? { kind: null, sales: [] } : { kind: src.kind, sales: src.sales };
+  }
+  // Les raretés qui ont au moins une vente connue (toutes sources), dans l'ordre habituel.
+  function cardRarities(cardId) {
+    const rec = db.prices[cardId], seen = new Set();
+    for (const list of [rec && rec.sales, db.mySales[cardId], db.obsSales[cardId]]) {
+      if (Array.isArray(list)) for (const s of list) if (s && rarOk(s.r)) seen.add(s.r);
+    }
+    return RARITIES.filter(r => seen.has(r));
+  }
   // Prix d'une carte à une rareté donnée (par défaut, sa rareté actuelle) : un exemplaire UR ne se vend pas comme un L.
   // Sources, de la plus sûre à la moins sûre : historique Pro, tes ventes et achats, fins d'enchères observées
   // (par le script ou par un ami). On prend la première qui a des ventes à la bonne rareté ; à défaut, la première qui
@@ -1599,10 +1623,7 @@
     const hit = priceCache.get(key);
     if (hit && Date.now() < hit.until) return hit.out;
     let until = Infinity;
-    const rec = db.prices[cardId];
-    const sources = [['pro', rec && rec.sales], ['own', db.mySales[cardId]], ['obs', db.obsSales[cardId]]]
-      .map(([kind, list]) => Object.assign({ kind }, salesFor(list, want))).filter(s => s.sales.length);
-    const src = sources.find(s => !s.mixed) || sources[0];
+    const { rec, src } = pickSource(cardId, want);
     let out = null;
     if (!src) out = rec && Array.isArray(rec.sales) ? { n: 0, at: rec.at } : null;
     else {
