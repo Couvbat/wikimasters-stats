@@ -85,7 +85,7 @@ function siteEnv(routes = [], opts = {}) {
   const fetch = async url => {
     calls.push(url);
     for (const [re, fn] of routes) if (re.test(url)) return fn(url, env);
-    if (/\/sales$/.test(url)) return reply({ sales: [{ final_price: 5, settled_at: iso(Date.now() - H), rarity: 'C' }] });
+    if (/\/sales(\?|$)/.test(url)) return reply({ sales: [{ final_price: 5, settled_at: iso(Date.now() - H), rarity: 'C' }] });
     if (url.startsWith('/api/marketplace?')) return reply({ auctions: [], hasMore: false });
     if (url.startsWith('https://pool.test/v1/known')) return reply({ exact: {} });
     return reply({});
@@ -98,7 +98,7 @@ function siteEnv(routes = [], opts = {}) {
   t.db.collectionFullAt = Date.now();
   t.db.wishFullAt = Date.now();
   env.calls = calls;
-  env.sales = () => calls.filter(u => /\/sales$/.test(u));
+  env.sales = () => calls.filter(u => /\/sales(\?|$)/.test(u));
   return env;
 }
 const manyCards = n => Object.fromEntries(Array.from({ length: n }, (_, i) => ['e' + i, card('K' + i, 'C', i + 1)]));
@@ -108,7 +108,7 @@ test('passage : 60 requêtes au plus, les plus lourdes d’abord', async () => {
   env.t.db.cards = manyCards(100);
   await env.t.autoRun();
   assert.equal(env.sales().length, 60);
-  assert.equal(env.sales()[0], '/api/marketplace/cards/K99/sales', '100 exemplaires : la plus lourde');
+  assert.equal(env.sales()[0], '/api/marketplace/cards/K99/sales?rarity=C', '100 exemplaires : la plus lourde');
   assert.equal(env.t.db.autoLast.prices, 60);
 });
 
@@ -126,8 +126,8 @@ test('passage : le pool d’abord', async () => {
   Object.assign(env.t.db.pool, { url: 'https://pool.test', key: 'cle-du-groupe-assez-longue-123', on: true });
   env.t.db.cards = { a: card('C1', 'C'), b: card('C2', 'C') };
   await env.t.autoRun();
-  assert.ok(!env.sales().includes('/api/marketplace/cards/C1/sales'), 'le pool avait C1');
-  assert.ok(env.sales().includes('/api/marketplace/cards/C2/sales'));
+  assert.ok(!env.sales().includes('/api/marketplace/cards/C1/sales?rarity=C'), 'le pool avait C1');
+  assert.ok(env.sales().includes('/api/marketplace/cards/C2/sales?rarity=C'));
 });
 
 const collPage = (from, n) => reply({ collection: Array.from({ length: n }, (_, i) => ({ id: 'e' + (from + i), user_id: 'U1',
@@ -168,7 +168,7 @@ test('passage : compte non Pro, aucune requête /sales', async () => {
 });
 
 test('passage : limite du site, arrêt et pause de 24 h', async () => {
-  const env = siteEnv([[/\/sales$/, () => reply({ code: 'automation_limit' }, 403)]]);
+  const env = siteEnv([[/\/sales(\?|$)/, () => reply({ code: 'automation_limit' }, 403)]]);
   env.t.db.cards = manyCards(5);
   await env.t.autoRun();
   assert.equal(env.sales().length, 1);
@@ -177,7 +177,7 @@ test('passage : limite du site, arrêt et pause de 24 h', async () => {
 
 test('passage : le verrou est renouvelé à chaque requête', async () => {
   const locks = [];
-  const env = siteEnv([[/\/sales$/, (url, e) => {
+  const env = siteEnv([[/\/sales(\?|$)/, (url, e) => {
     locks.push(JSON.parse(e.store.get('wmstats.auto') || '{}').until);
     return reply({ sales: [] });
   }]]);
@@ -200,7 +200,7 @@ test('bouton : pas de budget', async () => {
 
 test('bouton : Stop arrête', async () => {
   let n = 0;
-  const env = siteEnv([[/\/sales$/, (url, e) => { if (++n === 5) e.t.job.stop = true; return reply({ sales: [] }); }]]);
+  const env = siteEnv([[/\/sales(\?|$)/, (url, e) => { if (++n === 5) e.t.job.stop = true; return reply({ sales: [] }); }]]);
   env.t.db.cards = manyCards(100);
   await env.t.updateAll();
   assert.ok(env.sales().length <= 6, env.sales().length + ' requêtes');
@@ -239,7 +239,7 @@ test('bouton : un autre onglet met déjà à jour, rien ne part en double', asyn
 // ----- Relecture Copilot (PR #12) -----
 test('verrou pris par un autre onglet pendant la mise à jour : arrêt, et son verrou est laissé', async () => {
   let n = 0;
-  const env = siteEnv([[/\/sales$/, (url, e) => {
+  const env = siteEnv([[/\/sales(\?|$)/, (url, e) => {
     if (++n === 3) e.store.set('wmstats.auto', JSON.stringify({ tab: 'autre', until: Date.now() + 5 * 6e4, at: 0 }));
     return reply({ sales: [] });
   }]]);
@@ -250,7 +250,7 @@ test('verrou pris par un autre onglet pendant la mise à jour : arrêt, et son v
 });
 
 test('passage : la relecture d’un historique vide compte dans le budget', async () => {
-  const env = siteEnv([[/\/sales$/, () => reply({ sales: [] })]]);
+  const env = siteEnv([[/\/sales(\?|$)/, () => reply({ sales: [] })]]);
   env.t.db.cards = Object.fromEntries(Array.from({ length: 50 }, (_, i) => ['e' + i, card('L' + i, 'L')]));
   await env.t.autoRun();
   assert.ok(env.sales().length <= 60, env.sales().length + ' requêtes');
@@ -258,7 +258,7 @@ test('passage : la relecture d’un historique vide compte dans le budget', asyn
 
 test('bouton pendant un passage automatique du même onglet : pas de chevauchement', async () => {
   const both = [];
-  const env = siteEnv([[/\/sales$/, (url, e) => { both.push(e.t.auto.busy && e.t.job.running); return reply({ sales: [] }); }]]);
+  const env = siteEnv([[/\/sales(\?|$)/, (url, e) => { both.push(e.t.auto.busy && e.t.job.running); return reply({ sales: [] }); }]]);
   env.t.db.cards = manyCards(10);
   const pass = env.t.autoRun();
   await env.t.updateAll();
