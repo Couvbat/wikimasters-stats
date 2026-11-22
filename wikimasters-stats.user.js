@@ -521,10 +521,12 @@
     // Les relevés s'additionnent : les ventes lues rejoignent celles déjà connues de la carte.
     // L'historique d'une carte ne disparaît pas : un retour vide vient du site. Un historique déjà connu garde ses ventes,
     // et son envoi au pool, s'il attend dans la file, aussi.
-    const old = db.prices[cardId];
+    const old = db.prices[cardId], now = Date.now();
     const known = isObj(old) && Array.isArray(old.sales) ? old.sales : [];
-    if (!sales.length && known.length) old.at = Date.now();
-    else db.prices[cardId] = { at: Date.now(), sales: keepAll(sales.concat(known)) };
+    if (!sales.length && known.length) old.at = now;
+    else db.prices[cardId] = Object.assign({ at: now, sales: keepAll(sales.concat(known)) }, isObj(old) && isObj(old.ats) ? { ats: old.ats } : {});
+    // Le site ne donne les ventes que rareté par rareté : la date du relevé est gardée pour cette rareté seulement (voir fetchedAt).
+    if (rarOk(rarity)) { const rec = db.prices[cardId]; rec.ats = Object.assign({}, isObj(rec.ats) ? rec.ats : {}, { [rarity]: now }); }
     if (sales.length) poolQueue('p', [cardId, rarity && rarity !== '?' ? rarity : null]);
     saveDb();
     refresh();
@@ -864,7 +866,7 @@
       if (newer) {
         // Tes propres prix revenus par un ami ne sont pas « partagés ».
         const by = (typeof e[3] === 'string' && e[3].trim().slice(0, 40)) || from;
-        db.prices[e[0]] = by && by !== db.me ? { at, sales: all, by } : { at, sales: all };
+        db.prices[e[0]] = Object.assign(by && by !== db.me ? { at, sales: all, by } : { at, sales: all }, cur && isObj(cur.ats) ? { ats: cur.ats } : {});
       } else cur.sales = all;
       added++;
     }
@@ -1505,7 +1507,8 @@
       } else if (url.origin === location.origin && method === 'GET') {
         const m = url.pathname.match(/^\/api\/marketplace\/cards\/([^/]+)\/sales$/);
         if (m) {
-          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestSales(m[1], j)))).catch(() => {});
+          const rar = url.searchParams.get('rarity'); // la Vue du marché du site demande une rareté à la fois
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestSales(m[1], j, rarOk(rar) ? rar : undefined)))).catch(() => {});
         } else if (/^\/api\/marketplace\/[0-9a-f-]{36}$/.test(url.pathname)) {
           // Tu ouvres la page d'une enchère : si elle est finie, son prix final exact rejoint les prix observés.
           const id = url.pathname.split('/').pop();
@@ -1861,11 +1864,20 @@
     if (db.selling.some(x => x && x.c === cardId)) return 1;
     return DUE_DAYS[rarity] || 7;
   }
+  // Date du dernier relevé d'une carte à une rareté. Depuis la 1.29.1, chaque relevé ne lit qu'une rareté et garde sa date dans
+  // « ats » : une rareté jamais relevée ainsi a la date 0. Un relevé d'avant (toutes raretés à la fois) n'a que la date de la
+  // carte, valable pour toutes ses raretés. Les relevés reçus du pool ou d'un ami ne changent que la date de la carte.
+  function fetchedAt(rec, rarity) {
+    if (!isObj(rec)) return 0;
+    return rarOk(rarity) && isObj(rec.ats) ? num(rec.ats[rarity]) : num(rec.at);
+  }
   function priceDue(cardId, rarity) {
     const p = db.prices[cardId];
     if (!p) return true;
-    const age = Date.now() - p.at;
-    return age > dueDays(cardId, rarity) * DAY || (!(p.sales || []).length && DOUBT_EMPTY.has(rarity) && age > 36e5);
+    const age = Date.now() - fetchedAt(p, rarity);
+    // Aucune vente connue à cette rareté : une réponse vide est redemandée au bout d'une heure, même si d'autres raretés en ont.
+    const none = rarOk(rarity) ? !(p.sales || []).some(s => s && s.r === rarity) : !(p.sales || []).length;
+    return age > dueDays(cardId, rarity) * DAY || (none && DOUBT_EMPTY.has(rarity) && age > 36e5);
   }
   // Les prix à relire (collection et souhaits en vente), de celui qui pèse le plus dans la valeur à celui qui pèse le moins.
   // Poids = valeur × exemplaires possédés. Sans prix, la valeur est la médiane des valeurs connues de la même rareté dans
@@ -1905,14 +1917,17 @@
     }
     ingestSales(cardId, j, rarity);
   }
-  function missingIds() {
-    const ids = new Set();
+  // Les couples [carte, rareté] des raretés cochées à relever : une carte possédée à deux raretés se relève à chacune.
+  function missingPairs() {
+    const seen = new Set(), out = [];
     for (const c of Object.values(db.cards)) {
-      if (!ui.chosen.has(c.rarity)) continue;
-      if (priceDue(c.cardId, c.rarity)) ids.add(c.cardId);
+      if (!c || !ui.chosen.has(c.rarity) || seen.has(c.cardId + '|' + c.rarity)) continue;
+      seen.add(c.cardId + '|' + c.rarity);
+      if (priceDue(c.cardId, c.rarity)) out.push([c.cardId, c.rarity]);
     }
-    return [...ids];
+    return out;
   }
+  const missingIds = () => [...new Set(missingPairs().map(x => x[0]))];
 
   // ---------- chargements à la demande ----------
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -1998,23 +2013,21 @@
 
   async function fillPrices() {
     if (job.running || proState() !== true) return;
-    let ids = missingIds();
+    let ids = missingPairs();
     if (!ids.length) return setStatus('Rien à compléter pour les raretés cochées.');
     startJob('Prix : 0 / ' + ids.length);
     if (poolOn()) {
       setStatus('Prix : recherche dans le pool du groupe…');
-      await poolPrefetch(ids);
-      ids = missingIds();
+      await poolPrefetch([...new Set(ids.map(x => x[0]))]);
+      ids = missingPairs();
       if (!ids.length) return endJob('Tous les prix manquants étaient dans le pool du groupe.');
       setStatus('Prix : 0 / ' + ids.length);
     }
     let i = 0;
     try {
-      const rarById = {};
-      for (const c of Object.values(db.cards)) rarById[c.cardId] = c.rarity;
-      for (const id of ids) {
+      for (const [id, rarity] of ids) {
         if (job.stop) break;
-        await fetchSales(id, rarById[id]);
+        await fetchSales(id, rarity);
         i++;
         setStatus('Prix : ' + i + ' / ' + ids.length + eta(ids.length - i));
         if (i < ids.length) await pace();
@@ -2284,8 +2297,8 @@
     const out = [], seen = new Set();
     const list = Object.values(db.trades).sort(byDateDesc).sort((a, b) => (b.s === 'accepted') - (a.s === 'accepted'));
     for (const t of list) for (const c of t.g.concat(t.r)) {
-      if (seen.has(c[0]) || !priceDue(c[0], c[2])) continue;
-      seen.add(c[0]);
+      if (seen.has(c[0] + '|' + c[2]) || !priceDue(c[0], c[2])) continue;
+      seen.add(c[0] + '|' + c[2]);
       out.push([c[0], c[2]]);
     }
     return out;
@@ -2550,7 +2563,7 @@
       if (pro === true) {
         const now = Date.now();
         for (const c of cards) {
-          if (priceDue(c.cardId, c.rarity) && !pull.queue.includes(c.cardId)) pull.queue.push(c.cardId);
+          if (priceDue(c.cardId, c.rarity) && !pull.queue.some(q => q[0] === c.cardId && q[1] === c.rarity)) pull.queue.push([c.cardId, c.rarity]);
         }
         runPullQueue();
       }
@@ -2562,14 +2575,13 @@
     pull.busy = true;
     try {
       if (poolOn()) {
-        await poolPrefetch(pull.queue.slice());
-        pull.queue = pull.queue.filter(id => { const c = pull.cards.find(x => x.cardId === id); return priceDue(id, c ? c.rarity : ''); });
+        await poolPrefetch([...new Set(pull.queue.map(q => q[0]))]);
+        pull.queue = pull.queue.filter(([id, r]) => priceDue(id, r));
         renderPull();
       }
       while (pull.queue.length) {
-        const id = pull.queue[0];
-        const pulled = pull.cards.find(c => c.cardId === id);
-        await fetchSales(id, pulled ? pulled.rarity : '');
+        const [id, r] = pull.queue[0];
+        await fetchSales(id, r);
         pull.queue.shift();
         if (pull.queue.length) await sleep(600 + Math.random() * 300);
       }
@@ -2588,8 +2600,8 @@
     if (proState() !== true || !ov('bidAuto')) return;
     for (const a of list) {
       const id = a && a.card_id;
-      if (!okKey(id) || bidQ.queue.some(x => x[0] === id)) continue;
       const r = rarOf(a.snapshot_rarity || (a.card && a.card.rarity));
+      if (!okKey(id) || bidQ.queue.some(x => x[0] === id && x[1] === r)) continue;
       if (priceDue(id, r)) bidQ.queue.push([id, r]);
     }
     runBidQueue();
@@ -2617,7 +2629,7 @@
     const rows = pull.cards.map(c => {
       const p = priceOf(c.cardId, c.rarity);
       const a = advice(p);
-      const info = !p ? (pull.queue.includes(c.cardId) ? 'prix en cours…' : 'prix non relevé')
+      const info = !p ? (pull.queue.some(q => q[0] === c.cardId && q[1] === c.rarity) ? 'prix en cours…' : 'prix non relevé')
         : !p.n ? 'jamais vendue aux enchères'
           : 'méd. ' + fmt(p.med) + ' · dern. ' + fmt(p.last) + ' · ' + fmt(p.min) + ' à ' + fmt(p.max) +
             ' · ' + p.n + ' vente' + (p.n > 1 ? 's' : '');
@@ -3192,7 +3204,7 @@
     for (const s of [e.stop, e.stop2, e.stop3, e.stop4]) if (s) s.style.display = job.running ? '' : 'none';
     e.fill.disabled = job.running || pro !== true;
     e.stop.disabled = !job.running;
-    e.fill.textContent = pro === true ? 'Relever les prix (' + missingIds().length + ')' : 'Relever les prix (Pro)';
+    e.fill.textContent = pro === true ? 'Relever les prix (' + missingPairs().length + ')' : 'Relever les prix (Pro)';
     const nf = finalsToFetch().length;
     e.finals.textContent = 'Relever les prix finaux' + (nf ? ' (' + nf + ')' : '');
     e.finals.disabled = job.running || !nf;
