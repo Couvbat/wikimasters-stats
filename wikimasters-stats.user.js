@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.29.0
+// @version      1.29.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.29.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.29.1';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -512,7 +512,8 @@
   // rarity : connue quand c'est le script qui demande l'historique, absente quand c'est le site.
   function ingestSales(cardId, j, rarity) {
     if (!j || typeof j !== 'object') return;
-    // « sales » remonte jusqu'à 200 ventes, chacune avec sa rareté ; « recent » n'en donne que 10, toutes raretés confondues.
+    // Depuis sa mise à jour de novembre 2026, le site ne renvoie plus que « recent » : les 5 dernières ventes, chacune avec sa rareté
+    // (à une seule rareté quand on la précise). « sales », l'historique de 200 ventes des comptes Pro, reste lu s'il revient.
     const src = Array.isArray(j.sales) && j.sales.length ? j.sales : (Array.isArray(j.recent) ? j.recent : []);
     const sales = keepAll(src
       .filter(s => s && typeof s.final_price === 'number')
@@ -1892,8 +1893,9 @@
     return out.sort((a, b) => b[2] - a[2]);
   }
   // retryOk() : la seconde lecture d'un historique vide est-elle permise (budget) ; onRetry() la compte.
+  // Le site ne donne que les 5 dernières ventes : on les demande à la rareté voulue, sinon elles mêleraient toutes les raretés.
   async function fetchSales(cardId, rarity, retryOk = () => true, onRetry = () => {}) {
-    const url = '/api/marketplace/cards/' + encodeURIComponent(cardId) + '/sales';
+    const url = '/api/marketplace/cards/' + encodeURIComponent(cardId) + '/sales' + (rarOk(rarity) ? '?rarity=' + encodeURIComponent(rarity) : '');
     const empty = j => !j || !((Array.isArray(j.recent) && j.recent.length) || (Array.isArray(j.sales) && j.sales.length));
     let j = await getJSON(url);
     if (empty(j) && DOUBT_EMPTY.has(rarity) && retryOk()) {
@@ -3224,7 +3226,7 @@
       'Relit toute ta collection sur le site (une dizaine de requêtes). Retire aussi les cartes vendues, données ou défaussées depuis la dernière fois.',
       loadCollection, 'pri');
     e.fill = btn('Relever les prix',
-      'Compte Pro. Lit l’historique des 10 dernières ventes de chaque carte des raretés cochées qui n’a pas de prix récent (moins de 24 h). ' +
+      'Compte Pro. Lit les 5 dernières ventes, à sa rareté, de chaque carte des raretés cochées qui n’a pas de prix récent (moins de 24 h). ' +
       'C’est ce qui remplit la colonne « Valeur ». Une carte par seconde.', fillPrices);
     e.colSearch = btn('Trouver les annonces',
       'Cherche sur le marché qui vend en ce moment tes cartes des raretés cochées, et à quel prix. Remplit la colonne « En vente à ». ' +
@@ -3322,7 +3324,7 @@
         btn('Oublier les prix', 'Efface tous les prix relevés (pas ta collection). Utile seulement pour tout relever de zéro.', clearPrices)),
       e.table,
       fold('Comment lire ce tableau ?', h('div', { class: 'note' },
-        'Valeur = médiane des 10 dernières ventes (moins sensible qu’une moyenne aux enchères qui s’emballent). ',
+        'Valeur = médiane des ventes, celles des 7 derniers jours quand il y en a au moins 3 (moins sensible qu’une moyenne aux enchères qui s’emballent). ',
         'En italique : carte sans vente connue, comptée à 1 wikibidou, ce que rapporte la défausse. ',
         'Fiabilité = assez de ventes, assez récentes, pas trop dispersées ; survole-la pour le détail. ',
         'Les prix se remplissent aussi tout seuls quand tu ouvres l’onglet Marché d’une carte sur le site.')));
@@ -4770,7 +4772,7 @@
         return [h('b', null, fmt(a.p) + ' ₩'), a.adj ? h('span', { class: 'tag warn', title: 'Un concurrent a déjà une offre à ' + fmt(a.low) +
           ' ₩, sous la médiane : ton annonce risque de partir moins cher ou de ne pas partir' }, 'concurrent à ' + fmt(a.low) + ' ₩') : null];
       } },
-      { t: 'Médiane', tip: 'Médiane des 10 dernières ventes de la carte.', get: r => r.value, cell: r => fmt(Math.round(r.value)) + ' ₩' },
+      { t: 'Médiane', tip: 'Médiane des ventes de la carte : celles des 7 derniers jours quand il y en a au moins 3, sinon toutes.', get: r => r.value, cell: r => fmt(Math.round(r.value)) + ' ₩' },
       { t: 'Concurrence', tip: 'Annonce la moins chère d’un autre joueur sur cette carte. Mise de départ ou offre en cours, pas un prix final. « aucune » : cherchée, rien en vente.', asc: true, get: r => (r.ask ? r.ask.a : null), cell: r => {
         if (!r.ask) return db.wishSeen[r.cardId] ? h('span', { class: 'est', title: 'Cherchée ' + ago(db.wishSeen[r.cardId]) }, 'aucune') : '—';
         return auctionLink(r.ask.i, fmt(r.ask.a) + ' ₩' + (r.ask.b ? ' •' : '') + (r.ask.list.length > 1 ? ' (' + r.ask.list.length + ')' : ''),
