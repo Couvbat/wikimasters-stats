@@ -1452,7 +1452,8 @@
   }
 
   // Statut Pro : lu dans la réponse que le site demande lui-même à chaque chargement de page.
-  // L'historique des ventes est une fonction Pro, donc le script ne le demande que pour un compte Pro.
+  // Depuis la mise à jour du site de novembre 2026, l'historique des ventes est ouvert à tous les comptes : le statut Pro
+  // est encore lu, mais ne bloque plus aucun relevé (voir canFetchPrices).
   function ingestPro(userId, j) {
     const row = Array.isArray(j) ? j[0] : j;
     if (!row || typeof row.is_pro !== 'boolean') return;
@@ -1465,8 +1466,10 @@
   }
   // true = Pro, false = non Pro, undefined = pas encore vu
   function proState() { return db.userId ? db.pro[db.userId] : undefined; }
+  // Relever des ventes demande seulement un compte reconnu, Pro ou non.
+  const canFetchPrices = () => !!db.userId;
   function showPrices() {
-    return proState() === true || Object.keys(db.prices).length > 0 || Object.keys(db.mySales).length > 0 ||
+    return canFetchPrices() || Object.keys(db.prices).length > 0 || Object.keys(db.mySales).length > 0 ||
       Object.keys(db.obsSales).length > 0;
   }
 
@@ -2012,7 +2015,7 @@
   }
 
   async function fillPrices() {
-    if (job.running || proState() !== true) return;
+    if (job.running || !canFetchPrices()) return;
     let ids = missingPairs();
     if (!ids.length) return setStatus('Rien à compléter pour les raretés cochées.');
     startJob('Prix : 0 / ' + ids.length);
@@ -2159,7 +2162,7 @@
   //   1. la collection, relue en entier une fois par jour (en automatique, le passage s'arrête ensuite) ;
   //   2. la liste de souhaits, relue en entier une fois par jour ;
   //   3. les souhaits que le site a signalés en vente ;
-  //   4. les prix à relire (priceDue), du plus lourd au plus léger : le pool d'abord, puis le site (compte Pro) ;
+  //   4. les prix à relire (priceDue), du plus lourd au plus léger : le pool d'abord, puis le site ;
   //   5. les prix finaux, puis la lecture des fins d'enchères qui prépare le passage suivant (hors budget, comme avant).
   // manual (bouton) : pas de budget, rythme des boutons, Stop. Sinon : 60 requêtes, et arrêt dès qu'un relevé manuel démarre.
   // Le verrou entre onglets est renouvelé à chaque requête. out reçoit les compteurs au fil de l'eau.
@@ -2205,7 +2208,7 @@
       await poolPrefetch(due.map(x => x[0]));
       due = due.filter(([id, r]) => priceDue(id, r));
     }
-    if (proState() === true) {
+    if (canFetchPrices()) {
       for (const [id, r] of due) {
         if (stop() || left() <= 0) break;
         await hit(() => fetchSales(id, r, () => left() > 0 && !stop(), () => { used++; holdAuto(); }));
@@ -2268,7 +2271,7 @@
     const a = db.autoLast;
     if (!a || !a.at) return 'Aucune mise à jour automatique pour l’instant.';
     return 'Dernière mise à jour automatique : ' + ago(a.at) + ' · ' + routineSummary(a) + '.' +
-      (proState() === true ? ' Encore ' + plural(dueCards().length, 'carte à relire', 'cartes à relire') + '.' : '');
+      (canFetchPrices() ? ' Encore ' + plural(dueCards().length, 'carte à relire', 'cartes à relire') + '.' : '');
   }
   // auto.done : la promesse du passage en cours, que le bouton attend avant de démarrer.
   function autoRun() {
@@ -2304,7 +2307,7 @@
     return out;
   }
   async function fillTradePrices() {
-    if (job.running || proState() !== true) return;
+    if (job.running || !canFetchPrices()) return;
     let todo = tradeCardsToPrice().slice(0, TRADE_BATCH);
     if (!todo.length) return setStatus('Toutes les cartes échangées ont déjà un prix relevé.', 'tradeStatus');
     startJob('Prix : 0 / ' + todo.length, 'tradeStatus');
@@ -2490,10 +2493,10 @@
     const now = Date.now();
     return sellList().filter(r => !(now - (db.wishSeen[r.cardId] || 0) < SEARCH_FRESH)).map(r => [r.cardId, r.title]);
   }
-  // Relève l'historique de ventes d'une liste [carte, rareté] (compte Pro).
+  // Relève les ventes d'une liste [carte, rareté].
   async function fetchPricesFor(todo, where, one, many) {
     if (job.running) return;
-    if (proState() !== true) return setStatus('Les prix de vente sont réservés aux comptes Pro.', where);
+    if (!canFetchPrices()) return setStatus('Compte pas encore reconnu : recharge la page (F5) pour relever les prix.', where);
     if (!todo.length) return setStatus('Tous les prix sont déjà à jour.', where);
     startJob('Prix : 0 / ' + todo.length, where);
     if (poolOn()) {
@@ -2555,12 +2558,12 @@
     db.pulls.push({ t: Date.now(), k: String(kind || '').slice(0, 20), c: cards.map(c => [c.cardId, c.title, c.rarity]) });
     if (db.pulls.length > MAX_PULLS) db.pulls.splice(0, db.pulls.length - MAX_PULLS);
     saveDb();
-    const pro = proState();
-    if (pro !== false && db.autoPull !== false) {
+    const can = canFetchPrices();
+    if (db.autoPull !== false) {
       pull.cards = cards;
       pull.open = true;
-      pull.note = pro === true ? '' : 'Statut Pro pas encore détecté : recharge la page (F5) pour activer les prix.';
-      if (pro === true) {
+      pull.note = can ? '' : 'Compte pas encore reconnu : recharge la page (F5) pour activer les prix.';
+      if (can) {
         const now = Date.now();
         for (const c of cards) {
           if (priceDue(c.cardId, c.rarity) && !pull.queue.some(q => q[0] === c.cardId && q[1] === c.rarity)) pull.queue.push([c.cardId, c.rarity]);
@@ -2592,12 +2595,12 @@
     pull.busy = false;
     renderPull();
   }
-  // Cartes où tu enchéris : leur prix est relevé tout seul quand le site affiche Mes enchères (compte Pro),
+  // Cartes où tu enchéris : leur prix est relevé tout seul quand le site affiche Mes enchères,
   // une carte à la fois, à peu près au rythme d'après un booster. Rien n'est redemandé avant 24 h.
   // Si un autre relevé tourne ou si le site refuse ou freine, on s'arrête là : la suite viendra au prochain passage.
   const bidQ = { queue: [], busy: false };
   function queueBidPrices(list) {
-    if (proState() !== true || !ov('bidAuto')) return;
+    if (!canFetchPrices() || !ov('bidAuto')) return;
     for (const a of list) {
       const id = a && a.card_id;
       const r = rarOf(a.snapshot_rarity || (a.card && a.card.rarity));
@@ -3174,10 +3177,10 @@
     for (const b of [e.updAll, e.updAll2]) if (b) b.disabled = job.running;
     syncCardButtons();
     if (!e.load) return;
-    const pro = proState();
+    const can = canFetchPrices();
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
     const wp = wishPricesToFetch().length;
-    e.wishPrices.disabled = job.running || pro !== true || !wp;
+    e.wishPrices.disabled = job.running || !can || !wp;
     e.wishPrices.textContent = 'Relever les valeurs (' + wp + ')';
     const sc = db.collectionAt ? sellCompToSearch().length : 0;
     e.sellComp.disabled = job.running || !sc;
@@ -3202,18 +3205,13 @@
     e.stop4.disabled = !job.running;
     // Le bouton Stop n'apparaît que pendant un traitement.
     for (const s of [e.stop, e.stop2, e.stop3, e.stop4]) if (s) s.style.display = job.running ? '' : 'none';
-    e.fill.disabled = job.running || pro !== true;
+    e.fill.disabled = job.running || !can;
     e.stop.disabled = !job.running;
-    e.fill.textContent = pro === true ? 'Relever les prix (' + missingPairs().length + ')' : 'Relever les prix (Pro)';
+    e.fill.textContent = 'Relever les prix (' + (can ? missingPairs().length : 0) + ')';
     const nf = finalsToFetch().length;
     e.finals.textContent = 'Relever les prix finaux' + (nf ? ' (' + nf + ')' : '');
     e.finals.disabled = job.running || !nf;
-    e.pro.textContent = pro === true ? ''
-      : pro === false
-        ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Pour avoir des prix quand même : « Relever les fins d’enchères », ' +
-          'puis quelques minutes plus tard « Relever les prix finaux », qui lit le prix exact de chaque enchère terminée. ' +
-          'S’y ajoutent tes propres ventes et achats, et les prix que tes amis partagent, y compris leur historique Pro. Refais-le de temps en temps : les prix s’accumulent.'
-        : 'Statut Pro pas encore détecté : recharge la page (F5).';
+    e.pro.textContent = can ? '' : 'Compte pas encore reconnu : recharge la page (F5).';
   }
 
   function mount() {
@@ -3238,7 +3236,7 @@
       'Relit toute ta collection sur le site (une dizaine de requêtes). Retire aussi les cartes vendues, données ou défaussées depuis la dernière fois.',
       loadCollection, 'pri');
     e.fill = btn('Relever les prix',
-      'Compte Pro. Lit les 5 dernières ventes, à sa rareté, de chaque carte des raretés cochées qui n’a pas de prix récent (moins de 24 h). ' +
+      'Lit les 5 dernières ventes, à sa rareté, de chaque carte des raretés cochées qui n’a pas de prix récent (moins de 24 h). ' +
       'C’est ce qui remplit la colonne « Valeur ». Une carte par seconde.', fillPrices);
     e.colSearch = btn('Trouver les annonces',
       'Cherche sur le marché qui vend en ce moment tes cartes des raretés cochées, et à quel prix. Remplit la colonne « En vente à ». ' +
@@ -3248,7 +3246,7 @@
     e.scan = btn('Relever les fins d’enchères',
       'Lit les 500 enchères du marché qui se terminent bientôt, toutes cartes confondues (pas seulement les tiennes), ' +
       'plus 150 de chaque rareté L, UR et SR, qui sinon se perdent dans la masse. ' +
-      'À leur fin, leur dernière offre devient un « prix observé » : utile sans compte Pro, et pour le niveau de prix par rareté.',
+      'À leur fin, leur dernière offre devient un « prix observé » : il complète les 5 dernières ventes que donne le site, et sert au niveau de prix par rareté.',
       () => scanMarket(MARKET_PAGES, 'status', 'ending_soon', RARE_PAGES));
     e.finals = btn('Relever les prix finaux',
       'Pour tous les comptes, Pro ou non. Relit la page de chaque enchère suivie qui vient de finir, celle qu’on ouvre en cliquant sur une annonce : ' +
@@ -3280,7 +3278,7 @@
     e.wishRefresh = btn('Rafraîchir les annonces',
       'Relit seulement les annonces déjà trouvées, pour voir si le prix a monté ou si l’enchère est finie. À faire juste avant d’enchérir.', refreshWish);
     e.wishPrices = btn('Relever les valeurs',
-      'Compte Pro. Lit la valeur médiane des souhaits actuellement en vente : c’est elle qui permet de repérer les bonnes affaires.',
+      'Lit la valeur médiane des souhaits actuellement en vente : c’est elle qui permet de repérer les bonnes affaires.',
       () => fetchPricesFor(wishPricesToFetch(), 'wishStatus', 'souhait en vente', 'souhaits en vente'));
     e.wishFold = btn('Tout déplier', 'Ouvre ou ferme le détail de toutes les cartes qui ont plusieurs annonces.',
       () => { ui.wishAll = !ui.wishAll; ui.wishOpen.clear(); renderWish(); });
@@ -3288,7 +3286,7 @@
 
     e.tradeLoad = btn('Recharger mes échanges', 'Relit tes échanges sur la page Échanges du site (une seule requête).', loadTrades, 'pri');
     e.tradeFill = btn('Relever les prix',
-      'Compte Pro. Lit la valeur des cartes passées dans tes échanges. Celles que tu as données ne sont plus dans ta collection : ' +
+      'Lit la valeur des cartes passées dans tes échanges. Celles que tu as données ne sont plus dans ta collection : ' +
       'l’onglet Collection ne relève jamais leur prix.', fillTradePrices);
     e.stop3 = stopBtn();
 
@@ -3310,7 +3308,7 @@
       h('div', { class: 'tools' },
         group('Ma collection', null, e.load, e.fill),
         group('Annonces du marché sur mes cartes', null, e.colSearch, e.colRefresh),
-        group('Prix observés', 'Pour tous, avec ou sans compte Pro. 1. « Relever les fins d’enchères » suit les enchères sur le point de finir. ' +
+        group('Prix observés', 'Pour tous les comptes. 1. « Relever les fins d’enchères » suit les enchères sur le point de finir. ' +
           '2. Quelques minutes plus tard, « Relever les prix finaux » lit le prix exact de chacune.', e.scan, e.finals),
         group('Raretés concernées', '« Relever les prix » et « Trouver les annonces » ne traitent que les raretés cochées ici.', checks),
         group('Étiquetage par lots', 'Ajoute une de tes étiquettes à un lot de cartes choisi par une règle. Rien ne part sans ton clic (deux fois), ' +
@@ -3470,12 +3468,11 @@
           ovChk('dim', 'Griser les annonces trop chères', 'Rend pâles les annonces qui atteignent déjà la valeur de la carte. Elles redeviennent normales au survol. Tes propres enchères ne sont jamais grisées.')),
         group('Échanges', null,
           ovChk('trade', 'Valeur des échanges sur la page Échanges', 'Sous chaque échange, et en haut de la fenêtre « Échanger avec… » pendant que tu choisis les cartes : valeur donnée, valeur reçue, écart.')),
-        group('Relevés automatiques (compte Pro)', 'Ces relevés se font tout seuls, une carte à la fois, et jamais deux fois la même carte en 24 h.',
+        group('Relevés automatiques', 'Ces relevés se font tout seuls, une carte à la fois, et jamais deux fois la même carte en 24 h.',
           chk('Prix des cartes tirées après chaque booster', 'Après chaque paquet que tu ouvres toi-même, un petit panneau donne la valeur de chaque carte tirée.',
             db.autoPull !== false, ev => { db.autoPull = ev.target.checked; saveDb(); }),
           ovChk('bidAuto', 'Prix des cartes de Mes enchères', 'Quand le site affiche l’onglet Mes enchères, relève le prix des cartes où tu enchéris qui n’en ont pas de récent.')),
-        group('Mise à jour automatique (tous comptes)', 'Garde à jour la valeur de ta collection et les prix de tes souhaits, sans cliquer bouton après bouton. ' +
-          'Sans compte Pro, les prix viennent du pool et des fins d’enchères.',
+        group('Mise à jour automatique (tous comptes)', 'Garde à jour la valeur de ta collection et les prix de tes souhaits, sans cliquer bouton après bouton.',
           ovChk('autoObs', 'Mise à jour automatique',
             'Toutes les 30 min, tant qu’un onglet du site est ouvert (même en arrière-plan) : relit ta collection et ta liste de souhaits une fois par jour, ' +
             'vérifie les souhaits que le site signale en vente, puis relit les prix à refaire en commençant par ceux qui pèsent le plus dans ta valeur ' +
@@ -3897,8 +3894,8 @@
       .map(([id, t]) => ({ id, ...t, vg: cardsValue(t.g) + t.wg, vr: cardsValue(t.r) + t.wr, ug: unknown(t.g), ur: unknown(t.r) }))
       .sort(byDateDesc);
     const toPrice = tradeCardsToPrice().length;
-    e.tradeFill.disabled = job.running || proState() !== true || !toPrice;
-    e.tradeFill.textContent = proState() === true ? 'Relever les prix (' + toPrice + ')' : 'Relever les prix (Pro)';
+    e.tradeFill.disabled = job.running || !canFetchPrices() || !toPrice;
+    e.tradeFill.textContent = 'Relever les prix (' + toPrice + ')';
     e.stop3.disabled = !job.running;
     if (!T.length) {
       e.tradeTiles.replaceChildren();
@@ -4316,7 +4313,7 @@
       tile('Sans vente connue', fmt(rows.length - known),
         'comptées à 1 ₩ · ' + (total ? fmt(100 * estTotal / total) : '0') + ' % de la valeur totale',
         'Cartes qui n’ont jamais été vendues aux enchères à notre connaissance. Elles comptent pour 1 ₩, ce que rapporte la défausse.'),
-      proState() === true ? tile('Pas encore analysées', fmt(rows.filter(r => !db.prices[r.cardId]).length), null,
+      canFetchPrices() ? tile('Pas encore analysées', fmt(rows.filter(r => !db.prices[r.cardId]).length), null,
         'Cartes dont le script n’a jamais demandé l’historique des ventes. « Relever les prix » s’en occupe.') : null
     ].filter(Boolean) : [
       tile('Cartes', fmt(nCards)),
@@ -4437,7 +4434,7 @@
         h('button', { class: 'more', onclick: () => { setTab('col'); loadCollection(); } }, 'recharger')));
     }
     const noPrice = rowsCache.filter(r => ['L', 'UR', 'SR'].includes(r.rarity) && !db.prices[r.cardId]).length;
-    if (noPrice && proState() === true) {
+    if (noPrice && canFetchPrices()) {
       warns.push(line(h('span', { class: 'grow wrap' }, plural(noPrice, 'carte L, UR ou SR sans prix relevé', 'cartes L, UR ou SR sans prix relevé') +
         ' : elles comptent pour 1 ₩ et n’apparaissent pas dans À vendre.'),
         h('button', { class: 'more', onclick: () => setTab('col') }, 'compléter')));
@@ -4672,8 +4669,8 @@
     fillEl(e.cardHead, h('button', { class: 'b', onclick: closeCard }, '← Retour'), h('h2', null, c.title), rars.map(rarBtn), h('span', null, value));
     e.cardSearch = h('button', { class: 'b', onclick: cardSearchNow,
       'data-tip': 'Cherche sur le marché qui vend cette carte en ce moment, et à quel prix. Une requête, par le nom de la carte.' }, 'Chercher les annonces de cette carte');
-    e.cardPro = proState() === true ? h('button', { class: 'b', onclick: cardProNow,
-      'data-tip': 'Compte Pro. Relit l’historique des ventes de cette carte à cette rareté. Une requête.' }, 'Relever l’historique Pro') : null;
+    e.cardPro = canFetchPrices() ? h('button', { class: 'b', onclick: cardProNow,
+      'data-tip': 'Relit les 5 dernières ventes de cette carte à cette rareté. Une requête.' }, 'Relever les ventes') : null;
     syncCardButtons();
     const actions = h('div', { class: 'tools' }, e.cardSearch, e.cardPro);
     if (!src.sales.length) {
@@ -4744,8 +4741,7 @@
     if (!showPrices()) {
       e.sellInfo.textContent = '';
       e.sellTable.replaceChildren(h('div', { class: 'empty' },
-        'Aucun prix connu pour l’instant. Avec un compte Pro, complète les prix dans l’onglet Collection. ' +
-        'Sans compte Pro, ouvre la page Marché du site : tes propres ventes et achats serviront de prix.'));
+        'Aucun prix connu pour l’instant : complète les prix dans l’onglet Collection, avec « Relever les prix ».'));
       return;
     }
     const list = sellList();

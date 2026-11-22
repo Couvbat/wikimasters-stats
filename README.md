@@ -46,7 +46,7 @@ Sur les pages du site (Collection, Marché, Toutes les cartes, boosters…), cha
 Sur l'onglet **Mes enchères** du Marché :
 
 - quand quelqu'un passe devant toi, la pastille devient bleue « ↑ 240 ₩ » si tu peux encore remonter jusqu'à la valeur, ou rouge « laisse filer » si l'enchère la dépasse déjà ;
-- le prix des cartes où tu enchéris est relevé tout seul (compte Pro uniquement) : une carte à la fois, environ une par seconde, seulement si son prix date de plus de 24 h. Si le site freine ou si un autre relevé est en cours, le script s'arrête et reprend à ton prochain passage.
+- le prix des cartes où tu enchéris est relevé tout seul : une carte à la fois, environ une par seconde, seulement si son prix date de plus de 24 h. Si le site freine ou si un autre relevé est en cours, le script s'arrête et reprend à ton prochain passage.
 
 Une carte **shiny** en vente porte « ✦ » au lieu d'une comparaison : l'historique du site ne dit pas quelles ventes étaient shiny, donc la valeur affichée est celle d'une carte normale. Les enchères shiny sont aussi exclues des prix observés et de tes ventes, pour ne pas fausser la valeur des cartes normales.
 
@@ -78,7 +78,7 @@ L'essentiel en une page, à l'ouverture du panneau : une rangée de chiffres cl�
 ### Collection
 
 - **Recharger ma collection** : lit toute ta collection (une dizaine de requêtes, comme quand tu feuillettes les pages).
-- **Relever les prix** (compte Pro uniquement) : va chercher les dernières ventes des cartes des raretés cochées, à la rareté de chaque carte. Depuis sa mise à jour de novembre 2026, le site n'en donne plus que 5 par carte (avant : jusqu'à 200). Les relevés s'additionnent : chaque relevé ajoute ses ventes à celles déjà connues de la carte, sans doublon, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
+- **Relever les prix** : va chercher les dernières ventes des cartes des raretés cochées, à la rareté de chaque carte. Depuis sa mise à jour de novembre 2026, le site n'en donne plus que 5 par carte (avant : jusqu'à 200). Les relevés s'additionnent : chaque relevé ajoute ses ventes à celles déjà connues de la carte, sans doublon, une carte par seconde, avec un bouton Stop. Un prix relevé est gardé 24 h. Il arrive que le site réponde « aucune vente » pour une carte qui en a : pour les raretés L, UR, SR et R, une réponse vide est donc redemandée une fois, et n'est gardée qu'une heure.
 - **Relever les fins d'enchères** : lit les 500 enchères sur le point de se terminer, plus 150 de chaque rareté L, UR et SR (qui sinon se perdent parmi les centaines d'enchères qui finissent chaque minute), pour enregistrer leur prix (voir « Prix observés » plus bas). Le script enregistre aussi tout seul ce que tu vois en parcourant la page Marché du site.
 - **Relever les prix finaux** : quelques minutes plus tard, lit le prix final exact de ces enchères. Pour tous les comptes, Pro ou non. Comme il n'en lit qu'une par seconde, il commence par tes cartes et tes souhaits, puis les raretés qui valent le plus (L, UR, SR…), puis les enchères qui avaient reçu une offre. Une carte qui a déjà dix prix exacts plus récents n'est pas relue.
 - **Chercher mes cartes sur le marché** : cherche les cartes des raretés cochées pour voir qui les vend en ce moment et à quel prix, dans la colonne « En vente à ». Elle traite toutes les cartes d'un coup, une par seconde, et saute celles cherchées depuis moins d'une heure.
@@ -129,7 +129,7 @@ Le bilan de tes échanges avec d'autres joueurs : échanges conclus, refusés et
 
 Les échanges sont lus sur la page Échanges du site, à chaque visite ou avec le bouton « Actualiser mes échanges », et gardés en mémoire. Les valeurs sont celles d'aujourd'hui, pas celles du jour de l'échange.
 
-Une carte que tu as donnée n'est plus dans ta collection, donc l'onglet Collection ne relève jamais son prix. Le bouton « Relever les prix des cartes échangées » (compte Pro) le fait pour toutes les cartes passées dans tes échanges. Tant qu'une carte n'a pas de prix connu, elle n'est pas comptée : elle apparaît comme « + 1 ? » et le bilan est marqué incomplet, plutôt que d'afficher une valeur inventée.
+Une carte que tu as donnée n'est plus dans ta collection, donc l'onglet Collection ne relève jamais son prix. Le bouton « Relever les prix des cartes échangées » le fait pour toutes les cartes passées dans tes échanges. Tant qu'une carte n'a pas de prix connu, elle n'est pas comptée : elle apparaît comme « + 1 ? » et le bilan est marqué incomplet, plutôt que d'afficher une valeur inventée.
 
 ### Souhaits
 
@@ -139,7 +139,7 @@ Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en
 
 « Rafraîchir les annonces » relit le prix et la fin des annonces déjà listées, sans attendre : utile avant d'enchérir, puisque les offres montent.
 
-**Bonnes affaires** : une annonce au moins 30 % sous la valeur médiane de la carte (sur 3 ventes ou plus) porte une étiquette verte « bonne affaire −40 % » et remonte en tête. Une case filtre sur elles seules. Pour qu'elles soient repérées, il faut la valeur médiane : « Relever les prix des souhaits en vente » (compte Pro) la relève pour les seuls souhaits actuellement en vente.
+**Bonnes affaires** : une annonce au moins 30 % sous la valeur médiane de la carte (sur 3 ventes ou plus) porte une étiquette verte « bonne affaire −40 % » et remonte en tête. Une case filtre sur elles seules. Pour qu'elles soient repérées, il faut la valeur médiane : « Relever les prix des souhaits en vente » la relève pour les seuls souhaits actuellement en vente.
 
 **Annonces de plusieurs raretés** : chaque annonce porte la rareté de son exemplaire. La ligne d'une carte présente d'abord les annonces à la rareté de ta liste, et une annonce d'une autre rareté porte son étiquette, sur la ligne comme une fois dépliée. Bonne affaire, enchère max et marge comparent chaque annonce à la valeur de sa propre rareté.
 
@@ -163,7 +163,7 @@ L'onglet indique aussi si un ami possède la carte, d'après les fichiers import
 
 Chaque paquet que tu ouvres toi-même est mémorisé : nombre de boosters, part de chaque rareté, valeur moyenne par booster, meilleurs tirages. Seuls les boosters ouverts depuis l'installation de la version 1.3 sont comptés.
 
-Avec un compte Pro, un petit panneau affiche aussi, juste après l'ouverture, le prix de chaque carte tirée et un conseil. Une case dans l'onglet Réglages permet de le désactiver.
+Un petit panneau affiche aussi, juste après l'ouverture, le prix de chaque carte tirée et un conseil. Une case dans l'onglet Réglages permet de le désactiver.
 
 ### Évolution
 
@@ -252,7 +252,7 @@ Les données rangées avant la version 1.20 sont attribuées au premier compte r
 
 ## Prix observés
 
-L'historique des ventes d'une carte est une fonction Pro du site. Pour que tout le monde ait des prix, le script construit son propre historique à partir de ce que n'importe quel compte peut voir : les enchères en cours.
+Le site ne donne que les 5 dernières ventes d'une carte. Pour avoir davantage de prix, le script construit son propre historique à partir de ce que n'importe quel compte peut voir : les enchères en cours.
 
 - Chaque enchère vue (en parcourant le marché, avec « Relever les fins d'enchères », ou pendant une recherche) est suivie jusqu'à sa fin.
 - Quand elle se termine, la dernière offre vue devient un prix **provisoire** pour cette carte. C'est un minimum : l'offre a pu monter ensuite.
@@ -260,13 +260,13 @@ L'historique des ventes d'une carte est une fonction Pro du site. Pour que tout 
 - Le prix final est aussi enregistré tout seul quand tu ouvres toi-même la page d'une enchère terminée.
 - Tant qu'une carte a un prix provisoire, elle n'est jamais notée « Fiable ». Avec uniquement des prix finaux exacts, elle peut l'être, comme avec l'historique Pro. L'origine du prix est indiquée au survol.
 
-**Sans compte Pro, la marche à suivre** : « Relever les fins d'enchères », attendre quelques minutes que ces enchères se terminent, puis « Relever les prix finaux ». À refaire de temps en temps : les prix s'accumulent.
+**La marche à suivre** : « Relever les fins d'enchères », attendre quelques minutes que ces enchères se terminent, puis « Relever les prix finaux ». À refaire de temps en temps : les prix s'accumulent.
 
 **Mise à jour automatique (option, désactivée par défaut).** Dans l'onglet Réglages, la case « Mise à jour automatique » garde à jour la valeur de ta collection et les prix de tes souhaits, sans cliquer bouton après bouton. Toutes les 30 minutes, tant qu'un onglet du site est ouvert (même en arrière-plan), un passage fait, dans l'ordre :
 
 1. ta collection et ta liste de souhaits, relues en entier une fois par jour ;
 2. les souhaits que le site t'a signalés en vente ;
-3. les prix à relire, en commençant par les cartes qui pèsent le plus dans ta valeur (valeur × nombre d'exemplaires) : le pool du groupe d'abord, puis l'historique du site (compte Pro) ;
+3. les prix à relire, en commençant par les cartes qui pèsent le plus dans ta valeur (valeur × nombre d'exemplaires) : le pool du groupe d'abord, puis l'historique du site ;
 4. les prix finaux des enchères suivies, puis les fins d'enchères.
 
 Un prix est à relire **chaque jour** pour une carte qui vaut plus de 50 ₩, une L, une UR ou une carte que tu as mise en vente ; tous les 2 jours pour une SR, 4 jours pour une R, 7 jours pour une C ou une PC. « Relever les prix » et « Relever les valeurs » suivent la même règle. Chaque passage fait 60 requêtes au plus, un seul onglet à la fois. Il s'arrête dès que tu lances un relevé toi-même, et la routine se met en pause 24 h si le site signale trop d'automatisation.
@@ -281,17 +281,13 @@ La couverture reste partielle. Il existe près de trois millions de cartes, et l
 
 ## Compte non Pro
 
-L'historique des ventes de chaque carte est une fonction Pro du site, et le script n'y touche pas sans compte Pro. Il reste :
+Depuis la mise à jour du site de novembre 2026, l'historique des ventes d'une carte est ouvert à tous les comptes : un compte non Pro relève les prix exactement comme un compte Pro (« Relever les prix », mise à jour automatique, boosters, enchères, échanges, souhaits). Le site ne donne plus que les 5 dernières ventes de chaque carte, à sa rareté. S'y ajoutent :
 
 - les prix observés décrits ci-dessus, précisés par leur prix final exact avec « Relever les prix finaux » ;
-- l'historique Pro d'un ami qui a un compte Pro, quand tu importes son fichier dans l'onglet Amis ;
-
-- le tableau (rareté, ATK, DEF, Q-Score, vues, exemplaires) et l'export CSV ;
-- les stats de boosters, le bilan de tes ventes, la liste de souhaits, l'évolution, la comparaison entre amis et la sauvegarde ;
-- le niveau de prix par rareté, d'après les enchères en cours ;
+- les prix partagés par tes amis, par le pool du groupe ou par leur fichier ;
 - une valeur pour les cartes que tu as toi-même vendues ou achetées, lue dans ton historique sur la page Marché.
 
-Les autres cartes sont comptées à 1.
+Une carte sans aucune vente connue compte pour 1 ₩, ce que rapporte la défausse.
 
 ## À savoir
 

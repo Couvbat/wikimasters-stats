@@ -91,3 +91,24 @@ test('boosters : la même carte tirée à deux raretés donne deux relevés', as
   await settle();
   assert.deepEqual(env.sales(), ['C1/sales?rarity=SR', 'C1/sales?rarity=C']);
 });
+
+// ----- 1.30.0 : le relevé pour tout compte reconnu -----
+test('compte non Pro : boosters et enchères relèvent aussi leurs prix', async () => {
+  const env = salesEnv();
+  env.t.db.pro = { U1: false };
+  env.t.db.ov.bidAuto = true;
+  env.t.onPull([{ card: { id: 'B1', wikipedia_title: 'X', rarity: 'SR' } }], 'standard');
+  await settle();
+  env.t.queueBidPrices([{ id: 'A1', card_id: 'E1', snapshot_rarity: 'C' }]);
+  await settle();
+  assert.deepEqual(env.sales(), ['B1/sales?rarity=SR', 'E1/sales?rarity=C']);
+});
+
+test('compte pas encore reconnu : aucun relevé, et le message le dit', async () => {
+  const env = salesEnv();
+  env.t.db.userId = '';
+  env.t.ui.el.wishStatus = { textContent: '' };
+  await env.t.fetchPricesFor([['C1', 'SR']], 'wishStatus', 'carte', 'cartes');
+  assert.deepEqual(env.sales(), []);
+  assert.match(env.t.ui.el.wishStatus.textContent, /^Compte pas encore reconnu/);
+});
