@@ -1750,7 +1750,8 @@
   //   moment : la médiane des 7 derniers jours (3 ventes au moins) face à celle des 30 jours d'avant (5 au moins) ;
   //   slope : la pente des prix sur 30 jours (6 ventes au moins), robuste aux ventes aberrantes (Theil-Sen sur le logarithme) ;
   //   pace : le nombre de ventes des 30 derniers jours et la dernière vente ; compete : les annonces à cette rareté.
-  function cardCues(sales, now, asks) {
+  // weeks : les semaines de l'historique du site à cette rareté ([début, moyenne, min, max, ventes], voir ingestHistory), ou null.
+  function cardCues(sales, now, asks, weeks) {
     const pts = [];
     for (const s of Array.isArray(sales) ? sales : []) {
       const ts = s ? Date.parse(s.t) : NaN;
@@ -1760,7 +1761,7 @@
     const age = pt => (now - pt.t) / DAY;
     const recent = pts.filter(pt => age(pt) <= CUE.RECENT_DAYS);
     const base = pts.filter(pt => age(pt) > CUE.RECENT_DAYS && age(pt) <= CUE.RECENT_DAYS + CUE.BASE_DAYS);
-    const moment = { state: 'few', pct: null, med7: null, n7: recent.length, medBase: null, nBase: base.length };
+    const moment = { state: 'few', pct: null, med7: null, n7: recent.length, medBase: null, nBase: base.length, src: 'sales' };
     if (recent.length >= CUE.RECENT_MIN && base.length >= CUE.BASE_MIN) {
       moment.med7 = median(recent.map(pt => pt.p));
       moment.medBase = median(base.map(pt => pt.p));
@@ -1768,7 +1769,7 @@
       moment.state = moment.pct >= CUE.MOMENT_PCT ? 'high' : moment.pct <= -CUE.MOMENT_PCT ? 'low' : 'usual';
     }
     const win = pts.filter(pt => age(pt) <= CUE.SLOPE_DAYS).slice(0, CUE.SLOPE_MAX);
-    const slope = { state: 'few', pct: null, n: win.length };
+    const slope = { state: 'few', pct: null, n: win.length, src: 'sales' };
     // Des ventes groupées (doublons vendus d'un coup, une rafale de la même heure) ne disent rien du sens : seules comptent les paires
     // de ventes à un jour d'écart au moins, et les ventes doivent s'étaler sur une semaine au moins.
     if (win.length >= CUE.SLOPE_MIN && win[0].t - win[win.length - 1].t >= CUE.SLOPE_SPAN * DAY) {
@@ -1790,7 +1791,36 @@
       }
     }
     const n30 = pts.filter(pt => age(pt) <= CUE.PACE_DAYS).length;
-    const pace = { n30, perWeek: n30 * 7 / CUE.PACE_DAYS, lastT: pts.length ? pts[0].t : 0 };
+    const pace = { n30, perWeek: n30 * 7 / CUE.PACE_DAYS, lastT: pts.length ? pts[0].t : 0, src: 'sales' };
+    // Historique par semaine du site : des moyennes sur toutes les ventes du marché. Il donne le vrai rythme, et sert de repli quand
+    // les ventes connues ne suffisent pas au prix du moment ou au sens. Une semaine est complète quand elle est finie.
+    const wks = (Array.isArray(weeks) ? weeks : [])
+      .filter(w => Array.isArray(w) && Number.isFinite(Date.parse(w[0] + 'T00:00:00Z')) && num(w[1]) > 0)
+      .map(w => ({ t: Date.parse(w[0] + 'T00:00:00Z'), avg: num(w[1]), n: Math.max(0, num(w[4])) }))
+      .sort((a, b) => a.t - b.t);
+    const done = wks.filter(w => w.t + 7 * DAY <= now), cur = wks.find(w => w.t <= now && now < w.t + 7 * DAY) || null;
+    const last4 = done.slice(-4), n4 = last4.reduce((a, w) => a + w.n, 0);
+    if (last4.length) Object.assign(pace, { perWeek: n4 / last4.length, n4, src: 'hist' });
+    // Prix du moment : la semaine en cours (3 ventes au moins) face aux 4 semaines complètes d'avant (5 ventes au moins en tout).
+    if (moment.state === 'few' && cur && cur.n >= CUE.RECENT_MIN && n4 >= CUE.BASE_MIN) {
+      const avg4 = last4.reduce((a, w) => a + w.avg * w.n, 0) / n4, pct = Math.round(100 * (cur.avg / avg4 - 1));
+      Object.assign(moment, { state: pct >= CUE.MOMENT_PCT ? 'high' : pct <= -CUE.MOMENT_PCT ? 'low' : 'usual', pct,
+        med7: cur.avg, n7: cur.n, medBase: avg4, nBase: n4, src: 'hist' });
+    }
+    // Sens : Theil-Sen sur le logarithme des moyennes des 8 dernières semaines qui ont des ventes (la semaine en cours seulement avec
+    // 3 ventes au moins), 4 semaines au moins. Placer chaque semaine à son milieu ne change pas les pentes.
+    if (slope.state === 'few') {
+      const w8 = wks.filter(w => w.n >= 1 && (w !== cur || w.n >= CUE.RECENT_MIN)).slice(-8);
+      if (w8.length >= 4) {
+        const sl = [];
+        for (let i = 0; i < w8.length; i++) for (let j = i + 1; j < w8.length; j++)
+          if (w8[j].t !== w8[i].t) sl.push((Math.log(w8[j].avg) - Math.log(w8[i].avg)) / (w8[j].t - w8[i].t));
+        const pct = sl.length ? Math.round(100 * (Math.exp(median(sl) * 7 * DAY) - 1)) : NaN;
+        if (Number.isFinite(pct)) {
+          Object.assign(slope, { state: pct >= CUE.SLOPE_PCT ? 'up' : pct <= -CUE.SLOPE_PCT ? 'down' : 'flat', pct: pct || 0, n: w8.length, src: 'hist' });
+        }
+      }
+    }
     let compete = null;
     if (asks) {
       const want = asks.rarity;
@@ -1820,12 +1850,19 @@
     const m = c.moment, sl = c.slope, pc = c.pace, out = [];
     out.push({ k: 'moment', label: 'Prix du moment', text: m.state === 'few' ? 'pas assez de ventes pour comparer'
       : (m.state === 'high' ? 'plus cher que d’habitude (' + signedPct(m.pct) + ')' : m.state === 'low' ? 'moins cher que d’habitude (' + signedPct(m.pct) + ')' : 'dans son habitude') +
-        ' · 7 derniers jours : ' + fmt(Math.round(m.med7)) + ' ₩ (' + plural(m.n7, 'vente', 'ventes') + '), 30 jours d’avant : ' +
-        fmt(Math.round(m.medBase)) + ' ₩ (' + plural(m.nBase, 'vente', 'ventes') + ')' });
+        (m.src === 'hist'
+          ? ' · cette semaine : ' + fmt(Math.round(m.med7)) + ' ₩ (' + plural(m.n7, 'vente', 'ventes') + '), 4 semaines d’avant : ' +
+            fmt(Math.round(m.medBase)) + ' ₩ (' + plural(m.nBase, 'vente', 'ventes') + '), moyennes du site'
+          : ' · 7 derniers jours : ' + fmt(Math.round(m.med7)) + ' ₩ (' + plural(m.n7, 'vente', 'ventes') + '), 30 jours d’avant : ' +
+            fmt(Math.round(m.medBase)) + ' ₩ (' + plural(m.nBase, 'vente', 'ventes') + ')') });
     out.push({ k: 'slope', label: 'Sens', text: sl.state === 'few' ? 'pas assez de ventes sur 30 jours pour dire le sens'
-      : sl.state === 'up' ? 'en hausse (' + signedPct(sl.pct) + ' par semaine)' : sl.state === 'down' ? 'en baisse (' + signedPct(sl.pct) + ' par semaine)' : 'stable' });
-    out.push({ k: 'pace', label: 'Rythme', text: (!pc.n30 ? 'aucune vente en 30 jours'
-      : pc.perWeek >= 1 ? 'se vend environ ' + Math.round(pc.perWeek) + ' fois par semaine' : 'se vend environ ' + pc.n30 + ' fois par mois') +
+      : (sl.state === 'up' ? 'en hausse (' + signedPct(sl.pct) + ' par semaine)' : sl.state === 'down' ? 'en baisse (' + signedPct(sl.pct) + ' par semaine)' : 'stable') +
+        (sl.src === 'hist' ? ' · moyennes du site' : '') });
+    out.push({ k: 'pace', label: 'Rythme', text: (pc.src === 'hist'
+      ? (pc.perWeek >= 1 ? 'se vend environ ' + Math.round(pc.perWeek) + ' fois par semaine sur le marché'
+        : pc.n4 ? 'se vend environ ' + pc.n4 + ' fois par mois sur le marché' : 'aucune vente en 4 semaines sur le marché')
+      : !pc.n30 ? 'aucune vente en 30 jours'
+        : pc.perWeek >= 1 ? 'se vend environ ' + Math.round(pc.perWeek) + ' fois par semaine' : 'se vend environ ' + pc.n30 + ' fois par mois') +
       (pc.lastT ? ' · dernière vente ' + ago(pc.lastT) : '') });
     const cp = c.compete;
     if (cp) {
@@ -4724,7 +4761,8 @@
       'data-tip': 'Relit les 5 dernières ventes de cette carte à cette rareté, puis son historique des prix par semaine. Deux requêtes.' }, 'Relever les ventes') : null;
     syncCardButtons();
     const actions = h('div', { class: 'tools' }, e.cardSearch, e.cardFetch);
-    if (!src.sales.length) {
+    const weeks = histWeeks(id, rarity);
+    if (!src.sales.length && !weeks) {
       const others = rars.filter(r => r !== rarity);
       fillEl(e.cardBody,
         h('div', { class: 'empty' }, 'Aucune vente connue' + (rarOk(rarity) ? ' à cette rareté' : '') + '.'),
@@ -4734,7 +4772,7 @@
     }
     const ask = askOf(id, rarity);
     const seenAt = db.wishSeen[id] || (ask && ask.t) || 0;
-    const cues = cardCues(src.sales, now, { list: ask ? ask.list : [], rarity, seenAt });
+    const cues = cardCues(src.sales, now, { list: ask ? ask.list : [], rarity, seenAt }, weeks);
     const line = (label, kids) => h('div', { class: 'cue' }, h('b', null, label + ' :'), ' ', kids);
     const rows = cueLines(cues).map(l => line(l.label, l.text));
     // Pour une carte à toi : ce qu'elle t'a coûté (exemplaire non shiny à cette rareté) et ce que la vendre à sa valeur rapporterait.
@@ -4758,7 +4796,8 @@
       rows.push(line('Face à l’annonce', kids));
     }
     const kindOf = s => (src.kind === 'pro' ? 'Pro' : src.kind === 'own' ? 'toi' : s.x ? 'exacte' : 'provisoire');
-    const table = sortTable('card', [
+    // Sans vente connue mais avec l'historique du site : les repères et la courbe, et cette note à la place de la liste.
+    const table = !src.sales.length ? h('div', { class: 'empty' }, 'Aucune vente connue à cette rareté.') : sortTable('card', [
       { t: 'Date', left: true, get: s => isoT(s.t), cell: s => fmtDate(s.t) },
       { t: 'Prix', get: s => s.p, cell: s => fmt(s.p) + ' ₩' },
       { t: 'Rareté', asc: true, get: s => rarOrder(s.r), cell: s => (rarOk(s.r) ? rarBadge(s.r) : '—') },
@@ -5190,13 +5229,14 @@
   // plus récente) ou au bout de 10 minutes, et pas à chaque rafraîchissement du panneau.
   const cueCache = new Map();
   function cuesOf(cardId, rarity) {
-    const src = cardSource(cardId, rarity);
-    if (!src.sales.length) return null;
-    const key = cardId + '|' + (rarity || ''), sig = src.kind + '|' + src.sales.length + '|' + src.sales[0].t;
+    const src = cardSource(cardId, rarity), weeks = histWeeks(cardId, rarity);
+    if (!src.sales.length && !weeks) return null;
+    const key = cardId + '|' + (rarity || ''), h = db.hist[cardId];
+    const sig = src.kind + '|' + src.sales.length + '|' + (src.sales.length ? src.sales[0].t : '') + '|' + (isObj(h) ? num(h.at) : 0);
     const now = Date.now(), hit = cueCache.get(key);
     if (hit && hit.sig === sig && now < hit.until) return hit.cues;
     if (cueCache.size > 2000) cueCache.clear();
-    const cues = cardCues(src.sales, now, null);
+    const cues = cardCues(src.sales, now, null, weeks);
     // 10 minutes, plus jusqu'à 2 minutes au hasard : les cartes d'une même page ne se recalculent pas toutes au même moment.
     cueCache.set(key, { sig, until: now + 6e5 + Math.floor(Math.random() * 12e4), cues });
     return cues;
