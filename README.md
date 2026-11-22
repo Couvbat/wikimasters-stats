@@ -60,12 +60,14 @@ La fiche porte sur une carte et une rareté (des pastilles en haut passent aux a
 
 - **Prix du moment** : la médiane des 7 derniers jours (3 ventes au moins) face à celle des 30 jours d'avant (5 au moins). « Plus cher que d'habitude » à +15 % et au-delà, « moins cher » à −15 %, sinon « dans son habitude ».
 - **Sens** : la pente des prix sur 30 jours (6 ventes au moins, étalées sur une semaine au moins), en % par semaine, peu sensible à une vente aberrante ; des ventes groupées sur un même jour ne se comparent pas entre elles. « En hausse » à +5 % par semaine, « en baisse » à −5 %, sinon « stable ».
-- **Rythme** : combien de fois la carte se vend par semaine (ou par mois), et sa dernière vente.
+- **Rythme** : combien de fois la carte se vend par semaine (ou par mois), et sa dernière vente. Avec l'historique du site (voir plus bas), c'est le rythme de tout le marché, sur les 4 dernières semaines.
 - **Concurrence** : les annonces en cours connues à cette rareté, la moins chère, et l'âge du relevé.
 - **Pour toi**, si tu as la carte : ce qu'elle t'a coûté, et ce que la vendre à sa valeur te rapporterait.
 - **Face à l'annonce**, si tu viens d'une pastille du Marché : l'écart avec la valeur, la bonne affaire éventuelle, l'enchère max conseillée.
 
-Dessous, une **courbe** des ventes sur 7 jours, 30 jours, 90 jours ou tout (point creux : prix provisoire, un minimum ; losanges : tes ventes et tes achats ; les deux médianes du prix du moment), puis la **liste des ventes**, triable. Deux boutons font une requête chacun, sur ton clic : « Chercher les annonces de cette carte » et, pour un compte Pro, « Relever l'historique Pro ».
+Dessous, une **courbe** des ventes sur 7 jours, 30 jours, 90 jours ou tout (point creux : prix provisoire, un minimum ; losanges : tes ventes et tes achats ; les deux médianes du prix du moment), puis la **liste des ventes**, triable. Deux boutons, sur ton clic : « Chercher les annonces de cette carte » (une requête) et « Relever les ventes » (les 5 dernières ventes, puis l'historique des prix par semaine : deux requêtes).
+
+**Historique des prix par semaine.** Le site calcule, pour chaque carte et chaque rareté, la moyenne de ses ventes semaine par semaine sur environ 3 mois, avec le minimum, le maximum et le nombre de ventes. Le script le garde quand le site le charge (sa « Vue du marché », sur la page d'une annonce) ou quand tu cliques « Relever les ventes » : jamais de requête en plus sinon. Il sert à la fiche : le rythme du marché ; le prix du moment et le sens quand les ventes connues ne suffisent pas, marqués « moyennes du site » (cette semaine face aux 4 semaines d'avant, tendance des 8 dernières semaines, mêmes seuils) ; et, sur la courbe, une ligne grise des moyennes par semaine avec des barres du minimum au maximum. Ce sont des moyennes : la valeur, elle, reste la médiane des ventes.
 
 ### Réglages
 

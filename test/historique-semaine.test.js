@@ -127,3 +127,34 @@ test('bulle : un historique reçu change la ligne « Repères »', () => {
     .concat([{ start: wk(2, 1, 1)[0], avg: 130, min: 130, max: 130, count: 4 }]) }));
   assert.ok(t.badgeFor('C1', null, {}).lines.some(l => /^Repères : plus cher que d’habitude/.test(l)));
 });
+
+// ----- Tâche 4 : la courbe avec les semaines -----
+test('courbe : moyennes par semaine et barres min–max, sans casser les formes de la 1.29.0', () => {
+  const { t } = load();
+  const pts = [{ t: NOW - DAY, p: 120, k: 'pro' }, { t: NOW - 2 * DAY, p: 110, k: 'prov' }];
+  const weeks = [wk(23, 100, 3, 60, 180), wk(16, 105, 4, 70, 200), wk(9, 115, 5, 80, 160)];
+  const svg = t.cardChart(pts, [], '30', NOW, { med7: null, medBase: null }, weeks);
+  const find = (n, pred, out = []) => { if (n && typeof n === 'object') { if (pred(n)) out.push(n); for (const k of n.children || []) find(k, pred, out); } return out; };
+  assert.equal(find(svg, n => n.tagName === 'polyline').length, 1);
+  assert.equal(find(svg, n => n.tagName === 'line' && n.attrs.stroke === '#4b5563').length, 3);
+  assert.equal(find(svg, n => n.tagName === 'circle').length, 2);
+  assert.equal(find(svg, n => n.attrs && n.attrs['stroke-dasharray']).length, 0);
+  const only = t.cardChart([], [], 'all', NOW, null, weeks);
+  assert.ok(!find(only, n => n.tagName === 'text' && (n.children || []).join('').includes('aucune vente')).length, 'des semaines seules suffisent');
+});
+
+test('fiche : pas de médianes quand le prix du moment vient de l’historique', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 130), sale(20, 100)] };
+  t.ingestHistory('C1', PH(new Date().toISOString(), { SR: [30, 23, 16, 9].map(d => ({ start: wk(d, 1, 1)[0], avg: 100, min: 100, max: 100, count: 2 }))
+    .concat([{ start: wk(2, 1, 1)[0], avg: 130, min: 130, max: 130, count: 4 }]) }));
+  const out = {};
+  t.ui.el.cardHead = { replaceChildren() {} };
+  t.ui.el.cardBody = { replaceChildren(...k) { out.body = k; } };
+  t.ui.el.cardStatus = { textContent: '' };
+  t.openCard('C1', { rarity: 'SR', title: 'X' });
+  t.renderCard();
+  const find = (n, pred, acc = []) => { if (Array.isArray(n)) { n.forEach(x => find(x, pred, acc)); return acc; } if (n && typeof n === 'object') { if (pred(n)) acc.push(n); for (const k of n.children || []) find(k, pred, acc); } return acc; };
+  assert.equal(find(out.body, n => n.attrs && n.attrs['stroke-dasharray']).length, 0);
+  assert.equal(find(out.body, n => n.tagName === 'polyline').length, 1);
+});

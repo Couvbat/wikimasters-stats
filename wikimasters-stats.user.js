@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.29.1
+// @version      1.30.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.29.1';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.30.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -4690,19 +4690,25 @@
     return out.sort((x, y) => x.t - y.t);
   }
   const POINT_KIND = { pro: 'Pro', exact: 'exacte', prov: 'provisoire', own: 'toi', s: 'ta vente', b: 'ton achat' };
-  // points : [{ t (ms), p, k: pro|exact|prov|own }] ; marks : [{ t, p, k: s|b }] ; lines : { med7, medBase } (null sous les minimums).
-  function cardChart(points, marks, period, now, lines) {
+  // points : [{ t (ms), p, k: pro|exact|prov|own }] ; marks : [{ t, p, k: s|b }] ; lines : { med7, medBase } (null sous les minimums) ;
+  // weeks : les semaines de l'historique du site à cette rareté ([début, moyenne, min, max, ventes]), ou rien.
+  function cardChart(points, marks, period, now, lines, weeks) {
     const W = 760, H = 220, L = 54, R = 12, T = 10, B = 26;
     const per = CHART_PERIODS.find(x => x[0] === period) || CHART_PERIODS[1];
-    const x0 = per[2] ? now - per[2] * DAY : Math.min(now - DAY, ...points.concat(marks).map(pt => pt.t));
+    // Chaque semaine est placée en son milieu (ramené à maintenant pour la semaine en cours).
+    const wk = (Array.isArray(weeks) ? weeks : [])
+      .filter(w => Array.isArray(w) && Number.isFinite(Date.parse(w[0] + 'T00:00:00Z')) && num(w[1]) > 0)
+      .map(w => { const t = Date.parse(w[0] + 'T00:00:00Z'); return { t, mid: Math.min(t + 3.5 * DAY, now), avg: num(w[1]), min: num(w[2]) || num(w[1]), max: num(w[3]) || num(w[1]), n: num(w[4]) }; })
+      .sort((a, b) => a.t - b.t);
+    const x0 = per[2] ? now - per[2] * DAY : Math.min(now - DAY, ...points.concat(marks).map(pt => pt.t), ...wk.map(w => w.t));
     const inRange = pt => pt.t >= x0 && pt.t <= now;
-    const pts = points.filter(inRange), mks = marks.filter(inRange);
+    const pts = points.filter(inRange), mks = marks.filter(inRange), wks = wk.filter(w => w.mid >= x0 && w.t <= now);
     const svg = s('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', role: 'img' });
-    if (!pts.length && !mks.length) {
+    if (!pts.length && !mks.length && !wks.length) {
       svg.append(s('text', { x: W / 2, y: H / 2, 'text-anchor': 'middle' }, 'aucune vente sur cette période'));
       return svg;
     }
-    const [lo, hi] = chartBounds(pts.concat(mks).map(pt => pt.p));
+    const [lo, hi] = chartBounds(pts.concat(mks).map(pt => pt.p).concat(wks.map(w => w.avg)));
     const X = t => L + (t - x0) / Math.max(1, now - x0) * (W - L - R);
     // Une vente hors bornes est dessinée au bord, en rouge.
     const Y = p => T + (hi - Math.min(hi, Math.max(lo, p))) / (hi - lo) * (H - T - B);
@@ -4723,6 +4729,15 @@
     };
     seg(now - 37 * DAY, now - 7 * DAY, lines && lines.medBase, true);
     seg(now - 7 * DAY, now, lines && lines.med7, false);
+    // L'historique du site, sous les ventes : une barre du minimum au maximum de chaque semaine, et la ligne de ses moyennes.
+    for (const w of wks) {
+      svg.append(s('line', { x1: X(w.mid), x2: X(w.mid), y1: Y(w.max), y2: Y(w.min), stroke: '#4b5563', 'stroke-width': 4, 'stroke-linecap': 'round', opacity: 0.7 },
+        s('title', null, 'semaine du ' + fmtDate(w.t) + ' : moyenne ' + fmt(Math.round(w.avg)) + ' ₩, de ' + fmt(w.min) + ' à ' + fmt(w.max) + ' ₩, ' +
+          plural(w.n, 'vente', 'ventes') + ' (historique du site)')));
+    }
+    if (wks.length > 1) {
+      svg.append(s('polyline', { points: wks.map(w => X(w.mid) + ',' + Y(w.avg)).join(' '), fill: 'none', stroke: '#cbd5e1', 'stroke-width': 1.6 }));
+    }
     // Une vente Pro, exacte ou à toi : point plein ; un prix provisoire, qui n'est qu'un minimum : point creux.
     for (const pt of pts) {
       const color = pt.p < lo || pt.p > hi ? '#f87171' : '#34d399';
@@ -4810,9 +4825,12 @@
     const points = src.sales.map(x => ({ t: Math.min(Date.parse(x.t), now), p: x.p, k: ptKind(x) })).filter(pt => Number.isFinite(pt.t));
     const periods = h('div', { class: 'periods' }, CHART_PERIODS.map(([k, label]) =>
       h('button', { class: 'b' + (k === period ? ' on' : ''), onclick: () => { c.period = k; renderCard(); } }, label)));
-    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, { med7: cues.moment.med7, medBase: cues.moment.medBase }));
+    // Les médianes du repère 1 ne sont dessinées que si le prix du moment vient des ventes (pas des moyennes du site).
+    const lines = cues.moment.src === 'sales' ? { med7: cues.moment.med7, medBase: cues.moment.medBase } : { med7: null, medBase: null };
+    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, lines, weeks));
     const legend = h('div', { class: 'note' }, '● vente Pro, exacte ou à toi · ○ prix provisoire, un minimum · ◆ bleu : ta vente, ◆ orange : ton achat · ' +
-      'pointillés : médiane des 30 jours d’avant, trait orange : celle des 7 derniers jours. Survole un point pour le détail.');
+      'pointillés : médiane des 30 jours d’avant, trait orange : celle des 7 derniers jours.' +
+      (weeks ? ' Ligne grise : moyenne par semaine du site, barres : son minimum et son maximum.' : '') + ' Survole un point pour le détail.');
     fillEl(e.cardBody, h('div', { class: 'cues' }, rows), periods, chart, legend, actions, table, more);
   }
 
