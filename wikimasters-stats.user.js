@@ -562,10 +562,12 @@
     saveDb();
     return n;
   }
-  // Les semaines d'une carte à une rareté, ou null.
+  // Les semaines d'une carte à une rareté, ou null. Un historique calculé par le site il y a plus de 14 jours ne sert plus : ses
+  // dernières semaines manqueraient, et la fiche dirait à tort « aucune vente en 4 semaines ».
+  const HIST_FRESH = 14 * DAY;
   const histWeeks = (cardId, rarity) => {
     const h = db.hist[cardId];
-    return rarOk(rarity) && isObj(h) && isObj(h.w) && Array.isArray(h.w[rarity]) && h.w[rarity].length ? h.w[rarity] : null;
+    return rarOk(rarity) && isObj(h) && num(h.at) >= Date.now() - HIST_FRESH && isObj(h.w) && Array.isArray(h.w[rarity]) && h.w[rarity].length ? h.w[rarity] : null;
   };
 
   // Page Marché : enchères en cours, tes ventes en cours, et ton propre historique de ventes et d'achats.
@@ -1799,8 +1801,10 @@
       .map(w => ({ t: Date.parse(w[0] + 'T00:00:00Z'), avg: num(w[1]), n: Math.max(0, num(w[4])) }))
       .sort((a, b) => a.t - b.t);
     const done = wks.filter(w => w.t + 7 * DAY <= now), cur = wks.find(w => w.t <= now && now < w.t + 7 * DAY) || null;
-    const last4 = done.slice(-4), n4 = last4.reduce((a, w) => a + w.n, 0);
-    if (last4.length) Object.assign(pace, { perWeek: n4 / last4.length, n4, src: 'hist' });
+    // Les 4 semaines complètes du calendrier avant la semaine en cours (débuts dans les 35 derniers jours). Le site n'envoie pas
+    // les semaines sans vente : une semaine absente compte pour zéro.
+    const last4 = done.filter(w => w.t >= now - 35 * DAY), n4 = last4.reduce((a, w) => a + w.n, 0);
+    if (wks.length) Object.assign(pace, { perWeek: n4 / 4, n4, src: 'hist' });
     // Prix du moment : la semaine en cours (3 ventes au moins) face aux 4 semaines complètes d'avant (5 ventes au moins en tout).
     if (moment.state === 'few' && cur && cur.n >= CUE.RECENT_MIN && n4 >= CUE.BASE_MIN) {
       const avg4 = last4.reduce((a, w) => a + w.avg * w.n, 0) / n4, pct = Math.round(100 * (cur.avg / avg4 - 1));
@@ -2115,7 +2119,7 @@
       endJob(job.stop ? 'Arrêté à ' + i + ' / ' + ids.length + '.' : 'Prix complétés pour ' + i + ' cartes.');
     } catch (e) {
       if (e.code !== AUTO_LIMIT && [401, 402, 403].includes(e.status)) {
-        return endJob('Le site refuse l’historique des ventes pour ce compte (réservé au Pro ?). ' +
+        return endJob('Le site refuse l’historique des ventes (session expirée ? recharge la page pour te reconnecter). ' +
           'Le tableau reste utilisable sans les prix : raretés, ATK, DEF, Q-Score, export CSV.');
       }
       endJob('Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + ids.length + '. Réessaie plus tard.');
@@ -2571,15 +2575,16 @@
     return sellList().filter(r => !(now - (db.wishSeen[r.cardId] || 0) < SEARCH_FRESH)).map(r => [r.cardId, r.title]);
   }
   // Relève les ventes d'une liste [carte, rareté].
+  // Rend vrai quand le relevé s'est fini sans erreur ni arrêt (y compris quand rien n'était à relever).
   async function fetchPricesFor(todo, where, one, many) {
-    if (job.running) return;
-    if (!canFetchPrices()) return setStatus('Compte pas encore reconnu : recharge la page (F5) pour relever les prix.', where);
-    if (!todo.length) return setStatus('Tous les prix sont déjà à jour.', where);
+    if (job.running) return false;
+    if (!canFetchPrices()) { setStatus('Compte pas encore reconnu : recharge la page (F5) pour relever les prix.', where); return false; }
+    if (!todo.length) { setStatus('Tous les prix sont déjà à jour.', where); return true; }
     startJob('Prix : 0 / ' + todo.length, where);
     if (poolOn()) {
       await poolPrefetch(todo.map(x => x[0]));
       todo = todo.filter(([id, r]) => priceDue(id, r));
-      if (!todo.length) return endJob('Tous les prix étaient dans le pool du groupe.', where);
+      if (!todo.length) { endJob('Tous les prix étaient dans le pool du groupe.', where); return true; }
     }
     let i = 0;
     try {
@@ -2591,8 +2596,10 @@
         if (i < todo.length) await pace();
       }
       endJob(job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '.' : 'Prix relevés pour ' + plural(i, one, many) + '.', where);
+      return !job.stop;
     } catch (e) {
       endJob('Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + todo.length + '.', where);
+      return false;
     }
   }
   function refreshWish() {
@@ -4647,15 +4654,21 @@
   async function cardFetchNow() {
     const c = ui.card;
     if (!c || job.running) return;
-    await fetchPricesFor([[c.id, c.rarity]], 'cardStatus', 'carte', 'cartes');
-    if (!job.running) {
+    // L'historique ne part qu'après un relevé des ventes sans erreur ni arrêt, et jamais pendant la pause imposée par le site.
+    const ok = await fetchPricesFor([[c.id, c.rarity]], 'cardStatus', 'carte', 'cartes');
+    const before = ui.el.cardStatus ? String(ui.el.cardStatus.textContent || '') : '';
+    if (ok && !job.running && !job.stop && !(num(db.autoPauseUntil) > Date.now())) {
       startJob('Historique des prix…', 'cardStatus');
+      const say = msg => (before ? before + ' ' : '') + msg;
       try {
         await pace();
-        ingestHistory(c.id, await getJSON('/api/marketplace/cards/' + encodeURIComponent(c.id) + '/price-history'));
-        endJob('Ventes et historique relevés.', 'cardStatus');
+        if (job.stop) endJob(say('Historique non relevé : arrêté.'), 'cardStatus');
+        else {
+          ingestHistory(c.id, await getJSON('/api/marketplace/cards/' + encodeURIComponent(c.id) + '/price-history'));
+          endJob(say('Historique des prix relevé.'), 'cardStatus');
+        }
       } catch (e) {
-        endJob('Historique indisponible (' + ((e && e.message) || 'erreur') + ').', 'cardStatus');
+        endJob(say('Historique indisponible (' + ((e && e.message) || 'erreur') + ').'), 'cardStatus');
       }
     }
     if (ui.card && ui.card.id === c.id) renderCard();

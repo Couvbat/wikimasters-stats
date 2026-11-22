@@ -112,3 +112,11 @@ test('compte pas encore reconnu : aucun relevé, et le message le dit', async ()
   assert.deepEqual(env.sales(), []);
   assert.match(env.t.ui.el.wishStatus.textContent, /^Compte pas encore reconnu/);
 });
+
+test('aucun texte ne réserve plus les relevés aux comptes Pro', () => {
+  const fs = require('fs'), path = require('path');
+  for (const f of ['wikimasters-stats.user.js', 'README.md']) {
+    const txt = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
+    assert.doesNotMatch(txt, /réservée?s? (?:au|aux comptes) Pro|compte Pro uniquement|\(Pro\)|Relever l’historique Pro/, f);
+  }
+});

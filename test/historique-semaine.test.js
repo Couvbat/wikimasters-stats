@@ -158,3 +158,39 @@ test('fiche : pas de médianes quand le prix du moment vient de l’historique',
   assert.equal(find(out.body, n => n.attrs && n.attrs['stroke-dasharray']).length, 0);
   assert.equal(find(out.body, n => n.tagName === 'polyline').length, 1);
 });
+
+// ----- Relecture finale -----
+test('repères : semaines du calendrier — un marché sans vente depuis deux mois n’a ni rythme ni habitude récente', () => {
+  const { t } = load();
+  const old = [wk(80, 100, 3), wk(73, 100, 2), wk(66, 100, 4), wk(59, 100, 3)];
+  const c = t.cardCues([sale(1, 150)], NOW, null, old.concat([wk(2, 150, 3)]));
+  assert.equal(c.pace.n4, 0);
+  assert.match(t.cueLines(c).find(l => l.k === 'pace').text, /^aucune vente en 4 semaines sur le marché/);
+  assert.equal(c.moment.state, 'few', 'les 4 semaines d’avant sont vides : pas de comparaison');
+});
+
+test('repères : une semaine sans vente entre deux compte pour zéro dans le rythme', () => {
+  const { t } = load();
+  const c = t.cardCues([], NOW, null, [wk(30, 100, 4), wk(16, 100, 4), wk(9, 100, 4)]);
+  assert.equal(c.pace.perWeek, 3);
+});
+
+test('historique : relevé il y a plus de 14 jours, il ne sert plus', () => {
+  const { t } = load();
+  t.db.hist.C1 = { at: Date.now() - 20 * DAY, w: { SR: [wk(30, 100, 4)] } };
+  assert.equal(t.histWeeks('C1', 'SR'), null);
+  t.db.hist.C1.at = Date.now() - 2 * DAY;
+  assert.ok(t.histWeeks('C1', 'SR'));
+});
+
+test('fiche : « Relever les ventes » s’arrête sur une erreur du site, sans demander l’historique ni annoncer un succès', async () => {
+  const urls = [];
+  const { t } = load({ fast: true, fetch: async url => { urls.push(url); return /\/sales/.test(url) ? reply({ code: 'automation_limit' }, 429) : reply(PH(new Date().toISOString())); } });
+  t.db.userId = 'U1';
+  for (const k of ['cardHead', 'cardBody']) t.ui.el[k] = { replaceChildren() {} };
+  t.ui.el.cardStatus = { textContent: '' };
+  t.openCard('C1', { rarity: 'SR', title: 'X' });
+  await t.cardFetchNow();
+  assert.ok(!urls.some(u => /price-history/.test(u)), urls.join(' '));
+  assert.doesNotMatch(t.ui.el.cardStatus.textContent, /historique/i);
+});

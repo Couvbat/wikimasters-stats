@@ -71,7 +71,7 @@ Dessous, une **courbe** des ventes sur 7 jours, 30 jours, 90 jours ou tout (poin
 
 ### Réglages
 
-Tout ce que le script ajoute aux pages du site se règle dans l'onglet Réglages : afficher la valeur, comparer au prix de l'annonce, conseil quand tu es surenchéri, ✓ sur les cartes que tu as, bulle détaillée (ou la bulle simple du navigateur), contour vert des bonnes affaires, cartes trop chères grisées (désactivé par défaut ; elles redeviennent normales au survol, et tes propres enchères ne sont jamais grisées), valeur des échanges, les relevés automatiques réservés au Pro (cartes tirées d'un booster, cartes de Mes enchères), et la mise à jour automatique (tous comptes, désactivée par défaut ; voir « Prix observés »), avec le bouton « Tout mettre à jour maintenant ». On y trouve aussi la version installée et le bouton de mise à jour.
+Tout ce que le script ajoute aux pages du site se règle dans l'onglet Réglages : afficher la valeur, comparer au prix de l'annonce, conseil quand tu es surenchéri, ✓ sur les cartes que tu as, bulle détaillée (ou la bulle simple du navigateur), contour vert des bonnes affaires, cartes trop chères grisées (désactivé par défaut ; elles redeviennent normales au survol, et tes propres enchères ne sont jamais grisées), valeur des échanges, les relevés automatiques (cartes tirées d'un booster, cartes de Mes enchères), et la mise à jour automatique (tous comptes, désactivée par défaut ; voir « Prix observés »), avec le bouton « Tout mettre à jour maintenant ». On y trouve aussi la version installée et le bouton de mise à jour.
 
 ### Accueil
 
