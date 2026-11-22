@@ -37,7 +37,7 @@
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
       auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
-      obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
+      obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0, hist: {},
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
       pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0,
         // Fil des nouveautés (1.28) : adresse normalisée, identifiant du pool, position, fin du dernier passage réussi,
@@ -125,7 +125,7 @@
     base.pool = Object.assign(defaults().pool, isObj(base.pool) ? base.pool : {});
     base.pool.feed = Object.assign(defaults().pool.feed, isObj(base.pool.feed) ? base.pool.feed : {});
     if (!Array.isArray(base.poolQ)) base.poolQ = [];
-    for (const k of ['cards', 'prices', 'pro', 'auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov']) {
+    for (const k of ['cards', 'prices', 'pro', 'auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov', 'hist']) {
       if (!isObj(base[k])) base[k] = {};
     }
     // Nettoyage des doublons laissés par les versions précédentes : une carte rangée sous son propre
@@ -426,6 +426,7 @@
     for (const id in db.prices) if (isObj(db.prices[id]) && Array.isArray(db.prices[id].sales)) db.prices[id].sales = keepPerRarity(db.prices[id].sales, 10, 30);
     for (const id in db.obsSales) if (Array.isArray(db.obsSales[id])) db.obsSales[id] = keepPerRarity(db.obsSales[id], 10, 30);
     for (const id in db.mySales) if (Array.isArray(db.mySales[id])) db.mySales[id] = keepPerRarity(db.mySales[id], 10, 30);
+    db.hist = {}; // l'historique par semaine : le site le redonne
     resetPrices();
   }
 
@@ -531,6 +532,41 @@
     saveDb();
     refresh();
   }
+
+  // Historique des prix par semaine du site (/api/marketplace/cards/<id>/price-history), enregistré quand le site le charge (sa Vue
+  // du marché) ou par le bouton « Relever les ventes » de la fiche. Ce sont des moyennes : il ne sert qu'à la fiche et à la bulle.
+  // db.hist[carte] = { at (date du calcul par le site), w: { rareté: [[début 'AAAA-MM-JJ', moyenne, min, max, ventes], …] } }, semaines
+  // de la plus ancienne à la plus récente. Une réponse plus ancienne que celle gardée est ignorée. Renvoie le nombre de raretés reçues.
+  const HIST_IDB = 3000, HIST_LOCAL = 200;
+  function ingestHistory(cardId, j) {
+    if (!okKey(cardId) || !isObj(j) || !isObj(j.by_rarity)) return 0;
+    const w = {};
+    for (const r of Object.keys(j.by_rarity)) {
+      const e = j.by_rarity[r];
+      if (!rarOk(r) || !isObj(e) || !Array.isArray(e.weekly)) continue;
+      const rows = e.weekly
+        .filter(x => isObj(x) && typeof x.start === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x.start) && Number.isFinite(Date.parse(x.start + 'T00:00:00Z')) &&
+          typeof x.avg === 'number' && x.avg > 0 && Number.isInteger(x.count) && x.count >= 0)
+        .map(x => [x.start, x.avg, typeof x.min === 'number' ? x.min : x.avg, typeof x.max === 'number' ? x.max : x.avg, x.count])
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+      if (rows.length) w[r] = rows;
+    }
+    const n = Object.keys(w).length;
+    if (!n) return 0;
+    const parsed = Date.parse(j.computed_at), at = Number.isFinite(parsed) ? parsed : Date.now();
+    const cur = isObj(db.hist[cardId]) ? db.hist[cardId] : null;
+    if (cur && num(cur.at) > at) return 0;
+    db.hist[cardId] = { at, w: Object.assign({}, cur && isObj(cur.w) ? cur.w : {}, w) };
+    const ids = Object.keys(db.hist), max = store.mode === 'idb' ? HIST_IDB : HIST_LOCAL;
+    if (ids.length > max) ids.sort((x, y) => num(db.hist[x].at) - num(db.hist[y].at)).slice(0, ids.length - max).forEach(id => delete db.hist[id]);
+    saveDb();
+    return n;
+  }
+  // Les semaines d'une carte à une rareté, ou null.
+  const histWeeks = (cardId, rarity) => {
+    const h = db.hist[cardId];
+    return rarOk(rarity) && isObj(h) && isObj(h.w) && Array.isArray(h.w[rarity]) && h.w[rarity].length ? h.w[rarity] : null;
+  };
 
   // Page Marché : enchères en cours, tes ventes en cours, et ton propre historique de ventes et d'achats.
   // Une enchère en cours vue sur le site (liste du Marché ou page de l'enchère) : sa carte, son prix, la rareté de son exemplaire.
@@ -1512,6 +1548,10 @@
         if (m) {
           const rar = url.searchParams.get('rarity'); // la Vue du marché du site demande une rareté à la fois
           p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestSales(m[1], j, rarOk(rar) ? rar : undefined)))).catch(() => {});
+        } else if (/^\/api\/marketplace\/cards\/[^/]+\/price-history$/.test(url.pathname)) {
+          // La Vue du marché du site charge l'historique des prix par semaine : on le garde pour la fiche.
+          const id = url.pathname.split('/')[4];
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => { if (ingestHistory(id, j)) refresh(); }))).catch(() => {});
         } else if (/^\/api\/marketplace\/[0-9a-f-]{36}$/.test(url.pathname)) {
           // Tu ouvres la page d'une enchère : si elle est finie, son prix final exact rejoint les prix observés.
           const id = url.pathname.split('/').pop();
@@ -4558,7 +4598,7 @@
   function syncCardButtons() {
     const e = ui.el;
     if (e.cardSearch) e.cardSearch.disabled = job.running || !ui.card || ui.card.title === '?';
-    if (e.cardPro) e.cardPro.disabled = job.running;
+    if (e.cardFetch) e.cardFetch.disabled = job.running;
   }
   async function cardSearchNow() {
     const c = ui.card;
@@ -4566,10 +4606,21 @@
     await marketSearch([[c.id, c.title]], 'Annonces', 'sans annonce', 'cardStatus');
     if (ui.card && ui.card.id === c.id) renderCard();
   }
-  async function cardProNow() {
+  // « Relever les ventes » : les 5 dernières ventes à cette rareté, puis l'historique des prix par semaine. Deux requêtes, sur ton clic.
+  async function cardFetchNow() {
     const c = ui.card;
     if (!c || job.running) return;
     await fetchPricesFor([[c.id, c.rarity]], 'cardStatus', 'carte', 'cartes');
+    if (!job.running) {
+      startJob('Historique des prix…', 'cardStatus');
+      try {
+        await pace();
+        ingestHistory(c.id, await getJSON('/api/marketplace/cards/' + encodeURIComponent(c.id) + '/price-history'));
+        endJob('Ventes et historique relevés.', 'cardStatus');
+      } catch (e) {
+        endJob('Historique indisponible (' + ((e && e.message) || 'erreur') + ').', 'cardStatus');
+      }
+    }
     if (ui.card && ui.card.id === c.id) renderCard();
   }
   // ----- courbe de la fiche : SVG fait main, axe des dates réel (les ventes ne sont pas régulièrement espacées) -----
@@ -4669,10 +4720,10 @@
     fillEl(e.cardHead, h('button', { class: 'b', onclick: closeCard }, '← Retour'), h('h2', null, c.title), rars.map(rarBtn), h('span', null, value));
     e.cardSearch = h('button', { class: 'b', onclick: cardSearchNow,
       'data-tip': 'Cherche sur le marché qui vend cette carte en ce moment, et à quel prix. Une requête, par le nom de la carte.' }, 'Chercher les annonces de cette carte');
-    e.cardPro = canFetchPrices() ? h('button', { class: 'b', onclick: cardProNow,
-      'data-tip': 'Relit les 5 dernières ventes de cette carte à cette rareté. Une requête.' }, 'Relever les ventes') : null;
+    e.cardFetch = canFetchPrices() ? h('button', { class: 'b', onclick: cardFetchNow,
+      'data-tip': 'Relit les 5 dernières ventes de cette carte à cette rareté, puis son historique des prix par semaine. Deux requêtes.' }, 'Relever les ventes') : null;
     syncCardButtons();
-    const actions = h('div', { class: 'tools' }, e.cardSearch, e.cardPro);
+    const actions = h('div', { class: 'tools' }, e.cardSearch, e.cardFetch);
     if (!src.sales.length) {
       const others = rars.filter(r => r !== rarity);
       fillEl(e.cardBody,
