@@ -556,7 +556,9 @@
     const parsed = Date.parse(j.computed_at), at = Number.isFinite(parsed) ? parsed : Date.now();
     const cur = isObj(db.hist[cardId]) ? db.hist[cardId] : null;
     if (cur && num(cur.at) > at) return 0;
-    db.hist[cardId] = { at, w: Object.assign({}, cur && isObj(cur.w) ? cur.w : {}, w) };
+    // La réponse est l'historique complet de la carte : une rareté absente n'a pas de vente sur la période. On remplace tout, sans
+    // garder (et rajeunir) les semaines d'une rareté absente.
+    db.hist[cardId] = { at, w };
     const ids = Object.keys(db.hist), max = store.mode === 'idb' ? HIST_IDB : HIST_LOCAL;
     if (ids.length > max) ids.sort((x, y) => num(db.hist[x].at) - num(db.hist[y].at)).slice(0, ids.length - max).forEach(id => delete db.hist[id]);
     saveDb();
@@ -568,6 +570,11 @@
   const histWeeks = (cardId, rarity) => {
     const h = db.hist[cardId];
     return rarOk(rarity) && isObj(h) && num(h.at) >= Date.now() - HIST_FRESH && isObj(h.w) && Array.isArray(h.w[rarity]) && h.w[rarity].length ? h.w[rarity] : null;
+  };
+  // Les raretés qui ont un historique frais.
+  const histRarities = cardId => {
+    const h = db.hist[cardId];
+    return isObj(h) && num(h.at) >= Date.now() - HIST_FRESH && isObj(h.w) ? Object.keys(h.w).filter(r => histWeeks(cardId, r)) : [];
   };
 
   // Page Marché : enchères en cours, tes ventes en cours, et ton propre historique de ventes et d'achats.
@@ -4772,7 +4779,7 @@
     if (!c || !e.cardHead || !e.cardBody) return;
     const now = Date.now(), id = c.id, rarity = c.rarity;
     const src = cardSource(id, rarity), price = priceOf(id, rarity);
-    const rars = cardRarities(id);
+    const rars = [...new Set(cardRarities(id).concat(histRarities(id)))];
     if (rarOk(rarity) && !rars.includes(rarity)) rars.push(rarity);
     rars.sort((a, b) => rarOrder(a) - rarOrder(b));
     const pick = r => { c.rarity = r; c.period = null; c.all = false; renderCard(); };
@@ -5281,9 +5288,12 @@
     const have = ov('have') ? mine[cardId] : null;
     const lines = [];
     let text, border = '#6b7280', bg = 'rgba(10,15,13,.85)', flag = null;
+    // Les repères 1 et 2 de la fiche, en court, quand l'un des deux est calculable (par les ventes, ou par l'historique du site).
+    const short = cueShort(cuesOf(cardId, cueRar));
     if (!p.n) {
       text = '1 ₩';
       lines.push('Aucune vente connue : la carte vaut la défausse, 1 ₩.');
+      if (short) lines.push('Repères : ' + short);
     } else {
       const med = Math.max(p.med, DISCARD), mx = maxBid(p);
       text = (p.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(med)) + ' ₩';
@@ -5291,8 +5301,6 @@
       lines.push('Valeur : ' + fmt(Math.round(med)) + ' ₩ (' + (p.basis === 'recent' ? '7 derniers jours, ' : 'depuis toujours, ') + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + (p.mixed ? ', ventes d’autres raretés' : p.r ? ', en ' + p.r : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
       const other = otherValue(p);
       if (other) lines.push(other);
-      // Les repères 1 et 2 de la fiche, en court, quand l'un des deux est calculable.
-      const short = cueShort(cuesOf(cardId, cueRar));
       if (short) lines.push('Repères : ' + short);
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));

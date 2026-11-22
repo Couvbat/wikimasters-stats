@@ -194,3 +194,39 @@ test('fiche : « Relever les ventes » s’arrête sur une erreur du site, sans 
   assert.ok(!urls.some(u => /price-history/.test(u)), urls.join(' '));
   assert.doesNotMatch(t.ui.el.cardStatus.textContent, /historique/i);
 });
+
+// ----- Relecture Copilot -----
+test('historique : une réponse remplace tout l’historique de la carte, une rareté absente n’est pas prolongée', () => {
+  const { t } = load();
+  t.ingestHistory('C1', PH(new Date(Date.now() - 20 * DAY).toISOString()));
+  t.ingestHistory('C1', PH(new Date().toISOString(), { C: [{ start: wk(9, 1, 1)[0], avg: 50, min: 50, max: 50, count: 3 }] }));
+  assert.equal(t.db.hist.C1.w.SR, undefined);
+  assert.equal(t.histWeeks('C1', 'SR'), null);
+  assert.ok(t.histWeeks('C1', 'C'));
+});
+
+test('fiche : une rareté qui n’a qu’un historique du site a aussi sa pastille', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 50)] };
+  t.ingestHistory('C1', PH(new Date().toISOString(), { C: [{ start: wk(9, 1, 1)[0], avg: 50, min: 50, max: 50, count: 3 }] }));
+  const out = {};
+  t.ui.el.cardHead = { replaceChildren(...k) { out.head = k; } };
+  t.ui.el.cardBody = { replaceChildren() {} };
+  t.ui.el.cardStatus = { textContent: '' };
+  t.openCard('C1', { rarity: 'SR', title: 'X' });
+  t.renderCard();
+  const find = (n, pred, acc = []) => { if (Array.isArray(n)) { n.forEach(x => find(x, pred, acc)); return acc; } if (n && typeof n === 'object') { if (pred(n)) acc.push(n); for (const k of n.children || []) find(k, pred, acc); } return acc; };
+  const pills = find(out.head, n => typeof n.className === 'string' && /\brbtn\b/.test(n.className));
+  assert.deepEqual(pills.map(b => b.children[0].children.join('')), ['SR', 'C']);
+});
+
+test('bulle : sans vente connue à cette rareté, l’historique donne quand même la ligne « Repères »', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [] };
+  t.db.cards.X1 = { cardId: 'C1', title: 'X', rarity: 'SR', count: 1 };
+  t.ingestHistory('C1', PH(new Date().toISOString(), { SR: [30, 23, 16, 9].map(d => ({ start: wk(d, 1, 1)[0], avg: 100, min: 100, max: 100, count: 2 }))
+    .concat([{ start: wk(2, 1, 1)[0], avg: 130, min: 130, max: 130, count: 4 }]) }));
+  const lines = t.badgeFor('C1', null, {}).lines;
+  assert.ok(lines.some(l => /^Repères : plus cher que d’habitude/.test(l)), lines.join('\n'));
+  assert.ok(lines.includes('Aucune vente connue : la carte vaut la défausse, 1 ₩.'));
+});
