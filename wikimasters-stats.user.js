@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.29.1
+// @version      1.30.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -37,7 +37,7 @@
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
       auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
-      obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0,
+      obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0, hist: {},
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
       pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0,
         // Fil des nouveautés (1.28) : adresse normalisée, identifiant du pool, position, fin du dernier passage réussi,
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.29.1';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.30.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -125,7 +125,7 @@
     base.pool = Object.assign(defaults().pool, isObj(base.pool) ? base.pool : {});
     base.pool.feed = Object.assign(defaults().pool.feed, isObj(base.pool.feed) ? base.pool.feed : {});
     if (!Array.isArray(base.poolQ)) base.poolQ = [];
-    for (const k of ['cards', 'prices', 'pro', 'auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov']) {
+    for (const k of ['cards', 'prices', 'pro', 'auctions', 'history', 'wish', 'friends', 'mySales', 'alerts', 'wishSeen', 'obs', 'obsSales', 'obsRar', 'finQ', 'trades', 'ov', 'hist']) {
       if (!isObj(base[k])) base[k] = {};
     }
     // Nettoyage des doublons laissés par les versions précédentes : une carte rangée sous son propre
@@ -426,6 +426,7 @@
     for (const id in db.prices) if (isObj(db.prices[id]) && Array.isArray(db.prices[id].sales)) db.prices[id].sales = keepPerRarity(db.prices[id].sales, 10, 30);
     for (const id in db.obsSales) if (Array.isArray(db.obsSales[id])) db.obsSales[id] = keepPerRarity(db.obsSales[id], 10, 30);
     for (const id in db.mySales) if (Array.isArray(db.mySales[id])) db.mySales[id] = keepPerRarity(db.mySales[id], 10, 30);
+    db.hist = {}; // l'historique par semaine : le site le redonne
     resetPrices();
   }
 
@@ -531,6 +532,50 @@
     saveDb();
     refresh();
   }
+
+  // Historique des prix par semaine du site (/api/marketplace/cards/<id>/price-history), enregistré quand le site le charge (sa Vue
+  // du marché) ou par le bouton « Relever les ventes » de la fiche. Ce sont des moyennes : il ne sert qu'à la fiche et à la bulle.
+  // db.hist[carte] = { at (date du calcul par le site), w: { rareté: [[début 'AAAA-MM-JJ', moyenne, min, max, ventes], …] } }, semaines
+  // de la plus ancienne à la plus récente. Une réponse plus ancienne que celle gardée est ignorée. Renvoie le nombre de raretés reçues.
+  const HIST_IDB = 3000, HIST_LOCAL = 200;
+  function ingestHistory(cardId, j) {
+    if (!okKey(cardId) || !isObj(j) || !isObj(j.by_rarity)) return 0;
+    const w = {};
+    for (const r of Object.keys(j.by_rarity)) {
+      const e = j.by_rarity[r];
+      if (!rarOk(r) || !isObj(e) || !Array.isArray(e.weekly)) continue;
+      const rows = e.weekly
+        .filter(x => isObj(x) && typeof x.start === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x.start) && Number.isFinite(Date.parse(x.start + 'T00:00:00Z')) &&
+          typeof x.avg === 'number' && x.avg > 0 && Number.isInteger(x.count) && x.count >= 0)
+        .map(x => [x.start, x.avg, typeof x.min === 'number' ? x.min : x.avg, typeof x.max === 'number' ? x.max : x.avg, x.count])
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+      if (rows.length) w[r] = rows;
+    }
+    const n = Object.keys(w).length;
+    if (!n) return 0;
+    const parsed = Date.parse(j.computed_at), at = Number.isFinite(parsed) ? parsed : Date.now();
+    const cur = isObj(db.hist[cardId]) ? db.hist[cardId] : null;
+    if (cur && num(cur.at) > at) return 0;
+    // La réponse est l'historique complet de la carte : une rareté absente n'a pas de vente sur la période. On remplace tout, sans
+    // garder (et rajeunir) les semaines d'une rareté absente.
+    db.hist[cardId] = { at, w };
+    const ids = Object.keys(db.hist), max = store.mode === 'idb' ? HIST_IDB : HIST_LOCAL;
+    if (ids.length > max) ids.sort((x, y) => num(db.hist[x].at) - num(db.hist[y].at)).slice(0, ids.length - max).forEach(id => delete db.hist[id]);
+    saveDb();
+    return n;
+  }
+  // Les semaines d'une carte à une rareté, ou null. Un historique calculé par le site il y a plus de 14 jours ne sert plus : ses
+  // dernières semaines manqueraient, et la fiche dirait à tort « aucune vente en 4 semaines ».
+  const HIST_FRESH = 14 * DAY;
+  const histWeeks = (cardId, rarity) => {
+    const h = db.hist[cardId];
+    return rarOk(rarity) && isObj(h) && num(h.at) >= Date.now() - HIST_FRESH && isObj(h.w) && Array.isArray(h.w[rarity]) && h.w[rarity].length ? h.w[rarity] : null;
+  };
+  // Les raretés qui ont un historique frais.
+  const histRarities = cardId => {
+    const h = db.hist[cardId];
+    return isObj(h) && num(h.at) >= Date.now() - HIST_FRESH && isObj(h.w) ? Object.keys(h.w).filter(r => histWeeks(cardId, r)) : [];
+  };
 
   // Page Marché : enchères en cours, tes ventes en cours, et ton propre historique de ventes et d'achats.
   // Une enchère en cours vue sur le site (liste du Marché ou page de l'enchère) : sa carte, son prix, la rareté de son exemplaire.
@@ -1452,7 +1497,8 @@
   }
 
   // Statut Pro : lu dans la réponse que le site demande lui-même à chaque chargement de page.
-  // L'historique des ventes est une fonction Pro, donc le script ne le demande que pour un compte Pro.
+  // Depuis la mise à jour du site de novembre 2026, l'historique des ventes est ouvert à tous les comptes : le statut Pro
+  // est encore lu, mais ne bloque plus aucun relevé (voir canFetchPrices).
   function ingestPro(userId, j) {
     const row = Array.isArray(j) ? j[0] : j;
     if (!row || typeof row.is_pro !== 'boolean') return;
@@ -1465,8 +1511,10 @@
   }
   // true = Pro, false = non Pro, undefined = pas encore vu
   function proState() { return db.userId ? db.pro[db.userId] : undefined; }
+  // Relever des ventes demande seulement un compte reconnu, Pro ou non.
+  const canFetchPrices = () => !!db.userId;
   function showPrices() {
-    return proState() === true || Object.keys(db.prices).length > 0 || Object.keys(db.mySales).length > 0 ||
+    return canFetchPrices() || Object.keys(db.prices).length > 0 || Object.keys(db.mySales).length > 0 ||
       Object.keys(db.obsSales).length > 0;
   }
 
@@ -1509,6 +1557,10 @@
         if (m) {
           const rar = url.searchParams.get('rarity'); // la Vue du marché du site demande une rareté à la fois
           p.then(r => r.ok && r.clone().json().then(j => whenReady(() => ingestSales(m[1], j, rarOk(rar) ? rar : undefined)))).catch(() => {});
+        } else if (/^\/api\/marketplace\/cards\/[^/]+\/price-history$/.test(url.pathname)) {
+          // La Vue du marché du site charge l'historique des prix par semaine : on le garde pour la fiche.
+          const id = url.pathname.split('/')[4];
+          p.then(r => r.ok && r.clone().json().then(j => whenReady(() => { if (ingestHistory(id, j)) refresh(); }))).catch(() => {});
         } else if (/^\/api\/marketplace\/[0-9a-f-]{36}$/.test(url.pathname)) {
           // Tu ouvres la page d'une enchère : si elle est finie, son prix final exact rejoint les prix observés.
           const id = url.pathname.split('/').pop();
@@ -1707,7 +1759,8 @@
   //   moment : la médiane des 7 derniers jours (3 ventes au moins) face à celle des 30 jours d'avant (5 au moins) ;
   //   slope : la pente des prix sur 30 jours (6 ventes au moins), robuste aux ventes aberrantes (Theil-Sen sur le logarithme) ;
   //   pace : le nombre de ventes des 30 derniers jours et la dernière vente ; compete : les annonces à cette rareté.
-  function cardCues(sales, now, asks) {
+  // weeks : les semaines de l'historique du site à cette rareté ([début, moyenne, min, max, ventes], voir ingestHistory), ou null.
+  function cardCues(sales, now, asks, weeks) {
     const pts = [];
     for (const s of Array.isArray(sales) ? sales : []) {
       const ts = s ? Date.parse(s.t) : NaN;
@@ -1717,7 +1770,7 @@
     const age = pt => (now - pt.t) / DAY;
     const recent = pts.filter(pt => age(pt) <= CUE.RECENT_DAYS);
     const base = pts.filter(pt => age(pt) > CUE.RECENT_DAYS && age(pt) <= CUE.RECENT_DAYS + CUE.BASE_DAYS);
-    const moment = { state: 'few', pct: null, med7: null, n7: recent.length, medBase: null, nBase: base.length };
+    const moment = { state: 'few', pct: null, med7: null, n7: recent.length, medBase: null, nBase: base.length, src: 'sales' };
     if (recent.length >= CUE.RECENT_MIN && base.length >= CUE.BASE_MIN) {
       moment.med7 = median(recent.map(pt => pt.p));
       moment.medBase = median(base.map(pt => pt.p));
@@ -1725,7 +1778,7 @@
       moment.state = moment.pct >= CUE.MOMENT_PCT ? 'high' : moment.pct <= -CUE.MOMENT_PCT ? 'low' : 'usual';
     }
     const win = pts.filter(pt => age(pt) <= CUE.SLOPE_DAYS).slice(0, CUE.SLOPE_MAX);
-    const slope = { state: 'few', pct: null, n: win.length };
+    const slope = { state: 'few', pct: null, n: win.length, src: 'sales' };
     // Des ventes groupées (doublons vendus d'un coup, une rafale de la même heure) ne disent rien du sens : seules comptent les paires
     // de ventes à un jour d'écart au moins, et les ventes doivent s'étaler sur une semaine au moins.
     if (win.length >= CUE.SLOPE_MIN && win[0].t - win[win.length - 1].t >= CUE.SLOPE_SPAN * DAY) {
@@ -1747,7 +1800,38 @@
       }
     }
     const n30 = pts.filter(pt => age(pt) <= CUE.PACE_DAYS).length;
-    const pace = { n30, perWeek: n30 * 7 / CUE.PACE_DAYS, lastT: pts.length ? pts[0].t : 0 };
+    const pace = { n30, perWeek: n30 * 7 / CUE.PACE_DAYS, lastT: pts.length ? pts[0].t : 0, src: 'sales' };
+    // Historique par semaine du site : des moyennes sur toutes les ventes du marché. Il donne le vrai rythme, et sert de repli quand
+    // les ventes connues ne suffisent pas au prix du moment ou au sens. Une semaine est complète quand elle est finie.
+    const wks = (Array.isArray(weeks) ? weeks : [])
+      .filter(w => Array.isArray(w) && Number.isFinite(Date.parse(w[0] + 'T00:00:00Z')) && num(w[1]) > 0)
+      .map(w => ({ t: Date.parse(w[0] + 'T00:00:00Z'), avg: num(w[1]), n: Math.max(0, num(w[4])) }))
+      .sort((a, b) => a.t - b.t);
+    const done = wks.filter(w => w.t + 7 * DAY <= now), cur = wks.find(w => w.t <= now && now < w.t + 7 * DAY) || null;
+    // Les 4 semaines complètes du calendrier avant la semaine en cours (débuts dans les 35 derniers jours). Le site n'envoie pas
+    // les semaines sans vente : une semaine absente compte pour zéro.
+    const last4 = done.filter(w => w.t >= now - 35 * DAY), n4 = last4.reduce((a, w) => a + w.n, 0);
+    if (wks.length) Object.assign(pace, { perWeek: n4 / 4, n4, src: 'hist' });
+    // Prix du moment : la semaine en cours (3 ventes au moins) face aux 4 semaines complètes d'avant (5 ventes au moins en tout).
+    if (moment.state === 'few' && cur && cur.n >= CUE.RECENT_MIN && n4 >= CUE.BASE_MIN) {
+      const avg4 = last4.reduce((a, w) => a + w.avg * w.n, 0) / n4, pct = Math.round(100 * (cur.avg / avg4 - 1));
+      Object.assign(moment, { state: pct >= CUE.MOMENT_PCT ? 'high' : pct <= -CUE.MOMENT_PCT ? 'low' : 'usual', pct,
+        med7: cur.avg, n7: cur.n, medBase: avg4, nBase: n4, src: 'hist' });
+    }
+    // Sens : Theil-Sen sur le logarithme des moyennes des 8 dernières semaines qui ont des ventes (la semaine en cours seulement avec
+    // 3 ventes au moins), 4 semaines au moins. Placer chaque semaine à son milieu ne change pas les pentes.
+    if (slope.state === 'few') {
+      const w8 = wks.filter(w => w.n >= 1 && (w !== cur || w.n >= CUE.RECENT_MIN)).slice(-8);
+      if (w8.length >= 4) {
+        const sl = [];
+        for (let i = 0; i < w8.length; i++) for (let j = i + 1; j < w8.length; j++)
+          if (w8[j].t !== w8[i].t) sl.push((Math.log(w8[j].avg) - Math.log(w8[i].avg)) / (w8[j].t - w8[i].t));
+        const pct = sl.length ? Math.round(100 * (Math.exp(median(sl) * 7 * DAY) - 1)) : NaN;
+        if (Number.isFinite(pct)) {
+          Object.assign(slope, { state: pct >= CUE.SLOPE_PCT ? 'up' : pct <= -CUE.SLOPE_PCT ? 'down' : 'flat', pct: pct || 0, n: w8.length, src: 'hist' });
+        }
+      }
+    }
     let compete = null;
     if (asks) {
       const want = asks.rarity;
@@ -1777,12 +1861,19 @@
     const m = c.moment, sl = c.slope, pc = c.pace, out = [];
     out.push({ k: 'moment', label: 'Prix du moment', text: m.state === 'few' ? 'pas assez de ventes pour comparer'
       : (m.state === 'high' ? 'plus cher que d’habitude (' + signedPct(m.pct) + ')' : m.state === 'low' ? 'moins cher que d’habitude (' + signedPct(m.pct) + ')' : 'dans son habitude') +
-        ' · 7 derniers jours : ' + fmt(Math.round(m.med7)) + ' ₩ (' + plural(m.n7, 'vente', 'ventes') + '), 30 jours d’avant : ' +
-        fmt(Math.round(m.medBase)) + ' ₩ (' + plural(m.nBase, 'vente', 'ventes') + ')' });
+        (m.src === 'hist'
+          ? ' · cette semaine : ' + fmt(Math.round(m.med7)) + ' ₩ (' + plural(m.n7, 'vente', 'ventes') + '), 4 semaines d’avant : ' +
+            fmt(Math.round(m.medBase)) + ' ₩ (' + plural(m.nBase, 'vente', 'ventes') + '), moyennes du site'
+          : ' · 7 derniers jours : ' + fmt(Math.round(m.med7)) + ' ₩ (' + plural(m.n7, 'vente', 'ventes') + '), 30 jours d’avant : ' +
+            fmt(Math.round(m.medBase)) + ' ₩ (' + plural(m.nBase, 'vente', 'ventes') + ')') });
     out.push({ k: 'slope', label: 'Sens', text: sl.state === 'few' ? 'pas assez de ventes sur 30 jours pour dire le sens'
-      : sl.state === 'up' ? 'en hausse (' + signedPct(sl.pct) + ' par semaine)' : sl.state === 'down' ? 'en baisse (' + signedPct(sl.pct) + ' par semaine)' : 'stable' });
-    out.push({ k: 'pace', label: 'Rythme', text: (!pc.n30 ? 'aucune vente en 30 jours'
-      : pc.perWeek >= 1 ? 'se vend environ ' + Math.round(pc.perWeek) + ' fois par semaine' : 'se vend environ ' + pc.n30 + ' fois par mois') +
+      : (sl.state === 'up' ? 'en hausse (' + signedPct(sl.pct) + ' par semaine)' : sl.state === 'down' ? 'en baisse (' + signedPct(sl.pct) + ' par semaine)' : 'stable') +
+        (sl.src === 'hist' ? ' · moyennes du site' : '') });
+    out.push({ k: 'pace', label: 'Rythme', text: (pc.src === 'hist'
+      ? (pc.perWeek >= 1 ? 'se vend environ ' + Math.round(pc.perWeek) + ' fois par semaine sur le marché'
+        : pc.n4 ? 'se vend environ ' + pc.n4 + ' fois par mois sur le marché' : 'aucune vente en 4 semaines sur le marché')
+      : !pc.n30 ? 'aucune vente en 30 jours'
+        : pc.perWeek >= 1 ? 'se vend environ ' + Math.round(pc.perWeek) + ' fois par semaine' : 'se vend environ ' + pc.n30 + ' fois par mois') +
       (pc.lastT ? ' · dernière vente ' + ago(pc.lastT) : '') });
     const cp = c.compete;
     if (cp) {
@@ -2012,7 +2103,7 @@
   }
 
   async function fillPrices() {
-    if (job.running || proState() !== true) return;
+    if (job.running || !canFetchPrices()) return;
     let ids = missingPairs();
     if (!ids.length) return setStatus('Rien à compléter pour les raretés cochées.');
     startJob('Prix : 0 / ' + ids.length);
@@ -2035,7 +2126,7 @@
       endJob(job.stop ? 'Arrêté à ' + i + ' / ' + ids.length + '.' : 'Prix complétés pour ' + i + ' cartes.');
     } catch (e) {
       if (e.code !== AUTO_LIMIT && [401, 402, 403].includes(e.status)) {
-        return endJob('Le site refuse l’historique des ventes pour ce compte (réservé au Pro ?). ' +
+        return endJob('Le site refuse l’historique des ventes (session expirée ? recharge la page pour te reconnecter). ' +
           'Le tableau reste utilisable sans les prix : raretés, ATK, DEF, Q-Score, export CSV.');
       }
       endJob('Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + ids.length + '. Réessaie plus tard.');
@@ -2159,7 +2250,7 @@
   //   1. la collection, relue en entier une fois par jour (en automatique, le passage s'arrête ensuite) ;
   //   2. la liste de souhaits, relue en entier une fois par jour ;
   //   3. les souhaits que le site a signalés en vente ;
-  //   4. les prix à relire (priceDue), du plus lourd au plus léger : le pool d'abord, puis le site (compte Pro) ;
+  //   4. les prix à relire (priceDue), du plus lourd au plus léger : le pool d'abord, puis le site ;
   //   5. les prix finaux, puis la lecture des fins d'enchères qui prépare le passage suivant (hors budget, comme avant).
   // manual (bouton) : pas de budget, rythme des boutons, Stop. Sinon : 60 requêtes, et arrêt dès qu'un relevé manuel démarre.
   // Le verrou entre onglets est renouvelé à chaque requête. out reçoit les compteurs au fil de l'eau.
@@ -2205,7 +2296,7 @@
       await poolPrefetch(due.map(x => x[0]));
       due = due.filter(([id, r]) => priceDue(id, r));
     }
-    if (proState() === true) {
+    if (canFetchPrices()) {
       for (const [id, r] of due) {
         if (stop() || left() <= 0) break;
         await hit(() => fetchSales(id, r, () => left() > 0 && !stop(), () => { used++; holdAuto(); }));
@@ -2268,7 +2359,7 @@
     const a = db.autoLast;
     if (!a || !a.at) return 'Aucune mise à jour automatique pour l’instant.';
     return 'Dernière mise à jour automatique : ' + ago(a.at) + ' · ' + routineSummary(a) + '.' +
-      (proState() === true ? ' Encore ' + plural(dueCards().length, 'carte à relire', 'cartes à relire') + '.' : '');
+      (canFetchPrices() ? ' Encore ' + plural(dueCards().length, 'carte à relire', 'cartes à relire') + '.' : '');
   }
   // auto.done : la promesse du passage en cours, que le bouton attend avant de démarrer.
   function autoRun() {
@@ -2304,7 +2395,7 @@
     return out;
   }
   async function fillTradePrices() {
-    if (job.running || proState() !== true) return;
+    if (job.running || !canFetchPrices()) return;
     let todo = tradeCardsToPrice().slice(0, TRADE_BATCH);
     if (!todo.length) return setStatus('Toutes les cartes échangées ont déjà un prix relevé.', 'tradeStatus');
     startJob('Prix : 0 / ' + todo.length, 'tradeStatus');
@@ -2490,16 +2581,17 @@
     const now = Date.now();
     return sellList().filter(r => !(now - (db.wishSeen[r.cardId] || 0) < SEARCH_FRESH)).map(r => [r.cardId, r.title]);
   }
-  // Relève l'historique de ventes d'une liste [carte, rareté] (compte Pro).
+  // Relève les ventes d'une liste [carte, rareté].
+  // Rend vrai quand le relevé s'est fini sans erreur ni arrêt (y compris quand rien n'était à relever).
   async function fetchPricesFor(todo, where, one, many) {
-    if (job.running) return;
-    if (proState() !== true) return setStatus('Les prix de vente sont réservés aux comptes Pro.', where);
-    if (!todo.length) return setStatus('Tous les prix sont déjà à jour.', where);
+    if (job.running) return false;
+    if (!canFetchPrices()) { setStatus('Compte pas encore reconnu : recharge la page (F5) pour relever les prix.', where); return false; }
+    if (!todo.length) { setStatus('Tous les prix sont déjà à jour.', where); return true; }
     startJob('Prix : 0 / ' + todo.length, where);
     if (poolOn()) {
       await poolPrefetch(todo.map(x => x[0]));
       todo = todo.filter(([id, r]) => priceDue(id, r));
-      if (!todo.length) return endJob('Tous les prix étaient dans le pool du groupe.', where);
+      if (!todo.length) { endJob('Tous les prix étaient dans le pool du groupe.', where); return true; }
     }
     let i = 0;
     try {
@@ -2511,8 +2603,10 @@
         if (i < todo.length) await pace();
       }
       endJob(job.stop ? 'Arrêté à ' + i + ' / ' + todo.length + '.' : 'Prix relevés pour ' + plural(i, one, many) + '.', where);
+      return !job.stop;
     } catch (e) {
       endJob('Arrêt sur erreur (' + e.message + ') après ' + i + ' / ' + todo.length + '.', where);
+      return false;
     }
   }
   function refreshWish() {
@@ -2555,12 +2649,12 @@
     db.pulls.push({ t: Date.now(), k: String(kind || '').slice(0, 20), c: cards.map(c => [c.cardId, c.title, c.rarity]) });
     if (db.pulls.length > MAX_PULLS) db.pulls.splice(0, db.pulls.length - MAX_PULLS);
     saveDb();
-    const pro = proState();
-    if (pro !== false && db.autoPull !== false) {
+    const can = canFetchPrices();
+    if (db.autoPull !== false) {
       pull.cards = cards;
       pull.open = true;
-      pull.note = pro === true ? '' : 'Statut Pro pas encore détecté : recharge la page (F5) pour activer les prix.';
-      if (pro === true) {
+      pull.note = can ? '' : 'Compte pas encore reconnu : recharge la page (F5) pour activer les prix.';
+      if (can) {
         const now = Date.now();
         for (const c of cards) {
           if (priceDue(c.cardId, c.rarity) && !pull.queue.some(q => q[0] === c.cardId && q[1] === c.rarity)) pull.queue.push([c.cardId, c.rarity]);
@@ -2592,12 +2686,12 @@
     pull.busy = false;
     renderPull();
   }
-  // Cartes où tu enchéris : leur prix est relevé tout seul quand le site affiche Mes enchères (compte Pro),
+  // Cartes où tu enchéris : leur prix est relevé tout seul quand le site affiche Mes enchères,
   // une carte à la fois, à peu près au rythme d'après un booster. Rien n'est redemandé avant 24 h.
   // Si un autre relevé tourne ou si le site refuse ou freine, on s'arrête là : la suite viendra au prochain passage.
   const bidQ = { queue: [], busy: false };
   function queueBidPrices(list) {
-    if (proState() !== true || !ov('bidAuto')) return;
+    if (!canFetchPrices() || !ov('bidAuto')) return;
     for (const a of list) {
       const id = a && a.card_id;
       const r = rarOf(a.snapshot_rarity || (a.card && a.card.rarity));
@@ -3174,10 +3268,10 @@
     for (const b of [e.updAll, e.updAll2]) if (b) b.disabled = job.running;
     syncCardButtons();
     if (!e.load) return;
-    const pro = proState();
+    const can = canFetchPrices();
     e.load.disabled = e.scan.disabled = e.mine.disabled = e.mine2.disabled = e.wishLoad.disabled = e.tradeLoad.disabled = job.running;
     const wp = wishPricesToFetch().length;
-    e.wishPrices.disabled = job.running || pro !== true || !wp;
+    e.wishPrices.disabled = job.running || !can || !wp;
     e.wishPrices.textContent = 'Relever les valeurs (' + wp + ')';
     const sc = db.collectionAt ? sellCompToSearch().length : 0;
     e.sellComp.disabled = job.running || !sc;
@@ -3202,18 +3296,13 @@
     e.stop4.disabled = !job.running;
     // Le bouton Stop n'apparaît que pendant un traitement.
     for (const s of [e.stop, e.stop2, e.stop3, e.stop4]) if (s) s.style.display = job.running ? '' : 'none';
-    e.fill.disabled = job.running || pro !== true;
+    e.fill.disabled = job.running || !can;
     e.stop.disabled = !job.running;
-    e.fill.textContent = pro === true ? 'Relever les prix (' + missingPairs().length + ')' : 'Relever les prix (Pro)';
+    e.fill.textContent = 'Relever les prix (' + (can ? missingPairs().length : 0) + ')';
     const nf = finalsToFetch().length;
     e.finals.textContent = 'Relever les prix finaux' + (nf ? ' (' + nf + ')' : '');
     e.finals.disabled = job.running || !nf;
-    e.pro.textContent = pro === true ? ''
-      : pro === false
-        ? 'Compte non Pro : le site ne donne pas l’historique des ventes. Pour avoir des prix quand même : « Relever les fins d’enchères », ' +
-          'puis quelques minutes plus tard « Relever les prix finaux », qui lit le prix exact de chaque enchère terminée. ' +
-          'S’y ajoutent tes propres ventes et achats, et les prix que tes amis partagent, y compris leur historique Pro. Refais-le de temps en temps : les prix s’accumulent.'
-        : 'Statut Pro pas encore détecté : recharge la page (F5).';
+    e.pro.textContent = can ? '' : 'Compte pas encore reconnu : recharge la page (F5).';
   }
 
   function mount() {
@@ -3238,7 +3327,7 @@
       'Relit toute ta collection sur le site (une dizaine de requêtes). Retire aussi les cartes vendues, données ou défaussées depuis la dernière fois.',
       loadCollection, 'pri');
     e.fill = btn('Relever les prix',
-      'Compte Pro. Lit les 5 dernières ventes, à sa rareté, de chaque carte des raretés cochées qui n’a pas de prix récent (moins de 24 h). ' +
+      'Lit les 5 dernières ventes, à sa rareté, de chaque carte des raretés cochées qui n’a pas de prix récent (moins de 24 h). ' +
       'C’est ce qui remplit la colonne « Valeur ». Une carte par seconde.', fillPrices);
     e.colSearch = btn('Trouver les annonces',
       'Cherche sur le marché qui vend en ce moment tes cartes des raretés cochées, et à quel prix. Remplit la colonne « En vente à ». ' +
@@ -3248,7 +3337,7 @@
     e.scan = btn('Relever les fins d’enchères',
       'Lit les 500 enchères du marché qui se terminent bientôt, toutes cartes confondues (pas seulement les tiennes), ' +
       'plus 150 de chaque rareté L, UR et SR, qui sinon se perdent dans la masse. ' +
-      'À leur fin, leur dernière offre devient un « prix observé » : utile sans compte Pro, et pour le niveau de prix par rareté.',
+      'À leur fin, leur dernière offre devient un « prix observé » : il complète les 5 dernières ventes que donne le site, et sert au niveau de prix par rareté.',
       () => scanMarket(MARKET_PAGES, 'status', 'ending_soon', RARE_PAGES));
     e.finals = btn('Relever les prix finaux',
       'Pour tous les comptes, Pro ou non. Relit la page de chaque enchère suivie qui vient de finir, celle qu’on ouvre en cliquant sur une annonce : ' +
@@ -3280,7 +3369,7 @@
     e.wishRefresh = btn('Rafraîchir les annonces',
       'Relit seulement les annonces déjà trouvées, pour voir si le prix a monté ou si l’enchère est finie. À faire juste avant d’enchérir.', refreshWish);
     e.wishPrices = btn('Relever les valeurs',
-      'Compte Pro. Lit la valeur médiane des souhaits actuellement en vente : c’est elle qui permet de repérer les bonnes affaires.',
+      'Lit la valeur médiane des souhaits actuellement en vente : c’est elle qui permet de repérer les bonnes affaires.',
       () => fetchPricesFor(wishPricesToFetch(), 'wishStatus', 'souhait en vente', 'souhaits en vente'));
     e.wishFold = btn('Tout déplier', 'Ouvre ou ferme le détail de toutes les cartes qui ont plusieurs annonces.',
       () => { ui.wishAll = !ui.wishAll; ui.wishOpen.clear(); renderWish(); });
@@ -3288,7 +3377,7 @@
 
     e.tradeLoad = btn('Recharger mes échanges', 'Relit tes échanges sur la page Échanges du site (une seule requête).', loadTrades, 'pri');
     e.tradeFill = btn('Relever les prix',
-      'Compte Pro. Lit la valeur des cartes passées dans tes échanges. Celles que tu as données ne sont plus dans ta collection : ' +
+      'Lit la valeur des cartes passées dans tes échanges. Celles que tu as données ne sont plus dans ta collection : ' +
       'l’onglet Collection ne relève jamais leur prix.', fillTradePrices);
     e.stop3 = stopBtn();
 
@@ -3310,7 +3399,7 @@
       h('div', { class: 'tools' },
         group('Ma collection', null, e.load, e.fill),
         group('Annonces du marché sur mes cartes', null, e.colSearch, e.colRefresh),
-        group('Prix observés', 'Pour tous, avec ou sans compte Pro. 1. « Relever les fins d’enchères » suit les enchères sur le point de finir. ' +
+        group('Prix observés', 'Pour tous les comptes. 1. « Relever les fins d’enchères » suit les enchères sur le point de finir. ' +
           '2. Quelques minutes plus tard, « Relever les prix finaux » lit le prix exact de chacune.', e.scan, e.finals),
         group('Raretés concernées', '« Relever les prix » et « Trouver les annonces » ne traitent que les raretés cochées ici.', checks),
         group('Étiquetage par lots', 'Ajoute une de tes étiquettes à un lot de cartes choisi par une règle. Rien ne part sans ton clic (deux fois), ' +
@@ -3470,12 +3559,11 @@
           ovChk('dim', 'Griser les annonces trop chères', 'Rend pâles les annonces qui atteignent déjà la valeur de la carte. Elles redeviennent normales au survol. Tes propres enchères ne sont jamais grisées.')),
         group('Échanges', null,
           ovChk('trade', 'Valeur des échanges sur la page Échanges', 'Sous chaque échange, et en haut de la fenêtre « Échanger avec… » pendant que tu choisis les cartes : valeur donnée, valeur reçue, écart.')),
-        group('Relevés automatiques (compte Pro)', 'Ces relevés se font tout seuls, une carte à la fois, et jamais deux fois la même carte en 24 h.',
+        group('Relevés automatiques', 'Ces relevés se font tout seuls, une carte à la fois, et jamais deux fois la même carte en 24 h.',
           chk('Prix des cartes tirées après chaque booster', 'Après chaque paquet que tu ouvres toi-même, un petit panneau donne la valeur de chaque carte tirée.',
             db.autoPull !== false, ev => { db.autoPull = ev.target.checked; saveDb(); }),
           ovChk('bidAuto', 'Prix des cartes de Mes enchères', 'Quand le site affiche l’onglet Mes enchères, relève le prix des cartes où tu enchéris qui n’en ont pas de récent.')),
-        group('Mise à jour automatique (tous comptes)', 'Garde à jour la valeur de ta collection et les prix de tes souhaits, sans cliquer bouton après bouton. ' +
-          'Sans compte Pro, les prix viennent du pool et des fins d’enchères.',
+        group('Mise à jour automatique (tous comptes)', 'Garde à jour la valeur de ta collection et les prix de tes souhaits, sans cliquer bouton après bouton.',
           ovChk('autoObs', 'Mise à jour automatique',
             'Toutes les 30 min, tant qu’un onglet du site est ouvert (même en arrière-plan) : relit ta collection et ta liste de souhaits une fois par jour, ' +
             'vérifie les souhaits que le site signale en vente, puis relit les prix à refaire en commençant par ceux qui pèsent le plus dans ta valeur ' +
@@ -3897,8 +3985,8 @@
       .map(([id, t]) => ({ id, ...t, vg: cardsValue(t.g) + t.wg, vr: cardsValue(t.r) + t.wr, ug: unknown(t.g), ur: unknown(t.r) }))
       .sort(byDateDesc);
     const toPrice = tradeCardsToPrice().length;
-    e.tradeFill.disabled = job.running || proState() !== true || !toPrice;
-    e.tradeFill.textContent = proState() === true ? 'Relever les prix (' + toPrice + ')' : 'Relever les prix (Pro)';
+    e.tradeFill.disabled = job.running || !canFetchPrices() || !toPrice;
+    e.tradeFill.textContent = 'Relever les prix (' + toPrice + ')';
     e.stop3.disabled = !job.running;
     if (!T.length) {
       e.tradeTiles.replaceChildren();
@@ -4316,7 +4404,7 @@
       tile('Sans vente connue', fmt(rows.length - known),
         'comptées à 1 ₩ · ' + (total ? fmt(100 * estTotal / total) : '0') + ' % de la valeur totale',
         'Cartes qui n’ont jamais été vendues aux enchères à notre connaissance. Elles comptent pour 1 ₩, ce que rapporte la défausse.'),
-      proState() === true ? tile('Pas encore analysées', fmt(rows.filter(r => !db.prices[r.cardId]).length), null,
+      canFetchPrices() ? tile('Pas encore analysées', fmt(rows.filter(r => !db.prices[r.cardId]).length), null,
         'Cartes dont le script n’a jamais demandé l’historique des ventes. « Relever les prix » s’en occupe.') : null
     ].filter(Boolean) : [
       tile('Cartes', fmt(nCards)),
@@ -4437,7 +4525,7 @@
         h('button', { class: 'more', onclick: () => { setTab('col'); loadCollection(); } }, 'recharger')));
     }
     const noPrice = rowsCache.filter(r => ['L', 'UR', 'SR'].includes(r.rarity) && !db.prices[r.cardId]).length;
-    if (noPrice && proState() === true) {
+    if (noPrice && canFetchPrices()) {
       warns.push(line(h('span', { class: 'grow wrap' }, plural(noPrice, 'carte L, UR ou SR sans prix relevé', 'cartes L, UR ou SR sans prix relevé') +
         ' : elles comptent pour 1 ₩ et n’apparaissent pas dans À vendre.'),
         h('button', { class: 'more', onclick: () => setTab('col') }, 'compléter')));
@@ -4561,7 +4649,7 @@
   function syncCardButtons() {
     const e = ui.el;
     if (e.cardSearch) e.cardSearch.disabled = job.running || !ui.card || ui.card.title === '?';
-    if (e.cardPro) e.cardPro.disabled = job.running;
+    if (e.cardFetch) e.cardFetch.disabled = job.running;
   }
   async function cardSearchNow() {
     const c = ui.card;
@@ -4569,10 +4657,27 @@
     await marketSearch([[c.id, c.title]], 'Annonces', 'sans annonce', 'cardStatus');
     if (ui.card && ui.card.id === c.id) renderCard();
   }
-  async function cardProNow() {
+  // « Relever les ventes » : les 5 dernières ventes à cette rareté, puis l'historique des prix par semaine. Deux requêtes, sur ton clic.
+  async function cardFetchNow() {
     const c = ui.card;
     if (!c || job.running) return;
-    await fetchPricesFor([[c.id, c.rarity]], 'cardStatus', 'carte', 'cartes');
+    // L'historique ne part qu'après un relevé des ventes sans erreur ni arrêt, et jamais pendant la pause imposée par le site.
+    const ok = await fetchPricesFor([[c.id, c.rarity]], 'cardStatus', 'carte', 'cartes');
+    const before = ui.el.cardStatus ? String(ui.el.cardStatus.textContent || '') : '';
+    if (ok && !job.running && !job.stop && !(num(db.autoPauseUntil) > Date.now())) {
+      startJob('Historique des prix…', 'cardStatus');
+      const say = msg => (before ? before + ' ' : '') + msg;
+      try {
+        await pace();
+        if (job.stop) endJob(say('Historique non relevé : arrêté.'), 'cardStatus');
+        else {
+          ingestHistory(c.id, await getJSON('/api/marketplace/cards/' + encodeURIComponent(c.id) + '/price-history'));
+          endJob(say('Historique des prix relevé.'), 'cardStatus');
+        }
+      } catch (e) {
+        endJob(say('Historique indisponible (' + ((e && e.message) || 'erreur') + ').'), 'cardStatus');
+      }
+    }
     if (ui.card && ui.card.id === c.id) renderCard();
   }
   // ----- courbe de la fiche : SVG fait main, axe des dates réel (les ventes ne sont pas régulièrement espacées) -----
@@ -4605,19 +4710,25 @@
     return out.sort((x, y) => x.t - y.t);
   }
   const POINT_KIND = { pro: 'Pro', exact: 'exacte', prov: 'provisoire', own: 'toi', s: 'ta vente', b: 'ton achat' };
-  // points : [{ t (ms), p, k: pro|exact|prov|own }] ; marks : [{ t, p, k: s|b }] ; lines : { med7, medBase } (null sous les minimums).
-  function cardChart(points, marks, period, now, lines) {
+  // points : [{ t (ms), p, k: pro|exact|prov|own }] ; marks : [{ t, p, k: s|b }] ; lines : { med7, medBase } (null sous les minimums) ;
+  // weeks : les semaines de l'historique du site à cette rareté ([début, moyenne, min, max, ventes]), ou rien.
+  function cardChart(points, marks, period, now, lines, weeks) {
     const W = 760, H = 220, L = 54, R = 12, T = 10, B = 26;
     const per = CHART_PERIODS.find(x => x[0] === period) || CHART_PERIODS[1];
-    const x0 = per[2] ? now - per[2] * DAY : Math.min(now - DAY, ...points.concat(marks).map(pt => pt.t));
+    // Chaque semaine est placée en son milieu (ramené à maintenant pour la semaine en cours).
+    const wk = (Array.isArray(weeks) ? weeks : [])
+      .filter(w => Array.isArray(w) && Number.isFinite(Date.parse(w[0] + 'T00:00:00Z')) && num(w[1]) > 0)
+      .map(w => { const t = Date.parse(w[0] + 'T00:00:00Z'); return { t, mid: Math.min(t + 3.5 * DAY, now), avg: num(w[1]), min: num(w[2]) || num(w[1]), max: num(w[3]) || num(w[1]), n: num(w[4]) }; })
+      .sort((a, b) => a.t - b.t);
+    const x0 = per[2] ? now - per[2] * DAY : Math.min(now - DAY, ...points.concat(marks).map(pt => pt.t), ...wk.map(w => w.t));
     const inRange = pt => pt.t >= x0 && pt.t <= now;
-    const pts = points.filter(inRange), mks = marks.filter(inRange);
+    const pts = points.filter(inRange), mks = marks.filter(inRange), wks = wk.filter(w => w.mid >= x0 && w.t <= now);
     const svg = s('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', role: 'img' });
-    if (!pts.length && !mks.length) {
+    if (!pts.length && !mks.length && !wks.length) {
       svg.append(s('text', { x: W / 2, y: H / 2, 'text-anchor': 'middle' }, 'aucune vente sur cette période'));
       return svg;
     }
-    const [lo, hi] = chartBounds(pts.concat(mks).map(pt => pt.p));
+    const [lo, hi] = chartBounds(pts.concat(mks).map(pt => pt.p).concat(wks.map(w => w.avg)));
     const X = t => L + (t - x0) / Math.max(1, now - x0) * (W - L - R);
     // Une vente hors bornes est dessinée au bord, en rouge.
     const Y = p => T + (hi - Math.min(hi, Math.max(lo, p))) / (hi - lo) * (H - T - B);
@@ -4638,6 +4749,15 @@
     };
     seg(now - 37 * DAY, now - 7 * DAY, lines && lines.medBase, true);
     seg(now - 7 * DAY, now, lines && lines.med7, false);
+    // L'historique du site, sous les ventes : une barre du minimum au maximum de chaque semaine, et la ligne de ses moyennes.
+    for (const w of wks) {
+      svg.append(s('line', { x1: X(w.mid), x2: X(w.mid), y1: Y(w.max), y2: Y(w.min), stroke: '#4b5563', 'stroke-width': 4, 'stroke-linecap': 'round', opacity: 0.7 },
+        s('title', null, 'semaine du ' + fmtDate(w.t) + ' : moyenne ' + fmt(Math.round(w.avg)) + ' ₩, de ' + fmt(w.min) + ' à ' + fmt(w.max) + ' ₩, ' +
+          plural(w.n, 'vente', 'ventes') + ' (historique du site)')));
+    }
+    if (wks.length > 1) {
+      svg.append(s('polyline', { points: wks.map(w => X(w.mid) + ',' + Y(w.avg)).join(' '), fill: 'none', stroke: '#cbd5e1', 'stroke-width': 1.6 }));
+    }
     // Une vente Pro, exacte ou à toi : point plein ; un prix provisoire, qui n'est qu'un minimum : point creux.
     for (const pt of pts) {
       const color = pt.p < lo || pt.p > hi ? '#f87171' : '#34d399';
@@ -4659,7 +4779,7 @@
     if (!c || !e.cardHead || !e.cardBody) return;
     const now = Date.now(), id = c.id, rarity = c.rarity;
     const src = cardSource(id, rarity), price = priceOf(id, rarity);
-    const rars = cardRarities(id);
+    const rars = [...new Set(cardRarities(id).concat(histRarities(id)))];
     if (rarOk(rarity) && !rars.includes(rarity)) rars.push(rarity);
     rars.sort((a, b) => rarOrder(a) - rarOrder(b));
     const pick = r => { c.rarity = r; c.period = null; c.all = false; renderCard(); };
@@ -4672,11 +4792,12 @@
     fillEl(e.cardHead, h('button', { class: 'b', onclick: closeCard }, '← Retour'), h('h2', null, c.title), rars.map(rarBtn), h('span', null, value));
     e.cardSearch = h('button', { class: 'b', onclick: cardSearchNow,
       'data-tip': 'Cherche sur le marché qui vend cette carte en ce moment, et à quel prix. Une requête, par le nom de la carte.' }, 'Chercher les annonces de cette carte');
-    e.cardPro = proState() === true ? h('button', { class: 'b', onclick: cardProNow,
-      'data-tip': 'Compte Pro. Relit l’historique des ventes de cette carte à cette rareté. Une requête.' }, 'Relever l’historique Pro') : null;
+    e.cardFetch = canFetchPrices() ? h('button', { class: 'b', onclick: cardFetchNow,
+      'data-tip': 'Relit les 5 dernières ventes de cette carte à cette rareté, puis son historique des prix par semaine. Deux requêtes.' }, 'Relever les ventes') : null;
     syncCardButtons();
-    const actions = h('div', { class: 'tools' }, e.cardSearch, e.cardPro);
-    if (!src.sales.length) {
+    const actions = h('div', { class: 'tools' }, e.cardSearch, e.cardFetch);
+    const weeks = histWeeks(id, rarity);
+    if (!src.sales.length && !weeks) {
       const others = rars.filter(r => r !== rarity);
       fillEl(e.cardBody,
         h('div', { class: 'empty' }, 'Aucune vente connue' + (rarOk(rarity) ? ' à cette rareté' : '') + '.'),
@@ -4686,7 +4807,7 @@
     }
     const ask = askOf(id, rarity);
     const seenAt = db.wishSeen[id] || (ask && ask.t) || 0;
-    const cues = cardCues(src.sales, now, { list: ask ? ask.list : [], rarity, seenAt });
+    const cues = cardCues(src.sales, now, { list: ask ? ask.list : [], rarity, seenAt }, weeks);
     const line = (label, kids) => h('div', { class: 'cue' }, h('b', null, label + ' :'), ' ', kids);
     const rows = cueLines(cues).map(l => line(l.label, l.text));
     // Pour une carte à toi : ce qu'elle t'a coûté (exemplaire non shiny à cette rareté) et ce que la vendre à sa valeur rapporterait.
@@ -4710,7 +4831,8 @@
       rows.push(line('Face à l’annonce', kids));
     }
     const kindOf = s => (src.kind === 'pro' ? 'Pro' : src.kind === 'own' ? 'toi' : s.x ? 'exacte' : 'provisoire');
-    const table = sortTable('card', [
+    // Sans vente connue mais avec l'historique du site : les repères et la courbe, et cette note à la place de la liste.
+    const table = !src.sales.length ? h('div', { class: 'empty' }, 'Aucune vente connue à cette rareté.') : sortTable('card', [
       { t: 'Date', left: true, get: s => isoT(s.t), cell: s => fmtDate(s.t) },
       { t: 'Prix', get: s => s.p, cell: s => fmt(s.p) + ' ₩' },
       { t: 'Rareté', asc: true, get: s => rarOrder(s.r), cell: s => (rarOk(s.r) ? rarBadge(s.r) : '—') },
@@ -4723,9 +4845,12 @@
     const points = src.sales.map(x => ({ t: Math.min(Date.parse(x.t), now), p: x.p, k: ptKind(x) })).filter(pt => Number.isFinite(pt.t));
     const periods = h('div', { class: 'periods' }, CHART_PERIODS.map(([k, label]) =>
       h('button', { class: 'b' + (k === period ? ' on' : ''), onclick: () => { c.period = k; renderCard(); } }, label)));
-    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, { med7: cues.moment.med7, medBase: cues.moment.medBase }));
+    // Les médianes du repère 1 ne sont dessinées que si le prix du moment vient des ventes (pas des moyennes du site).
+    const lines = cues.moment.src === 'sales' ? { med7: cues.moment.med7, medBase: cues.moment.medBase } : { med7: null, medBase: null };
+    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, lines, weeks));
     const legend = h('div', { class: 'note' }, '● vente Pro, exacte ou à toi · ○ prix provisoire, un minimum · ◆ bleu : ta vente, ◆ orange : ton achat · ' +
-      'pointillés : médiane des 30 jours d’avant, trait orange : celle des 7 derniers jours. Survole un point pour le détail.');
+      'pointillés : médiane des 30 jours d’avant, trait orange : celle des 7 derniers jours.' +
+      (weeks ? ' Ligne grise : moyenne par semaine du site, barres : son minimum et son maximum.' : '') + ' Survole un point pour le détail.');
     fillEl(e.cardBody, h('div', { class: 'cues' }, rows), periods, chart, legend, actions, table, more);
   }
 
@@ -4744,8 +4869,7 @@
     if (!showPrices()) {
       e.sellInfo.textContent = '';
       e.sellTable.replaceChildren(h('div', { class: 'empty' },
-        'Aucun prix connu pour l’instant. Avec un compte Pro, complète les prix dans l’onglet Collection. ' +
-        'Sans compte Pro, ouvre la page Marché du site : tes propres ventes et achats serviront de prix.'));
+        'Aucun prix connu pour l’instant : complète les prix dans l’onglet Collection, avec « Relever les prix ».'));
       return;
     }
     const list = sellList();
@@ -5143,13 +5267,14 @@
   // plus récente) ou au bout de 10 minutes, et pas à chaque rafraîchissement du panneau.
   const cueCache = new Map();
   function cuesOf(cardId, rarity) {
-    const src = cardSource(cardId, rarity);
-    if (!src.sales.length) return null;
-    const key = cardId + '|' + (rarity || ''), sig = src.kind + '|' + src.sales.length + '|' + src.sales[0].t;
+    const src = cardSource(cardId, rarity), weeks = histWeeks(cardId, rarity);
+    if (!src.sales.length && !weeks) return null;
+    const key = cardId + '|' + (rarity || ''), h = db.hist[cardId];
+    const sig = src.kind + '|' + src.sales.length + '|' + (src.sales.length ? src.sales[0].t : '') + '|' + (isObj(h) ? num(h.at) : 0);
     const now = Date.now(), hit = cueCache.get(key);
     if (hit && hit.sig === sig && now < hit.until) return hit.cues;
     if (cueCache.size > 2000) cueCache.clear();
-    const cues = cardCues(src.sales, now, null);
+    const cues = cardCues(src.sales, now, null, weeks);
     // 10 minutes, plus jusqu'à 2 minutes au hasard : les cartes d'une même page ne se recalculent pas toutes au même moment.
     cueCache.set(key, { sig, until: now + 6e5 + Math.floor(Math.random() * 12e4), cues });
     return cues;
@@ -5163,9 +5288,12 @@
     const have = ov('have') ? mine[cardId] : null;
     const lines = [];
     let text, border = '#6b7280', bg = 'rgba(10,15,13,.85)', flag = null;
+    // Les repères 1 et 2 de la fiche, en court, quand l'un des deux est calculable (par les ventes, ou par l'historique du site).
+    const short = cueShort(cuesOf(cardId, cueRar));
     if (!p.n) {
       text = '1 ₩';
       lines.push('Aucune vente connue : la carte vaut la défausse, 1 ₩.');
+      if (short) lines.push('Repères : ' + short);
     } else {
       const med = Math.max(p.med, DISCARD), mx = maxBid(p);
       text = (p.rel.level === 0 ? '≈ ' : '') + fmt(Math.round(med)) + ' ₩';
@@ -5173,8 +5301,6 @@
       lines.push('Valeur : ' + fmt(Math.round(med)) + ' ₩ (' + (p.basis === 'recent' ? '7 derniers jours, ' : 'depuis toujours, ') + plural(p.n, 'vente', 'ventes') + (p.obs ? (p.exact ? ' relevées sur le marché' : ' observées') : '') + (p.by ? ', relevé partagé par ' + p.by : '') + (p.mixed ? ', ventes d’autres raretés' : p.r ? ', en ' + p.r : '') + ', fiabilité ' + REL[p.rel.level].toLowerCase() + ')');
       const other = otherValue(p);
       if (other) lines.push(other);
-      // Les repères 1 et 2 de la fiche, en court, quand l'un des deux est calculable.
-      const short = cueShort(cuesOf(cardId, cueRar));
       if (short) lines.push('Repères : ' + short);
       if (au && au.a != null) {
         lines.push('Prix de l’annonce : ' + fmt(au.a) + ' ₩' + (au.m ? ' (ton offre, tu mènes)' : au.bid ? ' (quelqu’un est passé devant toi)' : au.b ? ' (offre déjà faite)' : ' (mise de départ)'));

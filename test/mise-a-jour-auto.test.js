@@ -159,9 +159,16 @@ test('passage : liste de souhaits de plus de 24 h relue', async () => {
   assert.deepEqual(Object.keys(env.t.db.wish), ['W1']);
 });
 
-test('passage : compte non Pro, aucune requête /sales', async () => {
+test('passage : compte non Pro, les prix sont relevés aussi', async () => {
   const env = siteEnv();
   env.t.db.pro = { U1: false };
+  env.t.db.cards = manyCards(5);
+  await env.t.autoRun();
+  assert.equal(env.sales().length, 5);
+});
+test('passage : compte pas encore reconnu, aucune requête /sales', async () => {
+  const env = siteEnv();
+  env.t.db.userId = '';
   env.t.db.cards = manyCards(5);
   await env.t.autoRun();
   assert.equal(env.sales().length, 0);
@@ -207,12 +214,12 @@ test('bouton : Stop arrête', async () => {
   assert.equal(env.t.job.running, false);
 });
 
-test('bouton : compte non Pro, aucune requête /sales', async () => {
+test('bouton : compte non Pro, les prix sont relevés aussi', async () => {
   const env = siteEnv();
   env.t.db.pro = { U1: false };
   env.t.db.cards = manyCards(5);
   await env.t.updateAll();
-  assert.equal(env.sales().length, 0);
+  assert.equal(env.sales().length, 5);
 });
 
 test('ligne d’état', () => {
@@ -222,7 +229,7 @@ test('ligne d’état', () => {
   t.db.cards = Object.fromEntries(Array.from({ length: 420 }, (_, i) => ['e' + i, card('K' + i, 'C')]));
   t.db.autoLast = { at: Date.now() - 12 * 6e4, prices: 34, alerts: 5, finals: 18 };
   assert.match(t.autoLine(), /^Dernière mise à jour automatique : il y a 12 min · 34 prix relus, 5 annonces vérifiées, 18 prix finaux\. Encore 420 cartes à relire\.$/);
-  t.db.pro = { U1: false };
+  t.db.userId = '';
   assert.match(t.autoLine(), /^Dernière mise à jour automatique : il y a 12 min · 34 prix relus, 5 annonces vérifiées, 18 prix finaux\.$/);
 });
 
