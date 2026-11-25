@@ -165,3 +165,22 @@ test('deux onglets : A change C1, B change C2, les deux restent ; chacun reçoit
   assert.deepEqual(plain(a.t.db.obsSales.C2), [{ p: 2, t: T, g: 0 }], 'A a reçu C2');
   assert.deepEqual([a.idbStats.reads, b.idbStats.reads], reads, 'sans relecture complète');
 });
+
+test('un onglet d’avant la 1.32 prévient sans liste de clés : toute la base est relue, et ses cartes fusionnées', async () => {
+  const data = new Map(), bus = fakeBus();
+  const a = load({ idb: { data, bus } });
+  await a.ready;
+  a.t.db.obsSales.C1 = [{ p: 1, t: T, g: 0 }];
+  a.t.saveDb();
+  await a.t.store.idle();
+  // L'ancien onglet réécrit wmstats.v1 en entier, avec une carte dans obsSales, puis prévient sans dire quelles clés.
+  const old = JSON.parse(data.get(KEY));
+  old.obsSales = { C2: [{ p: 2, t: T, g: 0 }] };
+  data.set(KEY, JSON.stringify(old));
+  const reads = a.idbStats.reads;
+  for (const m of bus.members) if (m.onmessage) m.onmessage({ data: { saved: 'vieil-onglet' } });
+  for (let i = 0; i < 30; i++) await tick();
+  assert.ok(a.idbStats.reads > reads, 'toute la base est relue');
+  assert.deepEqual(plain(a.t.db.obsSales.C2), [{ p: 2, t: T, g: 0 }], 'la carte de l’ancien onglet arrive');
+  assert.deepEqual(plain(a.t.db.obsSales.C1), [{ p: 1, t: T, g: 0 }], 'et les nôtres restent');
+});
