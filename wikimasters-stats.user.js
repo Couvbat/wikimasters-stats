@@ -4732,7 +4732,9 @@
     const x0 = per[2] ? now - per[2] * DAY : Math.min(now - DAY, ...points.concat(marks).map(pt => pt.t), ...wk.map(w => w.t));
     const inRange = pt => pt.t >= x0 && pt.t <= now;
     const pts = points.filter(inRange), mks = marks.filter(inRange), wks = wk.filter(w => w.mid >= x0 && w.t <= now);
-    const svg = s('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', role: 'img' });
+    // Jamais affichée plus large que sa largeur de dessin : au-delà de 1 600 px de place, elle n'est plus étirée (texte et hauteur
+    // garderaient sinon leur agrandissement sur un très grand écran).
+    const svg = s('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', role: 'img', style: 'max-width:' + W + 'px' });
     if (!pts.length && !mks.length && !wks.length) {
       svg.append(s('text', { x: W / 2, y: H / 2, 'text-anchor': 'middle' }, 'aucune vente sur cette période'));
       return svg;

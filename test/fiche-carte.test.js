@@ -424,3 +424,10 @@ test('fiche : la courbe prend la largeur du corps de la fiche', () => {
   t.renderCard();
   assert.equal(find(out.body, n => n.tagName === 'svg')[0].attrs.viewBox, '0 0 1200 220');
 });
+
+test('courbe : jamais affichée plus large que sa largeur de dessin, même sur un très grand écran', () => {
+  const { t } = load();
+  const pts = [{ t: NOW - DAY, p: 120, k: 'pro' }];
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 5000).attrs.style, 'max-width:1600px');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 1200).attrs.style, 'max-width:1200px');
+});
