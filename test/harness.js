@@ -19,7 +19,7 @@ const EXPOSE = [
   'ingestWish', 'profileBody', 'poolSendProfile', 'poolRemoveProfile', 'setProfileShare', 'applyProfiles', 'poolPullProfiles',
   'keepAll', 'COLS', 'obsCardsMax', 'dropProvisional', 'applyFeedPage', 'feedOn', 'poolFeed', 'poolLine',
   'cardSource', 'cardRarities', 'cardCues', 'cueLines', 'cueShort', 'openCard', 'closeCard', 'renderCard', 'setTab', 'toggle', 'syncButtons',
-  'chartBounds', 'defaultPeriod', 'cardMarks', 'cardChart', 'badgeClick', 'tipData', 'badgeKey', 'fetchSales', 'tradeCardsToPrice', 'queueBidPrices', 'onPull', 'fetchPricesFor', 'ingestHistory', 'cardFetchNow', 'histWeeks', 'chartLayout', 'chartHoverAt'
+  'chartBounds', 'defaultPeriod', 'cardMarks', 'cardChart', 'badgeClick', 'tipData', 'badgeKey', 'fetchSales', 'tradeCardsToPrice', 'queueBidPrices', 'onPull', 'fetchPricesFor', 'ingestHistory', 'cardFetchNow', 'histWeeks', 'chartLayout', 'chartHoverAt', 'refresh'
 ];
 const CODE = SRC.slice(0, END) +
   'window.__t = { get db() { return db; }, set db(v) { db = v; }, ' + EXPOSE.map(k => k + ': typeof ' + k + " !== 'undefined' ? " + k + ' : undefined').join(', ') + ' };\n' +
@@ -119,6 +119,10 @@ const reply = (body, status = 200) => { const r = { ok: status >= 200 && status 
 // storage : contenu du localStorage simulé avant le chargement du script ({ clé: texte }).
 // idb : faux IndexedDB et faux BroadcastChannel (voir fakeIndexedDB) ; sans lui, le navigateur simulé n'en a pas.
 // navigator : navigator simulé (par exemple navigator.locks), absent par défaut.
+// Les écouteurs posés par le script sur window et document sont gardés (sans effet) : fire(cible, type) les appelle.
+function listen(type, f) { ((this._on = this._on || {})[type] = this._on[type] || []).push(f); }
+const fire = (target, type, ev = {}) => { for (const f of (target._on && target._on[type]) || []) f(ev); };
+
 function load({ reject = () => false, fetch = async () => reply({}), fast = false, storage = {}, idb = null, navigator = null, clock = null } = {}) {
   const store = new Map(Object.entries(storage));
   const localStorage = {
@@ -130,8 +134,8 @@ function load({ reject = () => false, fetch = async () => reply({}), fast = fals
   };
   const idbData = idb ? idb.data || new Map() : null, idbStats = { tx: 0 };
   const requests = [];
-  const window = { fetch: async (url, init) => { requests.push(String(url)); return fetch(String(url), init); }, addEventListener() {}, innerWidth: 1000, innerHeight: 800 };
-  const document = { readyState: 'loading', visibilityState: 'visible', addEventListener() {}, createElement: t => new El(t), createElementNS: (n, t) => new El(t) };
+  const window = { fetch: async (url, init) => { requests.push(String(url)); return fetch(String(url), init); }, addEventListener: listen, innerWidth: 1000, innerHeight: 800 };
+  const document = { readyState: 'loading', visibilityState: 'visible', addEventListener: listen, createElement: t => new El(t), createElementNS: (n, t) => new El(t) };
   const ctx = { window, document, localStorage, setInterval: () => 0, clearInterval: () => {}, setTimeout: fast ? (f => setImmediate(f)) : setTimeout, clearTimeout, console, URL, AbortController, Headers,
     location: { href: 'https://www.wiki-masters.com/collection', origin: 'https://www.wiki-masters.com', hash: '', pathname: '/collection' } };
   if (navigator) ctx.navigator = navigator;
@@ -152,4 +156,4 @@ function load({ reject = () => false, fetch = async () => reply({}), fast = fals
 const plain = v => JSON.parse(JSON.stringify(v));
 const fakeFile = text => ({ size: text.length, text: async () => text });
 
-module.exports = { load, reply, plain, fakeFile, fakeBus };
+module.exports = { load, reply, plain, fakeFile, fakeBus, fire };

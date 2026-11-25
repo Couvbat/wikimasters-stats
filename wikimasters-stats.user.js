@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.30.2
+// @version      1.31.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.30.2';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.31.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -161,8 +161,8 @@
     },
     keys: () => (store.mode === 'idb' ? [...store.texts.keys()] : localKeys()),
     size: () => store.keys().reduce((n, k) => n + k.length + (store.get(k) || '').length, 0),
-    // Résolue quand rien n'est en cours d'écriture ni prévu.
-    idle: () => new Promise(r => { idleWaiters.push(r); settleIdle(); })
+    // Résolue quand rien n'est en cours d'écriture ni prévu ; un enregistrement en attente (saveDb) part tout de suite.
+    idle: () => new Promise(r => { idleWaiters.push(r); saveNow(true); settleIdle(); })
   };
   const flushState = { scheduled: false }, idleWaiters = [];
   const settleIdle = () => { if (!store.writing && !flushState.scheduled) while (idleWaiters.length) idleWaiters.shift()(); };
@@ -283,7 +283,7 @@
   });
   // Occupé, l'onglet ne recharge pas ; mais les parties personnelles des autres comptes, qu'il ne modifie pas, sont mises à jour
   // dans le cache : un changement de compte lira la version récente, et ne l'écrasera pas par une ancienne.
-  const mayReload = () => store.mode === 'idb' && store.loaded && !job.running && !store.pending.size && !store.writing;
+  const mayReload = () => store.mode === 'idb' && store.loaded && !job.running && !store.pending.size && !store.writing && !saveState.timer;
   if (channel) channel.onmessage = ev => {
     if (!ev || !ev.data || ev.data.saved === TAB || store.mode !== 'idb' || !store.loaded) return;
     idbReadAll(store.idb).then(texts => {
@@ -311,17 +311,19 @@
   // souhaitées), puis plus du tout ; en dernier recours, l'historique des ventes revient à 10 par rareté (le pool, lui, garde tout).
   // Le relevé reste affiché jusqu'au rechargement de la page : on le retire de l'enregistrement, jamais de la mémoire.
   // Renvoie false si rien n'a pu être enregistré : l'en-tête du panneau le dit alors (saveWarning), au lieu d'un échec silencieux.
-  const saveState = { failed: 0 };
+  const saveState = { failed: 0, timer: 0 };
   const saveWarning = () => (!saveState.failed ? '' : store.mode === 'idb'
     ? ' · ⚠ Enregistrement impossible : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.'
     : ' · ⚠ Navigateur plein : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.');
+  // En mode 'idb', les données (plusieurs Mo quand le pool est reçu) ne sont remises en texte qu'une fois par rafale
+  // d'enregistrements : au plus une fois toutes les SAVE_EVERY ms pendant un relevé, et tout de suite quand l'onglet est caché ou
+  // quitté, avant un changement de compte, et quand on attend la fin des écritures (store.idle).
+  const SAVE_EVERY = 5000;
   function saveDb() {
     // Rien n'est encore chargé : écrire maintenant remplacerait les données par un db vide.
     if (!store.loaded) return true;
     if (store.mode === 'idb') {
-      const { shared, mine } = splitDb();
-      store.set(acctKey(db.userId), JSON.stringify(mine)); // le compte au moment de l'appel (setAccount change db.userId juste après)
-      store.set(KEY, JSON.stringify(shared));
+      if (!saveState.timer) saveState.timer = setTimeout(() => saveNow(true), SAVE_EVERY);
       return true;
     }
     const write = asks => {
@@ -359,6 +361,20 @@
     saveState.failed = Date.now();
     return false;
   }
+  // Enregistre maintenant (mode 'idb' : remet les données en texte ; mode 'local' : comme saveDb). pending : seulement si un
+  // enregistrement est en attente.
+  function saveNow(pending) {
+    if (pending && !saveState.timer) return true;
+    if (saveState.timer) { clearTimeout(saveState.timer); saveState.timer = 0; }
+    if (!store.loaded) return true;
+    if (store.mode !== 'idb') return saveDb();
+    const { shared, mine } = splitDb();
+    store.set(acctKey(db.userId), JSON.stringify(mine)); // le compte au moment de l'appel (setAccount change db.userId juste après)
+    store.set(KEY, JSON.stringify(shared));
+    return true;
+  }
+  window.addEventListener('pagehide', () => saveNow(true));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(true); });
   // Le compte connecté vient d'être reconnu, ou il a changé : on range les données de l'ancien, on charge celles du nouveau.
   // Renvoie true si l'on a changé de compte.
   function setAccount(uid) {
@@ -366,11 +382,11 @@
     if (!db.userId) {
       // Compte pas encore reconnu : les données présentes sont les siennes.
       db.userId = uid;
-      saveDb();
+      saveNow();
       store.del(acctKey(''));
       return false;
     }
-    saveDb();
+    saveNow();
     db.userId = uid;
     const mine = readJson(acctKey(uid));
     applyPersonal(db, isObj(mine) ? mine : personalDefaults());
@@ -1673,11 +1689,17 @@
   // Sources, de la plus sûre à la moins sûre : historique Pro, tes ventes et achats, fins d'enchères observées
   // (par le script ou par un ami). On prend la première qui a des ventes à la bonne rareté ; à défaut, la première qui
   // a des ventes, en le signalant (mixed).
+  // Le prix calculé est gardé tant que rien de ce dont il dépend n'a changé : chaque liste de ventes de la carte (une liste
+  // remplacée ou allongée change sa signature), la date du relevé Pro et celle du relevé du marché.
+  function priceSig(cardId) {
+    const rec = db.prices[cardId], pro = rec && rec.sales, my = db.mySales[cardId], obs = db.obsSales[cardId];
+    return [rec, pro, pro ? pro.length : -1, rec ? rec.at : 0, rec ? rec.by : '', my, my ? my.length : -1, obs, obs ? obs.length : -1, db.market.at];
+  }
   function priceOf(cardId, rarity) {
     const want = rarity === undefined ? rarityOf(cardId) : (rarOk(rarity) ? rarity : '');
-    const key = cardId + '|' + want;
+    const key = cardId + '|' + want, sig = priceSig(cardId);
     const hit = priceCache.get(key);
-    if (hit && Date.now() < hit.until) return hit.out;
+    if (hit && Date.now() < hit.until && hit.sig.every((x, i) => x === sig[i])) return hit.out;
     let until = Infinity;
     const { rec, src } = pickSource(cardId, want);
     let out = null;
@@ -1713,7 +1735,7 @@
       // Relevé Pro reçu d'un ami : son pseudo, pour le dire au survol.
       out.by = (src.kind === 'pro' && rec && rec.by) || '';
     }
-    priceCache.set(key, { out, until });
+    priceCache.set(key, { out, until, sig });
     return out;
   }
   // Valeur d'une carte : médiane de ses ventes, jamais moins que la défausse ; sans vente connue, la défausse.
@@ -3707,7 +3729,8 @@
   let rowsCache = [];
   function refresh() {
     if (!ui.el.host) return;
-    resetPrices();
+    // Les prix gardés savent s'ils sont à refaire (priceOf) ; seule la rareté des cartes (collection, souhaits) est relue.
+    rarMap = null;
     renderPull();
     overlaySoon();
     if (!ui.open) return;
