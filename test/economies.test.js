@@ -1,10 +1,11 @@
-// Tests : économies de calcul (1.31.0). Les données ne sont réécrites qu'une fois par rafale d'enregistrements, et un nouveau
-// dessin du panneau garde les prix déjà calculés des cartes qui n'ont pas changé.
+// Tests : économies de calcul. 1.31.0 : un nouveau dessin du panneau garde les prix déjà calculés des cartes qui n'ont pas changé.
+// 1.32.0 : les données étant rangées carte par carte (test/stockage-cartes.test.js), l'enregistrement repart tout de suite, regroupé
+// par tâche, au lieu d'attendre jusqu'à 5 secondes comme en 1.31.
 // Lancer : node --test test/*.test.js
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { load, reply, fakeBus, fire } = require('./harness');
+const { load, reply, fire } = require('./harness');
 
 const KEY = 'wmstats.v1';
 const DAY = 864e5;
@@ -12,42 +13,35 @@ const tick = () => new Promise(r => setImmediate(r));
 const latest = idbData => JSON.parse(idbData.get(KEY) || '{}').latest;
 
 // ----- enregistrement -----
-test('IndexedDB : plusieurs enregistrements de suite ne réécrivent les données qu’une fois, à la fin de la rafale', async () => {
+test('IndexedDB : enregistré au tour suivant, sans attendre ; plusieurs saveDb dans la même tâche, une seule écriture', async () => {
   const env = load({ idb: {} });
   await env.ready;
   const { t, idbData, idbStats } = env;
   const tx0 = idbStats.tx;
-  for (const v of ['9.9.1', '9.9.2', '9.9.3']) {
-    t.db.latest = v;
-    t.saveDb();
-    await tick();
-  }
-  assert.equal(idbStats.tx, tx0, 'rien n’est encore écrit');
-  await t.store.idle();
-  assert.equal(idbStats.tx, tx0 + 1, 'une seule écriture');
-  assert.equal(latest(idbData), '9.9.3', 'la dernière version des données');
+  t.db.latest = '9.9.1';
+  t.saveDb();
+  t.db.latest = '9.9.2';
+  t.saveDb();
+  for (let i = 0; i < 10; i++) await tick();
+  assert.equal(latest(idbData), '9.9.2', 'écrit sans attendre store.idle');
+  assert.equal(idbStats.tx, tx0 + 1, 'une seule écriture pour la tâche');
 });
 
-test('IndexedDB : l’enregistrement en attente part dès que l’onglet est caché, ou quitté', async () => {
+test('IndexedDB : un enregistrement demandé juste avant que l’onglet soit caché, ou quitté, est remis en texte aussitôt', async () => {
   const env = load({ idb: {} });
   await env.ready;
-  const { t, idbData, document, window } = env;
+  const { t, document, window } = env;
   const encoded = () => JSON.parse(t.store.get(KEY) || '{}').latest; // le texte gardé en mémoire, écrit dans la base juste après
-  const written = async v => { for (let i = 0; i < 50 && latest(idbData) !== v; i++) await tick(); return latest(idbData); };
   t.db.latest = '9.9.4';
   t.saveDb();
-  await tick();
-  assert.notEqual(encoded(), '9.9.4', 'pas encore');
   document.visibilityState = 'hidden';
   fire(document, 'visibilitychange');
-  assert.equal(encoded(), '9.9.4', 'onglet caché : remis en texte tout de suite');
-  assert.equal(await written('9.9.4'), '9.9.4', 'puis écrit');
+  assert.equal(encoded(), '9.9.4', 'onglet caché');
   document.visibilityState = 'visible';
   t.db.latest = '9.9.5';
   t.saveDb();
   fire(window, 'pagehide');
-  assert.equal(encoded(), '9.9.5', 'page quittée : tout de suite');
-  assert.equal(await written('9.9.5'), '9.9.5');
+  assert.equal(encoded(), '9.9.5', 'page quittée (un dernier essai : Chrome ne finit pas toujours cette écriture)');
 });
 
 test('IndexedDB : un changement de compte enregistre d’abord les données de l’ancien compte, telles quelles', async () => {
@@ -61,22 +55,6 @@ test('IndexedDB : un changement de compte enregistre d’abord les données de l
   await t.store.idle();
   assert.deepEqual(Object.keys(JSON.parse(idbData.get(KEY + '.u.U1')).cards), ['x1'], 'la collection de U1 est rangée sous U1');
   assert.deepEqual(Object.keys(JSON.parse(idbData.get(KEY + '.u.U2')).cards), [], 'et pas sous U2');
-});
-
-test('IndexedDB : un autre onglet qui enregistre ne fait pas perdre un enregistrement encore en attente ici', async () => {
-  const data = new Map(), bus = fakeBus();
-  const a = load({ idb: { data, bus } }), b = load({ idb: { data, bus } });
-  await a.ready;
-  await b.ready;
-  a.t.db.pool.url = 'A';
-  a.t.saveDb(); // en attente dans A
-  b.t.db.latest = '9.9.6';
-  b.t.saveDb();
-  await b.t.store.idle(); // B écrit et prévient A
-  for (let i = 0; i < 30; i++) await tick();
-  assert.equal(a.t.db.pool.url, 'A', 'A ne recharge pas par-dessus son changement');
-  await a.t.store.idle();
-  assert.equal(JSON.parse(data.get(KEY)).pool.url, 'A');
 });
 
 // 1.31.1 : une écriture de plus de 10 Mo commencée quand la page se ferme n'a pas le temps de finir (vu dans Chrome). La fin d'un

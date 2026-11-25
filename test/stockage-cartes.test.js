@@ -124,3 +124,44 @@ test('un onglet d’avant la 1.32 a réécrit wmstats.v1 : fusion sans perte', a
   assert.equal(entry(idbData, KEY + '.o.C2').length, 2, 'la fusion est écrite');
   assert.deepEqual(shared(idbData).obsSales, {});
 });
+
+// ----- Tâche 3 : filet de sécurité, autres onglets -----
+const tick = () => new Promise(r => setImmediate(r));
+const { fakeBus } = require('./harness');
+
+test('filet de sécurité : une liste changée sur place, sans changer de longueur, est écrite dans les 10 minutes', async () => {
+  let now = Date.parse('2026-11-25T12:00:00Z');
+  const env = load({ idb: {}, clock: () => now });
+  await env.ready;
+  const { t, idbData } = env;
+  fill(t.db);
+  t.saveDb();
+  await t.store.idle();
+  t.db.obsSales.C2[0].p = 999; // sur place : même liste, même longueur
+  t.saveDb();
+  await t.store.idle();
+  assert.equal(entry(idbData, KEY + '.o.C2')[0].p, 7, 'la signature ne le voit pas');
+  now += 11 * 6e4;
+  t.minuteTick();
+  await t.store.idle();
+  assert.equal(entry(idbData, KEY + '.o.C2')[0].p, 999, 'le filet de sécurité l’écrit');
+});
+
+test('deux onglets : A change C1, B change C2, les deux restent ; chacun reçoit l’autre carte sans relire toute la base', async () => {
+  const data = new Map(), bus = fakeBus();
+  const a = load({ idb: { data, bus } }), b = load({ idb: { data, bus } });
+  await a.ready;
+  await b.ready;
+  const reads = [a.idbStats.reads, b.idbStats.reads];
+  a.t.db.obsSales.C1 = [{ p: 1, t: T, g: 0 }];
+  b.t.db.obsSales.C2 = [{ p: 2, t: T, g: 0 }];
+  a.t.saveDb();
+  b.t.saveDb();
+  await a.t.store.idle();
+  await b.t.store.idle();
+  for (let i = 0; i < 30; i++) await tick();
+  assert.ok(data.has(KEY + '.o.C1') && data.has(KEY + '.o.C2'), 'les deux cartes sont dans la base');
+  assert.deepEqual(plain(b.t.db.obsSales.C1), [{ p: 1, t: T, g: 0 }], 'B a reçu C1');
+  assert.deepEqual(plain(a.t.db.obsSales.C2), [{ p: 2, t: T, g: 0 }], 'A a reçu C2');
+  assert.deepEqual([a.idbStats.reads, b.idbStats.reads], reads, 'sans relecture complète');
+});

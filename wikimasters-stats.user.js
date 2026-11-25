@@ -184,7 +184,8 @@
     store.writing = true;
     idbWrite(store.idb, batch).then(() => {
       saveState.failed = 0;
-      if (channel) { try { channel.postMessage({ saved: TAB }); } catch (e) {} }
+      // Les clés écrites : les autres onglets (1.32 et plus) ne relisent que celles-là.
+      if (channel) { try { channel.postMessage({ saved: TAB, keys: [...batch.keys()] }); } catch (e) {} }
       store.writing = false;
       if (wasFailed) refresh();
       if (store.pending.size) flushStore(); else settleIdle();
@@ -209,14 +210,19 @@
   const sameSig = (a, b) => !!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]);
   const written = new Map();
   let db = loadDb();
-  function loadDb() {
+  // keep : un db dont on garde les trois sections rangées carte par carte (rechargement de wmstats.v1 et de la partie personnelle
+  // seulement, quand un autre onglet les a écrites).
+  function loadDb(keep) {
     const base = defaults();
     const d = readJson(KEY);
     // Avant la 1.20, tout était sous wmstats.v1 : la partie personnelle s'y trouve encore et sera répartie au prochain enregistrement.
     if (isObj(d) && isObj(d.prices)) Object.assign(base, d);
     const mine = readJson(acctKey(base.userId));
     if (isObj(mine)) applyPersonal(base, mine);
-    if (store.mode === 'idb') loadCards(base);
+    if (store.mode === 'idb') {
+      if (keep) for (const [, sec] of CARD_SECS) base[sec] = keep[sec];
+      else loadCards(base);
+    }
     return cleanDb(base);
   }
   // Les entrées par carte rejoignent leur section. Une entrée illisible est ignorée, et effacée au prochain enregistrement.
@@ -262,6 +268,54 @@
     }
     for (const k of [...written.keys()]) if (!seen.has(k)) { store.del(k); written.delete(k); }
   }
+  // Filet de sécurité (toutes les 10 minutes, minuteTick) : chaque carte est remise en texte et comparée à son entrée. Rattrape une
+  // liste changée sur place sans que sa signature change. Rend le nombre d'entrées réécrites.
+  const cardCheck = { at: Date.now() };
+  function checkCards() {
+    let n = 0;
+    for (const [s, sec] of CARD_SECS) {
+      for (const id in db[sec]) {
+        const k = cardKey(s, id), text = JSON.stringify(db[sec][id]);
+        if (store.texts.get(k) !== text) { store.set(k, text); n++; }
+        written.set(k, cardSig(s, db[sec][id]));
+      }
+    }
+    return n;
+  }
+  // Un autre onglet (1.32 et plus) a écrit ces entrées : relues seules. Une carte que cet onglet n'a pas changée depuis sa dernière
+  // écriture prend la version reçue ; changée ici, la nôtre partira au prochain enregistrement. wmstats.v1 ou la partie
+  // personnelle de ce compte : rechargées si l'onglet n'est pas occupé, au plus une fois par seconde (reloadBase).
+  function applyRemote(got) {
+    let cards = 0, base = false;
+    const mine = acctKey(db.userId), pre = KEY + '.';
+    for (const [k, text] of got) {
+      if (store.pending.has(k)) continue; // écrite ici, en attente : la nôtre gagne
+      if (text == null) store.texts.delete(k); else store.texts.set(k, text);
+      const s = k.startsWith(pre) && k.charAt(pre.length + 1) === '.' ? k.charAt(pre.length) : '', sec = CARD_SEC.get(s);
+      if (!sec) { if (k === KEY || k === mine) base = true; continue; }
+      const id = k.slice(pre.length + 2), cur = db[sec][id];
+      if (cur === undefined ? written.has(k) : !sameSig(written.get(k), cardSig(s, cur))) continue;
+      let v = null;
+      try { v = text == null ? null : JSON.parse(text); } catch (e) { continue; }
+      if (v == null) { delete db[sec][id]; written.delete(k); } else if (okKey(id) && (s === 'o' ? Array.isArray(v) : isObj(v))) {
+        db[sec][id] = v;
+        written.set(k, cardSig(s, v));
+      } else continue;
+      cards++;
+    }
+    if (base) reloadBase();
+    if (cards) { resetPrices(); refresh(); }
+  }
+  const reloadState = { at: 0, timer: 0 };
+  function reloadBase() {
+    const wait = reloadState.at + 1000 - Date.now();
+    if (wait > 0) { if (!reloadState.timer) reloadState.timer = setTimeout(() => { reloadState.timer = 0; reloadBase(); }, wait); return; }
+    if (!mayReload()) return;
+    reloadState.at = Date.now();
+    db = loadDb(db);
+    resetPrices();
+    refresh();
+  }
   // ---------- base IndexedDB ----------
   const IDB_NAME = 'wmstats', IDB_STORE = 'kv', IDB_VERSION = 1;
   function idbOpen() {
@@ -278,6 +332,15 @@
       const tx = idb.transaction(IDB_STORE, 'readonly'), os = tx.objectStore(IDB_STORE);
       const keys = os.getAllKeys(), vals = os.getAll();
       tx.oncomplete = () => { const m = new Map(); keys.result.forEach((k, i) => m.set(String(k), String(vals.result[i]))); resolve(m); };
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error('lecture impossible'));
+    });
+  }
+  // Quelques clés seulement : Map clé → texte (null si la clé n'existe plus).
+  function idbReadKeys(idb, keys) {
+    return new Promise((resolve, reject) => {
+      const tx = idb.transaction(IDB_STORE, 'readonly'), os = tx.objectStore(IDB_STORE);
+      const reqs = keys.map(k => [k, os.get(k)]);
+      tx.oncomplete = () => resolve(new Map(reqs.map(([k, r]) => [k, r.result == null ? null : String(r.result)])));
       tx.onerror = tx.onabort = () => reject(tx.error || new Error('lecture impossible'));
     });
   }
@@ -339,9 +402,14 @@
   });
   // Occupé, l'onglet ne recharge pas ; mais les parties personnelles des autres comptes, qu'il ne modifie pas, sont mises à jour
   // dans le cache : un changement de compte lira la version récente, et ne l'écrasera pas par une ancienne.
-  const mayReload = () => store.mode === 'idb' && store.loaded && !job.running && !store.pending.size && !store.writing && !saveState.timer;
+  const mayReload = () => store.mode === 'idb' && store.loaded && !job.running && !store.pending.size && !store.writing && !saveState.queued;
   if (channel) channel.onmessage = ev => {
     if (!ev || !ev.data || ev.data.saved === TAB || store.mode !== 'idb' || !store.loaded) return;
+    // Onglet en 1.32 et plus : seulement les entrées qu'il a écrites. Sans la liste (version plus ancienne) : toute la base.
+    if (Array.isArray(ev.data.keys)) {
+      idbReadKeys(store.idb, ev.data.keys.filter(k => typeof k === 'string' && k !== META)).then(applyRemote).catch(() => {});
+      return;
+    }
     idbReadAll(store.idb).then(texts => {
       texts.delete(META);
       if (mayReload()) {
@@ -368,21 +436,19 @@
   // souhaitées), puis plus du tout ; en dernier recours, l'historique des ventes revient à 10 par rareté (le pool, lui, garde tout).
   // Le relevé reste affiché jusqu'au rechargement de la page : on le retire de l'enregistrement, jamais de la mémoire.
   // Renvoie false si rien n'a pu être enregistré : l'en-tête du panneau le dit alors (saveWarning), au lieu d'un échec silencieux.
-  const saveState = { failed: 0, timer: 0 };
+  const saveState = { failed: 0, queued: false };
   const saveWarning = () => (!saveState.failed ? '' : store.mode === 'idb'
     ? ' · ⚠ Enregistrement impossible : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.'
     : ' · ⚠ Navigateur plein : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.');
-  // En mode 'idb', les données (plusieurs Mo quand le pool est reçu) ne sont remises en texte qu'une fois par rafale
-  // d'enregistrements : au plus une fois toutes les SAVE_EVERY ms pendant un relevé, et tout de suite à la fin d'un relevé ou d'une
-  // réception du pool, quand l'onglet est caché, avant un changement de compte, et quand on attend la fin des écritures (store.idle).
+  // En mode 'idb', un enregistrement n'écrit que les cartes qui ont changé (saveCards), wmstats.v1 et la partie personnelle s'ils
+  // ont changé : il part tout de suite, regroupé avec les autres appels de la même tâche (1.32 ; la 1.31 attendait jusqu'à 5 s).
   // Quand la page se ferme ou se recharge, Chrome ne finit pas une écriture IndexedDB commencée à ce moment-là, même petite
   // (vérifié) : pagehide reste un dernier essai, sans garantie.
-  const SAVE_EVERY = 5000;
   function saveDb() {
     // Rien n'est encore chargé : écrire maintenant remplacerait les données par un db vide.
     if (!store.loaded) return true;
     if (store.mode === 'idb') {
-      if (!saveState.timer) saveState.timer = setTimeout(() => saveNow(true), SAVE_EVERY);
+      if (!saveState.queued) { saveState.queued = true; Promise.resolve().then(() => saveNow(true)); }
       return true;
     }
     const write = asks => {
@@ -423,8 +489,8 @@
   // Enregistre maintenant (mode 'idb' : remet les données en texte ; mode 'local' : comme saveDb). pending : seulement si un
   // enregistrement est en attente.
   function saveNow(pending) {
-    if (pending && !saveState.timer) return true;
-    if (saveState.timer) { clearTimeout(saveState.timer); saveState.timer = 0; }
+    if (pending && !saveState.queued) return true;
+    saveState.queued = false;
     if (!store.loaded) return true;
     if (store.mode !== 'idb') return saveDb();
     saveCards();
@@ -5500,6 +5566,8 @@
   // Toutes les minutes : les enchères suivies qui viennent de finir, et le temps restant de tes ventes en cours si l'onglet
   // Mes ventes est affiché (une annonce terminée sort des tuiles sans attendre une nouvelle réponse du Marché).
   function minuteTick() {
+    // Toutes les 10 minutes, le filet de sécurité de l'enregistrement carte par carte (checkCards).
+    if (store.mode === 'idb' && store.loaded && Date.now() - cardCheck.at >= 10 * 6e4) { cardCheck.at = Date.now(); checkCards(); }
     if (!job.running && settleObserved()) { saveDb(); refresh(); return; }
     if (ui.open && ui.tab === 'sales' && db.selling && db.selling.length) renderSales();
   }
