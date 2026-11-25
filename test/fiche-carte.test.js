@@ -257,14 +257,14 @@ test('courbe : tes ventes et achats à la rareté affichée, sans les shiny ni l
   assert.deepEqual(plain(t.cardMarks('C1', 'SR')).map(m => [m.k, m.p]), [['b', 90], ['s', 130]]);
 });
 
-test('courbe : point creux pour un provisoire, segments des deux médianes, détail au survol', () => {
+test('courbe : point creux pour un provisoire, losange pour ta vente, détail au survol', () => {
   const { t } = load();
   const pts = [{ t: NOW - DAY, p: 120, k: 'pro' }, { t: NOW - 2 * DAY, p: 110, k: 'prov' }, { t: NOW - 12 * DAY, p: 100, k: 'exact' }];
-  const svg = t.cardChart(pts, [{ t: NOW - 3 * DAY, p: 115, k: 's' }], '30', NOW, { med7: 115, medBase: 100 });
+  const svg = t.cardChart(pts, [{ t: NOW - 3 * DAY, p: 115, k: 's' }], '30', NOW);
   const circles = find(svg, n => n.tagName === 'circle');
   assert.equal(circles.length, 3);
   assert.equal(circles.filter(c => c.attrs.fill === 'none').length, 1, 'le provisoire est creux');
-  assert.equal(find(svg, n => n.tagName === 'line' && n.attrs['stroke-dasharray']).length, 1, 'médiane des 30 jours d’avant en pointillés');
+  assert.equal(find(svg, n => n.attrs && n.attrs['stroke-dasharray']).length, 0, 'plus de segments de médiane : le trait du prix médian les remplace');
   assert.equal(find(svg, n => n.tagName === 'path').length, 1, 'ta vente en losange');
   assert.match(nb(textOf(svg)), /provisoire/);
   assert.match(nb(textOf(svg)), /ta vente/);
@@ -272,7 +272,7 @@ test('courbe : point creux pour un provisoire, segments des deux médianes, dét
 
 test('courbe : ventes toutes au même prix, l’axe ne s’écrase pas', () => {
   const { t } = load();
-  const svg = t.cardChart([1, 2, 3].map(d => ({ t: NOW - d * DAY, p: 100, k: 'pro' })), [], '30', NOW, { med7: null, medBase: null });
+  const svg = t.cardChart([1, 2, 3].map(d => ({ t: NOW - d * DAY, p: 100, k: 'pro' })), [], '30', NOW);
   for (const c of find(svg, n => n.tagName === 'circle')) assert.ok(Number.isFinite(Number(c.attrs.cy)), c.attrs.cy);
 });
 
@@ -403,14 +403,16 @@ test('pastille au clavier : Entrée ou Espace ouvrent la fiche, les autres touch
   assert.deepEqual(calls, ['prevent', 'stop', 'prevent', 'stop']);
 });
 
-// ----- 1.30.1 : la courbe à la taille réelle de la fiche -----
-test('courbe : dessinée à la largeur donnée, sans agrandissement (480 à 1 600, 760 sans largeur)', () => {
+// ----- 1.30.1 : la courbe à la taille réelle de la fiche (1.30.2 : toute la largeur, 280 px de haut) -----
+test('courbe : dessinée à la largeur donnée, sans agrandissement (480 à 3 000, 760 sans largeur), 280 px de haut au moins', () => {
   const { t } = load();
   const pts = [{ t: NOW - DAY, p: 120, k: 'pro' }, { t: NOW - 2 * DAY, p: 110, k: 'pro' }];
-  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 1200).attrs.viewBox, '0 0 1200 220');
-  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 5000).attrs.viewBox, '0 0 1600 220');
-  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 300).attrs.viewBox, '0 0 480 220');
-  assert.equal(t.cardChart(pts, [], '30', NOW, null, null).attrs.viewBox, '0 0 760 220');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, 1200).attrs.viewBox.split(' ')[2], '1200');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, 2300).attrs.viewBox.split(' ')[2], '2300', 'un écran large est rempli');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, 5000).attrs.viewBox.split(' ')[2], '3000');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, 300).attrs.viewBox.split(' ')[2], '480');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null).attrs.viewBox.split(' ')[2], '760');
+  assert.ok(Number(t.cardChart(pts, [], '30', NOW, null, 1200).attrs.viewBox.split(' ')[3]) >= 280);
 });
 
 test('fiche : la courbe prend la largeur du corps de la fiche', () => {
@@ -422,12 +424,242 @@ test('fiche : la courbe prend la largeur du corps de la fiche', () => {
   t.ui.el.cardStatus = { textContent: '' };
   t.openCard('C1', { rarity: 'SR', title: 'X' });
   t.renderCard();
-  assert.equal(find(out.body, n => n.tagName === 'svg')[0].attrs.viewBox, '0 0 1200 220');
+  assert.equal(find(out.body, n => n.tagName === 'svg')[0].attrs.viewBox.split(' ')[2], '1200');
 });
 
 test('courbe : jamais affichée plus large que sa largeur de dessin, même sur un très grand écran', () => {
   const { t } = load();
   const pts = [{ t: NOW - DAY, p: 120, k: 'pro' }];
-  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 5000).attrs.style, 'max-width:1600px');
-  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 1200).attrs.style, 'max-width:1200px');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, 5000).attrs.style, 'max-width:3000px');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, 1200).attrs.style, 'max-width:1200px');
+});
+
+// ----- 1.30.2 : une courbe qu'on peut lire -----
+const svgText = n => (n.children || []).filter(k => typeof k !== 'object').join('');
+const priceLabels = svg => find(svg, n => n.tagName === 'text' && / ₩$/.test(nb(svgText(n)))).map(n => Number(nb(svgText(n)).replace(/[^\d]/g, '')));
+const dateLabels = svg => find(svg, n => n.tagName === 'text' && /^\d\d\/\d\d$/.test(svgText(n)));
+const trendOf = svg => find(svg, n => n.tagName === 'polyline' && find(n, k => k.tagName === 'title' && /^prix médian/.test(svgText(k))).length);
+// 5 ventes par jour, de 100 à 140 ₩, sur `days` jours.
+const daily = (days, prices = [100, 110, 120, 130, 140]) =>
+  Array.from({ length: days }, (_, d) => prices.map((p, i) => ({ t: NOW - (d + 0.1 + i * 0.15) * DAY, p, k: 'pro' }))).flat();
+
+test('courbe : des prix ronds sur l’axe, chacun avec sa ligne de repère', () => {
+  const { t } = load();
+  const pts = [[1, 1013], [2, 1490], [3, 1999], [4, 1250], [5, 1720], [6, 1105], [7, 1888], [8, 1333], [9, 1601], [10, 1477], [11, 1150]]
+    .map(([d, p]) => ({ t: NOW - d * DAY, p, k: 'pro' }));
+  const svg = t.cardChart(pts, [], '30', NOW, null, 1200);
+  const ys = priceLabels(svg);
+  assert.ok(ys.length >= 3 && ys.length <= 7, ys.join(' '));
+  const step = ys[1] - ys[0];
+  assert.ok(ys.every((v, i) => i === 0 || v - ys[i - 1] === step), 'pas régulier : ' + ys.join(' '));
+  assert.ok([1, 2, 2.5, 5].some(m => [1, 10, 100, 1000].some(p => m * p === step)), 'pas rond : ' + step);
+  assert.ok(ys[0] <= 1013 && ys[ys.length - 1] >= 1999, 'l’axe contient les ventes : ' + ys.join(' '));
+  assert.ok(find(svg, n => n.tagName === 'line' && n.attrs.class === 'grid').length >= ys.length, 'une ligne par prix');
+});
+
+test('courbe : des dates sur l’axe, une par jour sur 7 jours', () => {
+  const { t } = load();
+  const svg = t.cardChart(daily(7), [], '7', NOW, null, 1200);
+  const n = dateLabels(svg).length;
+  assert.ok(n >= 6 && n <= 8, String(n));
+});
+
+test('courbe : sur 90 jours avec 20 jours de ventes, l’axe commence à la première vente (pas de vide à gauche)', () => {
+  const { t } = load();
+  const svg = t.cardChart(daily(20), [], '90', NOW, null, 1200);
+  const xs = find(svg, n => n.tagName === 'circle').map(c => Number(c.attrs.cx));
+  assert.ok(Math.min(...xs) < 1200 * 0.15, 'première vente à x = ' + Math.min(...xs));
+});
+
+test('courbe : le prix médian sur 3 jours glissants en trait, et la moitié centrale des ventes en bande', () => {
+  const { t } = load();
+  const svg = t.cardChart(daily(10), [], '30', NOW, null, 1200);
+  const trend = trendOf(svg);
+  assert.equal(trend.length, 1);
+  assert.equal(svgText(find(trend[0], k => k.tagName === 'title')[0]), 'prix médian sur 3 jours glissants');
+  const ys = trend[0].attrs.points.split(' ').map(xy => Number(xy.split(',')[1]));
+  assert.ok(ys.length >= 9, String(ys.length));
+  assert.ok(ys.every(y => Math.abs(y - ys[0]) < 0.01), 'chaque jour a la même médiane (120 ₩) : ' + ys.join(' '));
+  assert.equal(find(svg, n => n.tagName === 'polygon').length, 1, 'la bande du 1er au 3e quartile');
+});
+
+test('courbe : ventes rares, médiane sur 3 semaines ; trop rares, pas de trait', () => {
+  const { t } = load();
+  const one = Array.from({ length: 30 }, (_, d) => ({ t: NOW - (d + 0.5) * DAY, p: 100 + d, k: 'pro' }));
+  const svg = t.cardChart(one, [], '30', NOW, null, 1200);
+  assert.equal(svgText(find(trendOf(svg)[0], k => k.tagName === 'title')[0]), 'prix médian sur 3 semaines glissantes');
+  assert.equal(trendOf(t.cardChart(one.slice(0, 3), [], '30', NOW, null, 1200)).length, 0);
+});
+
+test('courbe : une vente hors échelle est un triangle rouge au bord, avec son prix au survol', () => {
+  const { t } = load();
+  const pts = Array.from({ length: 49 }, (_, i) => ({ t: NOW - (1 + i * 0.5) * DAY, p: 100 + i, k: 'pro' })).concat([{ t: NOW - 2 * DAY, p: 10000, k: 'pro' }]);
+  const svg = t.cardChart(pts, [], '30', NOW, null, 1200);
+  const out = find(svg, n => n.tagName === 'path' && n.attrs.fill === '#f87171');
+  assert.equal(out.length, 1);
+  assert.match(nb(textOf(out[0])), /10 000 ₩/);
+  assert.equal(find(svg, n => n.tagName === 'circle').length, 49);
+});
+
+test('la courbe ne touche pas la tendance des prix : priceOf dit toujours hausse, baisse ou stable', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(8, 150), sale(9, 150), sale(10, 150), sale(20, 100), sale(21, 100), sale(22, 100)] };
+  assert.equal(t.priceOf('C1', 'SR').trend, 1);
+  t.db.prices.C2 = { at: NOW, sales: [sale(1, 100), sale(2, 100), sale(3, 100), sale(10, 100)] };
+  assert.equal(t.priceOf('C2', 'SR').trend, 0);
+});
+
+test('courbe : le trait du prix médian est coupé quand des jours de suite n’ont aucune vente', () => {
+  const { t } = load();
+  const pts = daily(14).filter(pt => NOW - pt.t < 4 * DAY || NOW - pt.t >= 10 * DAY);
+  const svg = t.cardChart(pts, [], '30', NOW, null, 1200);
+  assert.equal(trendOf(svg).length, 2, 'un trait avant le trou, un après');
+  assert.equal(find(svg, n => n.tagName === 'polygon').length, 2);
+});
+
+// ----- 1.30.2 : légende et bulle de la courbe -----
+const legendOf = svg => find(svg, n => n.tagName === 'text' && n.attrs.class === 'legend');
+// Des ventes à heure fixe (midi, puis toutes les 20 min) pour que chaque jour local ait ses 5 ventes ; maintenant à 18 h.
+const EVE = (() => { const d = new Date(NOW); d.setHours(18, 0, 0, 0); return d.getTime(); })();
+const atNoon = (d, i) => { const x = new Date(EVE); x.setDate(x.getDate() - d); x.setHours(12, 20 * i, 0, 0); return x.getTime(); };
+const noonDays = days => Array.from({ length: days }, (_, k) => [100, 110, 120, 130, 140].map((p, i) => ({ t: atNoon(k + 1, i), p, k: 'pro' }))).flat();
+
+test('courbe : une légende en haut, avec les seuls symboles dessinés', () => {
+  const { t } = load();
+  const pts = daily(10).concat([{ t: NOW - 2 * DAY, p: 105, k: 'prov' }]);
+  const svg = t.cardChart(pts, [{ t: NOW - 3 * DAY, p: 115, k: 's' }], '30', NOW, null, 1200);
+  const leg = legendOf(svg).map(svgText).join(' | ');
+  for (const w of ['une vente', 'prix provisoire', 'prix médian sur 3 jours glissants', 'la moitié des ventes', 'ta vente']) assert.ok(leg.includes(w), w + ' — ' + leg);
+  for (const w of ['ton achat', 'hors échelle', 'moyenne par semaine']) assert.ok(!leg.includes(w), w + ' — ' + leg);
+  const low = Math.max(...legendOf(svg).map(n => Number(n.attrs.y)));
+  const top = Math.min(...find(svg, n => n.tagName === 'line' && n.attrs.class === 'grid').map(n => Math.min(Number(n.attrs.y1), Number(n.attrs.y2))));
+  assert.ok(low < top, 'la légende est au-dessus du graphique');
+});
+
+test('courbe : sur une fiche étroite, la légende passe à la ligne et la courbe grandit d’autant', () => {
+  const { t } = load();
+  const pts = daily(10).concat([{ t: NOW - 2 * DAY, p: 105, k: 'prov' }]);
+  const marks = [{ t: NOW - 3 * DAY, p: 115, k: 's' }, { t: NOW - 4 * DAY, p: 112, k: 'b' }];
+  const H = svg => Number(svg.attrs.viewBox.split(' ')[3]);
+  const wide = t.cardChart(pts, marks, '30', NOW, null, 2000), narrow = t.cardChart(pts, marks, '30', NOW, null, 480);
+  assert.ok(H(narrow) > H(wide), H(narrow) + ' / ' + H(wide));
+  for (const n of legendOf(narrow).filter(k => svgText(k).length > 2)) assert.ok(Number(n.attrs.x) + 6.2 * svgText(n).length <= 480, svgText(n));
+});
+
+test('bulle de la courbe : la vente sous la souris, puis le détail du jour et le prix médian', () => {
+  const { t } = load();
+  const pts = noonDays(10);
+  const lay = t.chartLayout(pts, [], '30', EVE, null, 1200);
+  const pt = pts.find(x => x.t === atNoon(3, 2));
+  const hov = t.chartHoverAt(lay, lay.X(pt.t), lay.Y(pt.p));
+  assert.equal(nb(hov.lines[0]), 'Vente du ' + new Date(pt.t).toLocaleDateString('fr-FR') + ' à 12:40 : 120 ₩ (Pro)');
+  assert.deepEqual(plain(hov.focus), { cx: lay.X(pt.t), cy: lay.Y(pt.p) });
+  assert.match(nb(hov.lines[1]), /^[A-Z][a-zé]+ \d+ [a-zéû]+ : 5 ventes, médiane 120 ₩, de 100 à 140 ₩$/);
+  assert.equal(nb(hov.lines[2]), 'Prix médian sur 3 jours glissants : 120 ₩ · la moitié des ventes entre 110 et 130 ₩');
+});
+
+test('bulle de la courbe : loin de toute vente, le jour seul ; hors du graphique, rien', () => {
+  const { t } = load();
+  const lay = t.chartLayout(noonDays(10), [], '30', EVE, null, 1200);
+  const x = lay.X(EVE - 2 * 3600e3);
+  const hov = t.chartHoverAt(lay, x, lay.T + 2);
+  assert.equal(hov.focus, null);
+  assert.equal(hov.x, x);
+  assert.match(nb(hov.lines[0]), / : aucune vente$/);
+  assert.equal(t.chartHoverAt(lay, lay.L - 5, lay.T + 20), null);
+  assert.equal(t.chartHoverAt(lay, x, lay.H), null);
+  assert.equal(t.chartHoverAt(t.chartLayout([], [], '30', EVE, null, 1200), 600, 100), null);
+});
+
+test('bulle de la courbe : les 10 px autour d’une vente se comptent à l’écran, même quand la courbe est réduite', () => {
+  const { t } = load();
+  const pts = noonDays(10);
+  const lay = t.chartLayout(pts, [], '30', EVE, null, 1200);
+  const pt = pts.find(x => x.t === atNoon(3, 2));
+  // À 14 unités du dessin : trop loin à taille réelle, mais à 7 px à l'écran quand la courbe est affichée à moitié.
+  assert.equal(t.chartHoverAt(lay, lay.X(pt.t) + 14, lay.Y(pt.p)).focus, null);
+  const half = t.chartHoverAt(lay, lay.X(pt.t) + 14, lay.Y(pt.p), 2);
+  assert.deepEqual(plain(half.focus), { cx: lay.X(pt.t), cy: lay.Y(pt.p) });
+});
+
+test('bulle de la courbe : le prix médian partout le long du trait, même au-dessus d’un jour sans vente', () => {
+  const { t } = load();
+  // Des ventes chaque jour sauf il y a 5 jours ; celles d'il y a 6 jours tôt dans leur tranche, celles d'il y a 4 jours tard :
+  // le trait relie les deux par-dessus le jour vide, et le milieu est à plus d'un jour de chacun de ses deux points.
+  const at = { 6: 0.95, 4: 0.05 };
+  const pts = [1, 2, 3, 4, 6, 7, 8, 9, 10].flatMap(d => [100, 110, 120, 130, 140].map((p, i) => ({ t: EVE - (d + (at[d] || 0.5) + i * 0.001) * DAY, p, k: 'pro' })));
+  const lay = t.chartLayout(pts, [], '30', EVE, null, 1200);
+  assert.equal(lay.trend.runs.length, 1, 'un seul trait');
+  const med = x => [...t.chartHoverAt(lay, lay.X(x), lay.T + 2).lines].map(nb).filter(l => l.startsWith('Prix médian'));
+  assert.deepEqual(med(EVE - 5.5 * DAY), ['Prix médian sur 3 jours glissants : 120 ₩ · la moitié des ventes entre 110 et 130 ₩']);
+  // Après le bout du trait, la limite d'une tranche reste : rien à plus d'un jour de son dernier point.
+  assert.deepEqual(med(EVE - 0.2 * DAY), []);
+});
+
+test('bulle de la courbe : la moyenne du site de la semaine', () => {
+  const { t } = load();
+  const wkd = d => new Date(EVE - d * DAY).toISOString().slice(0, 10);
+  const lay = t.chartLayout([], [], 'all', EVE, [[wkd(16), 100, 60, 180, 3], [wkd(9), 110, 80, 150, 4]], 1200);
+  const hov = t.chartHoverAt(lay, lay.X(Date.parse(wkd(16) + 'T00:00:00Z') + 2 * DAY), lay.T + 40);
+  assert.ok(hov.lines.some(l => /^Site, semaine du \d\d\/\d\d\/\d{4} : moyenne 100 ₩, de 60 à 180 ₩, 3 ventes$/.test(nb(l))), hov.lines.join('\n'));
+});
+
+test('fiche : la bulle du survol est posée dans le cadre de la courbe', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 120), sale(2, 110)] };
+  const out = {};
+  t.ui.el.cardHead = { replaceChildren() {} };
+  t.ui.el.cardBody = { clientWidth: 1224, replaceChildren(...k) { out.body = k; } };
+  t.ui.el.cardStatus = { textContent: '' };
+  t.openCard('C1', { rarity: 'SR', title: 'X' });
+  t.renderCard();
+  const box = find(out.body, n => n.className === 'chart')[0];
+  assert.deepEqual(box.children.map(k => k.tagName), ['svg', 'div']);
+  assert.equal(box.children[1].className, 'tip ctip');
+  assert.match(textOf(out.body), /Passe la souris sur la courbe/);
+});
+
+test('bulle de la courbe : posée à côté de la souris dans le cadre (le SVG n’a pas d’offsetLeft)', () => {
+  const { t } = load();
+  const pts = noonDays(10);
+  const proto = Object.getPrototypeOf(t.cardChart(pts, [], '30', EVE, null, 1200));
+  const add = proto.addEventListener;
+  proto.addEventListener = function (k, f) { (this._ev = this._ev || {})[k] = f; };
+  try {
+    // Le cadre : bord de 1 px, marge intérieure de 6 px à gauche et 10 px en haut ; la courbe affichée à la moitié de sa taille.
+    const host = { clientLeft: 1, clientTop: 1, getBoundingClientRect: () => ({ left: 90, top: 20 }) };
+    const tip = { style: {}, offsetParent: host, replaceChildren(...k) { this.kids = k; } };
+    const svg = t.cardChart(pts, [], '30', EVE, null, 1200, tip);
+    svg.getBoundingClientRect = () => ({ left: 97, top: 31, width: 600, height: 300 });
+    const lay = t.chartLayout(pts, [], '30', EVE, null, 1200);
+    svg._ev.mousemove({ clientX: 97 + 300, clientY: 31 + (lay.T + 50) / 2 });
+    // La souris est à 306 px du bord intérieur du cadre.
+    assert.equal(tip.style.display, 'block');
+    assert.equal(tip.style.left, (306 + 14) + 'px', 'moitié gauche : la bulle à droite de la souris');
+    assert.equal(tip.style.top, (31 - 20 - 1 + lay.T / 2) + 'px');
+    tip.offsetWidth = 200;
+    svg._ev.mousemove({ clientX: 97 + 500, clientY: 31 + (lay.T + 50) / 2 });
+    assert.equal(tip.style.left, (506 - 200 - 14) + 'px', 'moitié droite : à gauche de la souris');
+    // Un cadre étroit : la bulle reste dedans, à 4 px du bord.
+    host.clientWidth = 620;
+    tip.offsetWidth = 500;
+    svg._ev.mousemove({ clientX: 97 + 300, clientY: 31 + (lay.T + 50) / 2 });
+    assert.equal(tip.style.left, (620 - 500 - 4) + 'px');
+    // Une bulle haute dans un cadre bas : elle remonte pour finir à 4 px du bas du cadre, et jamais au-dessus de son haut.
+    const top = 31 - 20 - 1 + lay.T / 2;
+    host.clientHeight = 200;
+    tip.offsetHeight = 120;
+    svg._ev.mousemove({ clientX: 97 + 300, clientY: 31 + (lay.T + 50) / 2 });
+    assert.equal(tip.style.top, top + 'px', 'elle tient : pas déplacée');
+    tip.offsetHeight = 190;
+    svg._ev.mousemove({ clientX: 97 + 300, clientY: 31 + (lay.T + 50) / 2 });
+    assert.equal(tip.style.top, (200 - 190 - 4) + 'px');
+    tip.offsetHeight = 300;
+    svg._ev.mousemove({ clientX: 97 + 300, clientY: 31 + (lay.T + 50) / 2 });
+    assert.equal(tip.style.top, '4px');
+    svg._ev.mouseleave();
+    assert.equal(tip.style.display, 'none');
+  } finally {
+    proto.addEventListener = add;
+  }
 });
