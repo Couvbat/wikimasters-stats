@@ -4901,14 +4901,14 @@
     if (tip) hoverChart(svg, lay, tip);
     return svg;
   }
-  // Ce que dit la bulle à la position (x, y) de la courbe, en unités du dessin : la vente la plus proche (à 10 px près), puis le
-  // jour sous la souris (ses ventes, le prix médian du trait, la moyenne du site de la semaine). null hors du graphique.
-  // Rend { x (le trait vertical), focus: { cx, cy } | null, lines: [texte] }.
-  function chartHoverAt(lay, x, y) {
-    if (!lay || lay.empty || x < lay.L || x > lay.W - lay.R || y < lay.T - 6 || y > lay.H - lay.B + 6) return null;
+  // Ce que dit la bulle à la position (x, y) de la courbe, en unités du dessin : la vente la plus proche (à 10 px près à l'écran ;
+  // k unités du dessin par pixel affiché), puis le jour sous la souris (ses ventes, le prix médian du trait, la moyenne du site de
+  // la semaine). null hors du graphique. Rend { x (le trait vertical), focus: { cx, cy } | null, lines: [texte] }.
+  function chartHoverAt(lay, x, y, k = 1) {
+    if (!lay || lay.empty || x < lay.L || x > lay.W - lay.R || y < lay.T - 6 * k || y > lay.H - lay.B + 6 * k) return null;
     const t = lay.x0 + (x - lay.L) / (lay.W - lay.L - lay.R) * (lay.now - lay.x0);
     const lines = [];
-    let near = null, best = 10;
+    let near = null, best = 10 * k;
     for (const pt of lay.pts.concat(lay.mks)) {
       const py = lay.out(pt) ? (pt.p > lay.hi ? lay.T + 4 : lay.H - lay.B - 4) : lay.Y(pt.p);
       const d = Math.hypot(lay.X(pt.t) - x, py - y);
@@ -4930,8 +4930,13 @@
       : v.length === 1 ? '1 vente, à ' + fmt(v[0]) + ' ₩'
         : plural(v.length, 'vente', 'ventes') + ', médiane ' + fmt(Math.round(quantile(v, 0.5))) + ' ₩, de ' + fmt(v[0]) + ' à ' + fmt(v[v.length - 1]) + ' ₩'));
     if (lay.trend) {
+      // Sous un segment du trait, le plus proche de ses deux points, même quand il enjambe une tranche vide ; ailleurs (avant ou
+      // après un bout du trait), le point le plus proche à une tranche près.
       let m = null;
-      for (const run of lay.trend.runs) for (const b of run) if (Math.abs(b.t - t) <= lay.trend.size && (!m || Math.abs(b.t - t) < Math.abs(m.t - t))) m = b;
+      for (const run of lay.trend.runs) for (let i = 0; i + 1 < run.length; i++) {
+        if (run[i].t <= t && t <= run[i + 1].t) m = t - run[i].t <= run[i + 1].t - t ? run[i] : run[i + 1];
+      }
+      if (!m) for (const run of lay.trend.runs) for (const b of run) if (Math.abs(b.t - t) <= lay.trend.size && (!m || Math.abs(b.t - t) < Math.abs(m.t - t))) m = b;
       if (m) lines.push('Prix médian ' + lay.trend.label + ' : ' + fmt(Math.round(m.med)) + ' ₩ · la moitié des ventes entre ' + fmt(Math.round(m.q1)) + ' et ' +
         fmt(Math.round(m.q3)) + ' ₩');
     }
@@ -4948,7 +4953,7 @@
     const hide = () => { cross.setAttribute('visibility', 'hidden'); focus.setAttribute('visibility', 'hidden'); tip.style.display = 'none'; };
     svg.addEventListener('mousemove', ev => {
       const box = svg.getBoundingClientRect(), k = box.width ? lay.W / box.width : 1;
-      const hov = chartHoverAt(lay, (ev.clientX - box.left) * k, (ev.clientY - box.top) * k);
+      const hov = chartHoverAt(lay, (ev.clientX - box.left) * k, (ev.clientY - box.top) * k, k);
       if (!hov) { hide(); return; }
       cross.setAttribute('x1', hov.x);
       cross.setAttribute('x2', hov.x);
@@ -4962,7 +4967,8 @@
       // Un SVG n'a pas d'offsetLeft : la place de la bulle se compte depuis le cadre (sans son bord), où elle est posée.
       const host = tip.offsetParent || svg.parentNode, hb = host ? host.getBoundingClientRect() : { left: box.left, top: box.top };
       const dx = box.left - hb.left - ((host && host.clientLeft) || 0), dy = box.top - hb.top - ((host && host.clientTop) || 0);
-      // Mesurée posée au bord gauche (sa largeur ne dépend pas de l'ancienne place), puis à côté de la souris, jamais hors du cadre.
+      // Mesurée posée au bord gauche (sa largeur ne dépend pas de l'ancienne place), puis à côté de la souris, jamais hors du cadre :
+      // en haut du graphique, remontée si elle dépasse le bas du cadre (sur une courbe réduite, ses lignes gardent leur taille).
       tip.style.transform = 'none';
       tip.style.left = '0px';
       tip.style.top = (dy + lay.T / k) + 'px';
@@ -4971,6 +4977,8 @@
       let left = hov.x > lay.W / 2 ? px - w - 14 : px + 14;
       if (hw) left = Math.max(4, Math.min(left, hw - w - 4));
       tip.style.left = left + 'px';
+      const ht = num(tip.offsetHeight), hh = num(host && host.clientHeight);
+      if (hh && dy + lay.T / k + ht > hh - 4) tip.style.top = Math.max(4, hh - ht - 4) + 'px';
     });
     svg.addEventListener('mouseleave', hide);
   }

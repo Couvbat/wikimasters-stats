@@ -571,6 +571,31 @@ test('bulle de la courbe : loin de toute vente, le jour seul ; hors du graphique
   assert.equal(t.chartHoverAt(t.chartLayout([], [], '30', EVE, null, 1200), 600, 100), null);
 });
 
+test('bulle de la courbe : les 10 px autour d’une vente se comptent à l’écran, même quand la courbe est réduite', () => {
+  const { t } = load();
+  const pts = noonDays(10);
+  const lay = t.chartLayout(pts, [], '30', EVE, null, 1200);
+  const pt = pts.find(x => x.t === atNoon(3, 2));
+  // À 14 unités du dessin : trop loin à taille réelle, mais à 7 px à l'écran quand la courbe est affichée à moitié.
+  assert.equal(t.chartHoverAt(lay, lay.X(pt.t) + 14, lay.Y(pt.p)).focus, null);
+  const half = t.chartHoverAt(lay, lay.X(pt.t) + 14, lay.Y(pt.p), 2);
+  assert.deepEqual(plain(half.focus), { cx: lay.X(pt.t), cy: lay.Y(pt.p) });
+});
+
+test('bulle de la courbe : le prix médian partout le long du trait, même au-dessus d’un jour sans vente', () => {
+  const { t } = load();
+  // Des ventes chaque jour sauf il y a 5 jours ; celles d'il y a 6 jours tôt dans leur tranche, celles d'il y a 4 jours tard :
+  // le trait relie les deux par-dessus le jour vide, et le milieu est à plus d'un jour de chacun de ses deux points.
+  const at = { 6: 0.95, 4: 0.05 };
+  const pts = [1, 2, 3, 4, 6, 7, 8, 9, 10].flatMap(d => [100, 110, 120, 130, 140].map((p, i) => ({ t: EVE - (d + (at[d] || 0.5) + i * 0.001) * DAY, p, k: 'pro' })));
+  const lay = t.chartLayout(pts, [], '30', EVE, null, 1200);
+  assert.equal(lay.trend.runs.length, 1, 'un seul trait');
+  const med = x => [...t.chartHoverAt(lay, lay.X(x), lay.T + 2).lines].map(nb).filter(l => l.startsWith('Prix médian'));
+  assert.deepEqual(med(EVE - 5.5 * DAY), ['Prix médian sur 3 jours glissants : 120 ₩ · la moitié des ventes entre 110 et 130 ₩']);
+  // Après le bout du trait, la limite d'une tranche reste : rien à plus d'un jour de son dernier point.
+  assert.deepEqual(med(EVE - 0.2 * DAY), []);
+});
+
 test('bulle de la courbe : la moyenne du site de la semaine', () => {
   const { t } = load();
   const wkd = d => new Date(EVE - d * DAY).toISOString().slice(0, 10);
@@ -620,6 +645,18 @@ test('bulle de la courbe : posée à côté de la souris dans le cadre (le SVG n
     tip.offsetWidth = 500;
     svg._ev.mousemove({ clientX: 97 + 300, clientY: 31 + (lay.T + 50) / 2 });
     assert.equal(tip.style.left, (620 - 500 - 4) + 'px');
+    // Une bulle haute dans un cadre bas : elle remonte pour finir à 4 px du bas du cadre, et jamais au-dessus de son haut.
+    const top = 31 - 20 - 1 + lay.T / 2;
+    host.clientHeight = 200;
+    tip.offsetHeight = 120;
+    svg._ev.mousemove({ clientX: 97 + 300, clientY: 31 + (lay.T + 50) / 2 });
+    assert.equal(tip.style.top, top + 'px', 'elle tient : pas déplacée');
+    tip.offsetHeight = 190;
+    svg._ev.mousemove({ clientX: 97 + 300, clientY: 31 + (lay.T + 50) / 2 });
+    assert.equal(tip.style.top, (200 - 190 - 4) + 'px');
+    tip.offsetHeight = 300;
+    svg._ev.mousemove({ clientX: 97 + 300, clientY: 31 + (lay.T + 50) / 2 });
+    assert.equal(tip.style.top, '4px');
     svg._ev.mouseleave();
     assert.equal(tip.style.display, 'none');
   } finally {
