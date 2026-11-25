@@ -153,6 +153,7 @@
     // En mode 'idb', une écriture met le cache à jour tout de suite et part dans la base peu après (flushStore).
     set: (k, text) => {
       if (store.mode !== 'idb') return localStorage.setItem(k, text);
+      if (store.texts.get(k) === text) return; // rien de changé (déjà écrit, ou déjà en attente) : pas d'écriture
       store.texts.set(k, text); store.pending.set(k, text); scheduleFlush();
     },
     del: k => {
@@ -196,6 +197,17 @@
     });
   }
   const readJson = k => { try { return JSON.parse(store.get(k)); } catch (e) { return null; } };
+  // ---------- une entrée par carte (1.32, mode 'idb') ----------
+  // Chaque carte de prices, obsSales et hist a sa propre entrée (wmstats.v1.p.<carte>, .o., .h.) : un enregistrement n'écrit que
+  // les cartes qui ont changé, et wmstats.v1 garde ces trois sections vides. written garde, pour chaque entrée, la signature de la
+  // carte à sa dernière écriture ou lecture : une liste remplacée ou allongée, un relevé daté autrement, change sa signature.
+  const CARD_SECS = [['p', 'prices'], ['o', 'obsSales'], ['h', 'hist']];
+  const CARD_SEC = new Map(CARD_SECS);
+  const cardKey = (s, id) => KEY + '.' + s + '.' + id;
+  const cardSig = (s, v) => (s === 'o' ? [v, v ? v.length : -1]
+    : s === 'p' ? [v, v && v.sales, v && Array.isArray(v.sales) ? v.sales.length : -1, v && v.at, v && v.by, v && v.ats] : [v]);
+  const sameSig = (a, b) => !!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]);
+  const written = new Map();
   let db = loadDb();
   function loadDb() {
     const base = defaults();
@@ -204,7 +216,39 @@
     if (isObj(d) && isObj(d.prices)) Object.assign(base, d);
     const mine = readJson(acctKey(base.userId));
     if (isObj(mine)) applyPersonal(base, mine);
+    if (store.mode === 'idb') loadCards(base);
     return cleanDb(base);
+  }
+  // Les entrées par carte rejoignent leur section. Une entrée illisible est ignorée, et effacée au prochain enregistrement.
+  function loadCards(base) {
+    written.clear();
+    for (const [, sec] of CARD_SECS) if (!isObj(base[sec])) base[sec] = {};
+    const pre = KEY + '.';
+    for (const [k, text] of store.texts) {
+      if (!k.startsWith(pre) || k.charAt(pre.length + 1) !== '.') continue;
+      const s = k.charAt(pre.length), sec = CARD_SEC.get(s), id = k.slice(pre.length + 2);
+      if (!sec) continue; // partie personnelle (.u.)
+      let v;
+      try { v = JSON.parse(text); } catch (e) { v = undefined; }
+      if (v == null || !okKey(id) || (s === 'o' ? !Array.isArray(v) : !isObj(v))) { written.set(k, ['illisible']); continue; }
+      base[sec][id] = v;
+      written.set(k, cardSig(s, v));
+    }
+  }
+  // Pose dans la file d'écriture les cartes dont la signature a changé, et efface les entrées des cartes disparues.
+  function saveCards() {
+    const seen = new Set();
+    for (const [s, sec] of CARD_SECS) {
+      const part = db[sec];
+      for (const id in part) {
+        const k = cardKey(s, id), sig = cardSig(s, part[id]);
+        seen.add(k);
+        if (sameSig(written.get(k), sig)) continue;
+        store.set(k, JSON.stringify(part[id]));
+        written.set(k, sig);
+      }
+    }
+    for (const k of [...written.keys()]) if (!seen.has(k)) { store.del(k); written.delete(k); }
   }
   // ---------- base IndexedDB ----------
   const IDB_NAME = 'wmstats', IDB_STORE = 'kv', IDB_VERSION = 1;
@@ -304,6 +348,7 @@
     for (const k of Object.keys(db)) (PERSONAL_SET.has(k) ? mine : shared)[k] = db[k];
     mine.marketMine = { selling: db.market.selling, max: db.market.max };
     shared.market = { at: db.market.at, asks: db.market.asks };
+    if (store.mode === 'idb') for (const [, sec] of CARD_SECS) shared[sec] = {}; // rangées carte par carte (saveCards)
     return { shared, mine };
   }
   // Enregistre la partie personnelle (d'abord : si elle ne tient pas, rien ne change) puis la partie commune.
@@ -370,6 +415,7 @@
     if (saveState.timer) { clearTimeout(saveState.timer); saveState.timer = 0; }
     if (!store.loaded) return true;
     if (store.mode !== 'idb') return saveDb();
+    saveCards();
     const { shared, mine } = splitDb();
     store.set(acctKey(db.userId), JSON.stringify(mine)); // le compte au moment de l'appel (setAccount change db.userId juste après)
     store.set(KEY, JSON.stringify(shared));

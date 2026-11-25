@@ -89,8 +89,7 @@ test('fin d’un relevé de prix : enregistré tout de suite, sans attendre 5 se
   const { t } = env;
   t.db.userId = 'U1';
   await t.fetchPricesFor([['C7', 'R']], 'status', 'carte', 'cartes');
-  const shared = JSON.parse(t.store.get(KEY) || '{}');
-  assert.ok(shared.prices && shared.prices.C7, 'le prix relevé est déjà remis en texte');
+  assert.ok(t.store.get(KEY + '.p.C7'), 'le prix relevé est déjà remis en texte (son entrée, 1.32)');
 });
 
 test('fin d’une réception du pool : enregistrée tout de suite, sans attendre 5 secondes', async () => {
@@ -101,8 +100,7 @@ test('fin d’une réception du pool : enregistrée tout de suite, sans attendre
   Object.assign(t.db.pool, { url: 'https://pool.test/', key: 'cle-du-groupe-assez-longue-123', on: true });
   await t.poolFeed(true);
   assert.ok(t.db.obsSales.C9, 'la vente est reçue');
-  const shared = JSON.parse(t.store.get(KEY) || '{}');
-  assert.ok(shared.obsSales && shared.obsSales.C9, 'et déjà remise en texte');
+  assert.ok(t.store.get(KEY + '.o.C9'), 'et déjà remise en texte (son entrée, 1.32)');
 });
 
 // ----- prix -----

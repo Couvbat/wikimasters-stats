@@ -38,7 +38,7 @@ class El {
 //   gate : promesse à attendre avant que l'ouverture aboutisse ; failWrites() : vrai pour faire échouer les écritures ;
 //   corruptReads : getAll renvoie chaque texte suivi de 'x' ; failReads() : vrai pour faire échouer une lecture ;
 //   openThrows : open lève une exception.
-// stats.tx : nombre de transactions readwrite ouvertes.
+// stats.tx : nombre de transactions readwrite ouvertes ; stats.puts : clés écrites, dans l'ordre ; stats.reads : lectures complètes (getAll).
 function fakeIndexedDB(opt, data, stats) {
   const later = f => setImmediate(f);
   const request = () => ({ result: undefined, error: null, onsuccess: null, onerror: null });
@@ -65,9 +65,9 @@ function fakeIndexedDB(opt, data, stats) {
         while (queue.length) {
           const { r, fn, args } = queue.shift();
           if (fn === 'get') r.result = staged.get(args[0]);
-          else if (fn === 'put') staged.set(args[1], String(args[0]));
+          else if (fn === 'put') { staged.set(args[1], String(args[0])); stats.puts.push(args[1]); }
           else if (fn === 'delete') staged.delete(args[0]);
-          else if (fn === 'getAll') r.result = [...staged.values()].map(v => (opt.corruptReads ? v + 'x' : v));
+          else if (fn === 'getAll' && ++stats.reads) r.result = [...staged.values()].map(v => (opt.corruptReads ? v + 'x' : v));
           else if (fn === 'getAllKeys') r.result = [...staged.keys()];
           if (r.onsuccess) r.onsuccess({ target: r });
         }
@@ -132,7 +132,7 @@ function load({ reject = () => false, fetch = async () => reply({}), fast = fals
     key: i => [...store.keys()][i] ?? null,
     get length() { return store.size; }
   };
-  const idbData = idb ? idb.data || new Map() : null, idbStats = { tx: 0 };
+  const idbData = idb ? idb.data || new Map() : null, idbStats = { tx: 0, puts: [], reads: 0 };
   const requests = [];
   const window = { fetch: async (url, init) => { requests.push(String(url)); return fetch(String(url), init); }, addEventListener: listen, innerWidth: 1000, innerHeight: 800 };
   const document = { readyState: 'loading', visibilityState: 'visible', addEventListener: listen, createElement: t => new El(t), createElementNS: (n, t) => new El(t) };
