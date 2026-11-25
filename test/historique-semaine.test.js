@@ -129,17 +129,21 @@ test('bulle : un historique reçu change la ligne « Repères »', () => {
 });
 
 // ----- Tâche 4 : la courbe avec les semaines -----
-test('courbe : moyennes par semaine et barres min–max, sans casser les formes de la 1.29.0', () => {
+test('courbe : moyennes par semaine (minimum et maximum au survol), sans casser les formes de la 1.29.0', () => {
   const { t } = load();
   const pts = [{ t: NOW - DAY, p: 120, k: 'pro' }, { t: NOW - 2 * DAY, p: 110, k: 'prov' }];
   const weeks = [wk(23, 100, 3, 60, 180), wk(16, 105, 4, 70, 200), wk(9, 115, 5, 80, 160)];
-  const svg = t.cardChart(pts, [], '30', NOW, { med7: null, medBase: null }, weeks);
+  const svg = t.cardChart(pts, [], '30', NOW, weeks);
   const find = (n, pred, out = []) => { if (n && typeof n === 'object') { if (pred(n)) out.push(n); for (const k of n.children || []) find(k, pred, out); } return out; };
+  const text = n => (n.children || []).map(k => (typeof k === 'object' ? text(k) : String(k))).join(' ').replace(/[  ]/g, ' ');
   assert.equal(find(svg, n => n.tagName === 'polyline').length, 1);
-  assert.equal(find(svg, n => n.tagName === 'line' && n.attrs.stroke === '#4b5563').length, 3);
+  assert.equal(find(svg, n => n.tagName === 'line' && n.attrs.stroke === '#4b5563').length, 0, 'plus de barres min–max : elles traversaient tout le graphique');
+  const marks = find(svg, n => n.tagName === 'rect' && n.attrs.class === 'week');
+  assert.equal(marks.length, 3);
+  assert.match(text(marks[0]), /de 60 à 180 ₩/);
   assert.equal(find(svg, n => n.tagName === 'circle').length, 2);
   assert.equal(find(svg, n => n.attrs && n.attrs['stroke-dasharray']).length, 0);
-  const only = t.cardChart([], [], 'all', NOW, null, weeks);
+  const only = t.cardChart([], [], 'all', NOW, weeks);
   assert.ok(!find(only, n => n.tagName === 'text' && (n.children || []).join('').includes('aucune vente')).length, 'des semaines seules suffisent');
 });
 
@@ -229,4 +233,15 @@ test('bulle : sans vente connue à cette rareté, l’historique donne quand mê
   const lines = t.badgeFor('C1', null, {}).lines;
   assert.ok(lines.some(l => /^Repères : plus cher que d’habitude/.test(l)), lines.join('\n'));
   assert.ok(lines.includes('Aucune vente connue : la carte vaut la défausse, 1 ₩.'));
+});
+
+// ----- 1.30.2 : la ligne du site n'est plus collée au bord -----
+test('courbe : une moyenne du site hors des ventes agrandit l’axe au lieu d’être collée au bord', () => {
+  const { t } = load();
+  const pts = Array.from({ length: 12 }, (_, i) => ({ t: NOW - (1 + i) * DAY, p: 95 + i, k: 'pro' }));
+  const svg = t.cardChart(pts, [], 'all', NOW, [wk(23, 50, 3), wk(16, 200, 4), wk(9, 100, 5)], 1200);
+  const find = (n, pred, out = []) => { if (n && typeof n === 'object') { if (pred(n)) out.push(n); for (const k of n.children || []) find(k, pred, out); } return out; };
+  const own = n => (n.children || []).filter(k => typeof k !== 'object').join('').replace(/[  ]/g, ' ');
+  const ys = find(svg, n => n.tagName === 'text' && / ₩$/.test(own(n))).map(n => Number(own(n).replace(/[^\d]/g, '')));
+  assert.ok(ys[0] <= 50 && ys[ys.length - 1] >= 200, ys.join(' '));
 });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.30.1
+// @version      1.30.2
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.30.1';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.30.2';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -3141,6 +3141,8 @@
     .chart text{font-size:11px;fill:#8b9a94;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
     .tip{position:absolute;top:6px;transform:translateX(-50%);background:#1c2622;border:1px solid #33413b;border-radius:6px;
       padding:4px 8px;font-size:12px;color:#e5e7eb;white-space:nowrap;pointer-events:none;display:none}
+    .tip.ctip{line-height:1.5;padding:6px 10px;box-shadow:0 4px 14px #0008;z-index:2;white-space:normal;max-width:min(560px,calc(100% - 8px))}
+    .tip.ctip .hl{color:#fff;font-weight:600}
     .cbtn{background:none;border:0;padding:0 2px;margin-left:4px;cursor:pointer;font-size:13px;opacity:.7}
     .cbtn:hover{opacity:1}
     .card-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px}
@@ -4696,11 +4698,12 @@
   }
   // Bornes de l'axe des prix : 2e et 98e centiles (interpolés), pour qu'une vente aberrante n'écrase pas les autres ;
   // le minimum et le maximum sous 10 valeurs. Des valeurs toutes égales gardent un écart d'un ₩ de chaque côté.
+  // Quantile interpolé d'une liste triée.
+  const quantile = (v, f) => { const i = f * (v.length - 1), k = Math.floor(i); return k + 1 < v.length ? v[k] + (v[k + 1] - v[k]) * (i - k) : v[k]; };
   function chartBounds(values) {
     const v = values.filter(Number.isFinite).sort((a, b) => a - b);
     if (!v.length) return [0, 1];
-    const q = f => { const i = f * (v.length - 1), k = Math.floor(i); return k + 1 < v.length ? v[k] + (v[k + 1] - v[k]) * (i - k) : v[k]; };
-    let lo = v.length < 10 ? v[0] : q(0.02), hi = v.length < 10 ? v[v.length - 1] : q(0.98);
+    let lo = v.length < 10 ? v[0] : quantile(v, 0.02), hi = v.length < 10 ? v[v.length - 1] : quantile(v, 0.98);
     if (hi - lo < 1) { lo -= 1; hi += 1; }
     return [lo, hi];
   }
@@ -4717,71 +4720,259 @@
     return out.sort((x, y) => x.t - y.t);
   }
   const POINT_KIND = { pro: 'Pro', exact: 'exacte', prov: 'provisoire', own: 'toi', s: 'ta vente', b: 'ton achat' };
-  // points : [{ t (ms), p, k: pro|exact|prov|own }] ; marks : [{ t, p, k: s|b }] ; lines : { med7, medBase } (null sous les minimums) ;
-  // weeks : les semaines de l'historique du site à cette rareté ([début, moyenne, min, max, ventes]), ou rien ; width : la largeur
-  // réelle de la place, en pixels. La courbe est dessinée à cette largeur (480 à 1 600, 760 si on ne la connaît pas) : la feuille de
-  // style l'étire à 100 %, et une largeur fixe agrandissait tout, texte compris, sur un écran large.
-  function cardChart(points, marks, period, now, lines, weeks, width) {
-    const W = Math.round(Math.min(1600, Math.max(480, num(width) || 760))), H = 220, L = 54, R = 12, T = 10, B = 26;
+  // Un pas « rond » pour l'axe des prix (1, 2, 2,5 ou 5 fois une puissance de 10), pour environ n intervalles ; jamais sous 1 ₩.
+  function niceStep(range, n) {
+    const raw = Math.max(range, 1e-9) / n, pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    return Math.max(1, [1, 2, 2.5, 5, 10].map(m => m * pow).find(v => v >= raw));
+  }
+  // Les dates de l'axe : chaque jour, tous les 2 jours, chaque lundi ou un lundi sur deux, sinon le 1er du mois (1, 2, 3, 6 ou
+  // 12 mois) ; le pas le plus fin qui laisse au moins 70 px entre deux dates. Minuit à l'heure locale.
+  function dateTicks(x0, x1, px) {
+    const span = Math.max(DAY, x1 - x0), fits = ms => px * ms / span >= 70, out = [];
+    const d = new Date(x0);
+    d.setHours(0, 0, 0, 0);
+    const days = [1, 2, 7, 14].find(n => fits(n * DAY));
+    if (days) {
+      while (d.getTime() < x0 || (days >= 7 && d.getDay() !== 1)) d.setDate(d.getDate() + 1);
+      for (; d.getTime() <= x1; d.setDate(d.getDate() + days)) out.push([d.getTime(), String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0')]);
+      return out;
+    }
+    const months = [1, 2, 3, 6].find(n => fits(n * 30.44 * DAY)) || 12;
+    d.setDate(1);
+    while (d.getTime() < x0 || d.getMonth() % months) d.setMonth(d.getMonth() + 1);
+    for (; d.getTime() <= x1; d.setMonth(d.getMonth() + months)) out.push([d.getTime(), d.toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' })]);
+    return out;
+  }
+  // Le trait du prix médian de la courbe, lissé : des tranches de temps comptées depuis maintenant (1 jour, 2 jours, 1 semaine,
+  // 2 semaines ou 1 mois : la plus fine qui donne au moins 3 tranches, 3 ventes par tranche en moyenne, et 14 px par tranche),
+  // et pour chaque tranche qui a des ventes, la médiane et les quartiles des ventes de la tranche et de ses deux voisines (5 ventes
+  // au moins). Le trait est coupé là où deux tranches de suite n'ont aucune vente. Rien quand les ventes sont trop rares.
+  // Rend { label, size (ms), runs: [[{ t, med, q1, q3 }]] } ou null.
+  const TREND_SIZES = [[1, 'sur 3 jours glissants'], [2, 'sur 6 jours glissants'], [7, 'sur 3 semaines glissantes'],
+    [14, 'sur 6 semaines glissantes'], [30, 'sur 3 mois glissants']];
+  function chartTrend(pts, x0, now, plotW) {
+    const span = now - x0;
+    const size = TREND_SIZES.find(([d]) => {
+      const n = Math.ceil(span / (d * DAY));
+      return span / (d * DAY) >= 3 && pts.length / n >= 3 && plotW / n >= 14;
+    });
+    if (!size) return null;
+    const bins = new Map();
+    for (const pt of pts) {
+      const i = Math.floor((now - pt.t) / (size[0] * DAY));
+      if (!bins.has(i)) bins.set(i, []);
+      bins.get(i).push(pt);
+    }
+    const runs = [];
+    let run = null, last = null;
+    for (const i of [...bins.keys()].sort((a, b) => b - a)) {
+      const v = [i + 1, i, i - 1].flatMap(k => (bins.get(k) || []).map(x => x.p)).sort((a, b) => a - b);
+      if (v.length < 5) continue;
+      const own = bins.get(i);
+      if (!run || last - i > 2) runs.push(run = []);
+      run.push({ t: own.reduce((sum, x) => sum + x.t, 0) / own.length, med: quantile(v, 0.5), q1: quantile(v, 0.25), q3: quantile(v, 0.75) });
+      last = i;
+    }
+    return runs.length ? { label: size[1], size: size[0] * DAY, runs } : null;
+  }
+  // points : [{ t (ms), p, k: pro|exact|prov|own }] ; marks : [{ t, p, k: s|b }] ; weeks : les semaines de l'historique du site
+  // à cette rareté ([début, moyenne, min, max, ventes]), ou rien ; width : la largeur réelle de la place, en pixels. La courbe est
+  // dessinée à cette largeur (480 à 3 000, 760 si on ne la connaît pas) et jamais affichée plus large : texte et hauteur gardent
+  // leur taille.
+  // Pour qu'elle se lise : une légende des seuls symboles dessinés ; des prix ronds et des dates sur les axes, avec leurs lignes
+  // de repère ; le prix médian en trait et la moitié centrale des ventes en bande ; l'axe des dates qui commence à la première
+  // donnée ; les ventes hors échelle en triangles au bord ; les moyennes du site jamais collées au bord (l'axe des prix les contient).
+  // chartLayout fait la mise en place (période, échelles, légende), partagée par le dessin (cardChart) et la bulle (chartHoverAt).
+  function chartLayout(points, marks, period, now, weeks, width) {
+    const W = Math.round(Math.min(3000, Math.max(480, num(width) || 760))), R = 14, B = 26, PH = 230;
     const per = CHART_PERIODS.find(x => x[0] === period) || CHART_PERIODS[1];
+    const from = per[2] ? now - per[2] * DAY : -Infinity;
     // Chaque semaine est placée en son milieu (ramené à maintenant pour la semaine en cours).
     const wk = (Array.isArray(weeks) ? weeks : [])
       .filter(w => Array.isArray(w) && Number.isFinite(Date.parse(w[0] + 'T00:00:00Z')) && num(w[1]) > 0)
       .map(w => { const t = Date.parse(w[0] + 'T00:00:00Z'); return { t, mid: Math.min(t + 3.5 * DAY, now), avg: num(w[1]), min: num(w[2]) || num(w[1]), max: num(w[3]) || num(w[1]), n: num(w[4]) }; })
       .sort((a, b) => a.t - b.t);
-    const x0 = per[2] ? now - per[2] * DAY : Math.min(now - DAY, ...points.concat(marks).map(pt => pt.t), ...wk.map(w => w.t));
-    const inRange = pt => pt.t >= x0 && pt.t <= now;
-    const pts = points.filter(inRange), mks = marks.filter(inRange), wks = wk.filter(w => w.mid >= x0 && w.t <= now);
-    // Jamais affichée plus large que sa largeur de dessin : au-delà de 1 600 px de place, elle n'est plus étirée (texte et hauteur
-    // garderaient sinon leur agrandissement sur un très grand écran).
+    const inRange = pt => pt.t >= from && pt.t <= now;
+    const pts = points.filter(inRange), mks = marks.filter(inRange), wks = wk.filter(w => w.mid >= from && w.t <= now);
+    if (!pts.length && !mks.length && !wks.length) return { empty: true, W, H: 280 };
+    // L'axe des dates commence à la première donnée de la période : 90 jours avec 20 jours de ventes ne laissent pas 70 jours vides.
+    const first = Math.min(...pts.map(pt => pt.t), ...mks.map(pt => pt.t), ...wks.map(w => Math.max(w.t, from)));
+    const x0 = Math.max(from, Math.min(now - DAY, first - 0.02 * Math.max(DAY, now - first)));
+    // L'axe des prix : les ventes sans les aberrantes (voir chartBounds), plus toutes les moyennes du site, arrondi à des prix ronds.
+    let [lo, hi] = chartBounds(pts.concat(mks).map(pt => pt.p));
+    if (!pts.length && !mks.length) [lo, hi] = chartBounds(wks.map(w => w.avg));
+    for (const w of wks) { lo = Math.min(lo, w.avg); hi = Math.max(hi, w.avg); }
+    const step = niceStep(hi - lo, 4);
+    lo = Math.max(0, Math.floor(lo / step) * step);
+    hi = Math.max(lo + step, Math.ceil(hi / step) * step);
+    const yTicks = [];
+    for (let v = lo; v <= hi + step / 2; v += step) yTicks.push(Math.round(v * 100) / 100);
+    const L = 16 + 6.2 * Math.max(...yTicks.map(v => (fmt(v) + ' ₩').length));
+    const out = pt => pt.p > hi || pt.p < lo;
+    const trend = chartTrend(pts, x0, now, W - L - R);
+    // La légende, en haut : les seuls symboles dessinés, sur autant de lignes qu'il faut.
+    const legend = [];
+    if (pts.some(pt => pt.k !== 'prov' && !out(pt))) legend.push(['●', '#34d399', 'une vente']);
+    if (pts.some(pt => pt.k === 'prov' && !out(pt))) legend.push(['○', '#34d399', 'prix provisoire (un minimum)']);
+    if (trend) legend.push(['━', '#d1fae5', 'prix médian ' + trend.label]);
+    if (trend && trend.runs.some(run => run.length > 1)) legend.push(['▮', '#2f6b55', 'la moitié des ventes']);
+    if (pts.some(out)) legend.push(['▲', '#f87171', 'vente hors échelle']);
+    if (mks.some(m => m.k === 's')) legend.push(['◆', '#60a5fa', 'ta vente']);
+    if (mks.some(m => m.k === 'b')) legend.push(['◆', '#f59e0b', 'ton achat']);
+    if (wks.length) legend.push(['■', '#94a3b8', 'moyenne par semaine du site']);
+    let lx = 8, row = 0;
+    const items = legend.map(([glyph, color, text]) => {
+      const w = 16 + 6.2 * text.length + 18;
+      if (lx > 8 && lx + w > W - R) { row++; lx = 8; }
+      const it = { glyph, color, text, x: lx, row };
+      lx += w;
+      return it;
+    });
+    const T = 14 + 16 * (legend.length ? row + 1 : 0), H = T + PH + B;
+    const X = t => L + (t - x0) / Math.max(1, now - x0) * (W - L - R);
+    const Y = p => T + (hi - Math.min(hi, Math.max(lo, p))) / (hi - lo) * (H - T - B);
+    return { W, H, L, R, T, B, now, x0, lo, hi, yTicks, X, Y, out, pts, mks, wks, trend, legend: items };
+  }
+  // tip : la bulle (un élément vide, posé à côté de la courbe dans son cadre), pour le détail au survol ; rien dans les tests.
+  function cardChart(points, marks, period, now, weeks, width, tip) {
+    const lay = chartLayout(points, marks, period, now, weeks, width);
+    const { W, H, L, R, T, B, X, Y } = lay;
     const svg = s('svg', { viewBox: '0 0 ' + W + ' ' + H, width: '100%', role: 'img', style: 'max-width:' + W + 'px' });
-    if (!pts.length && !mks.length && !wks.length) {
+    if (lay.empty) {
       svg.append(s('text', { x: W / 2, y: H / 2, 'text-anchor': 'middle' }, 'aucune vente sur cette période'));
       return svg;
     }
-    const [lo, hi] = chartBounds(pts.concat(mks).map(pt => pt.p).concat(wks.map(w => w.avg)));
-    const X = t => L + (t - x0) / Math.max(1, now - x0) * (W - L - R);
-    // Une vente hors bornes est dessinée au bord, en rouge.
-    const Y = p => T + (hi - Math.min(hi, Math.max(lo, p))) / (hi - lo) * (H - T - B);
-    const tip = pt => s('title', null, fmtDate(pt.t) + ' · ' + fmt(pt.p) + ' ₩ · ' + POINT_KIND[pt.k]);
-    svg.append(
-      s('line', { x1: L, x2: W - R, y1: H - B, y2: H - B, stroke: '#33413b' }),
-      s('text', { x: L - 6, y: Y(hi) + 4, 'text-anchor': 'end' }, fmt(Math.round(hi)) + ' ₩'),
-      s('text', { x: L - 6, y: Y(lo) + 4, 'text-anchor': 'end' }, fmt(Math.round(lo)) + ' ₩'),
-      s('text', { x: L, y: H - 8 }, fmtDate(x0)),
-      s('text', { x: W - R, y: H - 8, 'text-anchor': 'end' }, fmtDate(now)));
-    // Le repère 1 : la médiane des 30 jours d'avant en pointillés, celle des 7 derniers jours en trait plein.
-    const seg = (from, to, v, dashed) => {
-      from = Math.max(from, x0);
-      if (v == null || to <= from) return;
-      const a = { x1: X(from), x2: X(to), y1: Y(v), y2: Y(v), stroke: dashed ? '#9ca3af' : '#f59e0b', 'stroke-width': 1.5 };
-      if (dashed) a['stroke-dasharray'] = '4 4';
-      svg.append(s('line', a));
-    };
-    seg(now - 37 * DAY, now - 7 * DAY, lines && lines.medBase, true);
-    seg(now - 7 * DAY, now, lines && lines.med7, false);
-    // L'historique du site, sous les ventes : une barre du minimum au maximum de chaque semaine, et la ligne de ses moyennes.
-    for (const w of wks) {
-      svg.append(s('line', { x1: X(w.mid), x2: X(w.mid), y1: Y(w.max), y2: Y(w.min), stroke: '#4b5563', 'stroke-width': 4, 'stroke-linecap': 'round', opacity: 0.7 },
+    const tipOf = pt => s('title', null, fmtDate(pt.t) + ' · ' + fmt(pt.p) + ' ₩ · ' + POINT_KIND[pt.k]);
+    for (const it of lay.legend) {
+      const y = 14 + 16 * it.row;
+      svg.append(s('text', { class: 'legend', x: it.x, y, style: 'fill:' + it.color + ';font-size:12px' }, it.glyph),
+        s('text', { class: 'legend', x: it.x + 16, y, style: 'fill:#cbd5d1' }, it.text));
+    }
+    // Le quadrillage, sous tout le reste.
+    for (const v of lay.yTicks) {
+      svg.append(s('line', { class: 'grid', x1: L, x2: W - R, y1: Y(v), y2: Y(v), stroke: v === lay.lo ? '#33413b' : '#222c28' }),
+        s('text', { x: L - 8, y: Y(v) + 4, 'text-anchor': 'end' }, fmt(v) + ' ₩'));
+    }
+    for (const [t, label] of dateTicks(lay.x0, lay.now, W - L - R)) {
+      const x = X(t);
+      svg.append(s('line', { class: 'grid', x1: x, x2: x, y1: T, y2: H - B, stroke: '#1c2420' }),
+        s('text', { x, y: H - 8, 'text-anchor': x < L + 18 ? 'start' : x > W - R - 18 ? 'end' : 'middle' }, label));
+    }
+    // Le prix médian et la moitié centrale des ventes, sous les points ; une tranche isolée n'a pas de bande.
+    const trend = lay.trend;
+    for (const b of trend ? trend.runs.filter(run => run.length > 1) : []) {
+      svg.append(s('polygon', { points: b.map(x => X(x.t) + ',' + Y(x.q3)).concat(b.slice().reverse().map(x => X(x.t) + ',' + Y(x.q1))).join(' '),
+        fill: '#34d399', opacity: 0.13 }, s('title', null, 'la moitié des ventes, ' + trend.label)));
+    }
+    // Une vente Pro, exacte ou à toi : point plein ; un prix provisoire, qui n'est qu'un minimum : point creux ; une vente hors de
+    // l'échelle : triangle rouge au bord, pointé vers elle.
+    const r = lay.pts.length > 120 ? 2.6 : 3.2;
+    for (const pt of lay.pts) {
+      const x = X(pt.t);
+      if (lay.out(pt)) {
+        const y = pt.p > lay.hi ? T : H - B, d = pt.p > lay.hi ? 1 : -1;
+        svg.append(s('path', { d: 'M' + x + ' ' + y + 'L' + (x - 4) + ' ' + (y + 7 * d) + 'L' + (x + 4) + ' ' + (y + 7 * d) + 'Z', fill: '#f87171' }, tipOf(pt)));
+      } else {
+        svg.append(s('circle', pt.k === 'prov'
+          ? { cx: x, cy: Y(pt.p), r, fill: 'none', stroke: '#34d399', 'stroke-width': 1.3, opacity: 0.8 }
+          : { cx: x, cy: Y(pt.p), r, fill: '#34d399', opacity: 0.55 }, tipOf(pt)));
+      }
+    }
+    // Le trait du prix médian, au-dessus des points ; une tranche isolée est un petit trait horizontal.
+    for (const b of trend ? trend.runs : []) {
+      const line = b.length > 1 ? b.map(x => X(x.t) + ',' + Y(x.med)) : [(X(b[0].t) - 7) + ',' + Y(b[0].med), (X(b[0].t) + 7) + ',' + Y(b[0].med)];
+      svg.append(s('polyline', { points: line.join(' '), fill: 'none', stroke: '#d1fae5', 'stroke-width': 2.4, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' },
+        s('title', null, 'prix médian ' + trend.label)));
+    }
+    // L'historique du site : la ligne de ses moyennes par semaine, un carré par semaine (minimum, maximum et ventes au survol).
+    if (lay.wks.length > 1) {
+      svg.append(s('polyline', { points: lay.wks.map(w => X(w.mid) + ',' + Y(w.avg)).join(' '), fill: 'none', stroke: '#94a3b8', 'stroke-width': 1.8 }));
+    }
+    for (const w of lay.wks) {
+      svg.append(s('rect', { class: 'week', x: X(w.mid) - 3.5, y: Y(w.avg) - 3.5, width: 7, height: 7, fill: '#94a3b8' },
         s('title', null, 'semaine du ' + fmtDate(w.t) + ' : moyenne ' + fmt(Math.round(w.avg)) + ' ₩, de ' + fmt(w.min) + ' à ' + fmt(w.max) + ' ₩, ' +
           plural(w.n, 'vente', 'ventes') + ' (historique du site)')));
     }
-    if (wks.length > 1) {
-      svg.append(s('polyline', { points: wks.map(w => X(w.mid) + ',' + Y(w.avg)).join(' '), fill: 'none', stroke: '#cbd5e1', 'stroke-width': 1.6 }));
-    }
-    // Une vente Pro, exacte ou à toi : point plein ; un prix provisoire, qui n'est qu'un minimum : point creux.
-    for (const pt of pts) {
-      const color = pt.p < lo || pt.p > hi ? '#f87171' : '#34d399';
-      svg.append(s('circle', pt.k === 'prov'
-        ? { cx: X(pt.t), cy: Y(pt.p), r: 3.2, fill: 'none', stroke: color, 'stroke-width': 1.5 }
-        : { cx: X(pt.t), cy: Y(pt.p), r: 3.2, fill: color }, tip(pt)));
-    }
-    for (const m of mks) {
+    for (const m of lay.mks) {
       const x = X(m.t), y = Y(m.p), d = 5;
       svg.append(s('path', { d: 'M' + x + ' ' + (y - d) + 'L' + (x + d) + ' ' + y + 'L' + x + ' ' + (y + d) + 'L' + (x - d) + ' ' + y + 'Z',
-        fill: m.k === 's' ? '#60a5fa' : '#f59e0b' }, tip(m)));
+        fill: m.k === 's' ? '#60a5fa' : '#f59e0b', stroke: '#0f1412', 'stroke-width': 1 }, tipOf(m)));
     }
+    if (tip) hoverChart(svg, lay, tip);
     return svg;
+  }
+  // Ce que dit la bulle à la position (x, y) de la courbe, en unités du dessin : la vente la plus proche (à 10 px près), puis le
+  // jour sous la souris (ses ventes, le prix médian du trait, la moyenne du site de la semaine). null hors du graphique.
+  // Rend { x (le trait vertical), focus: { cx, cy } | null, lines: [texte] }.
+  function chartHoverAt(lay, x, y) {
+    if (!lay || lay.empty || x < lay.L || x > lay.W - lay.R || y < lay.T - 6 || y > lay.H - lay.B + 6) return null;
+    const t = lay.x0 + (x - lay.L) / (lay.W - lay.L - lay.R) * (lay.now - lay.x0);
+    const lines = [];
+    let near = null, best = 10;
+    for (const pt of lay.pts.concat(lay.mks)) {
+      const py = lay.out(pt) ? (pt.p > lay.hi ? lay.T + 4 : lay.H - lay.B - 4) : lay.Y(pt.p);
+      const d = Math.hypot(lay.X(pt.t) - x, py - y);
+      if (d <= best) { best = d; near = Object.assign({ py }, pt); }
+    }
+    const hhmm = ts => new Date(ts).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    if (near) {
+      const own = near.k === 's' || near.k === 'b';
+      lines.push((near.k === 's' ? 'Ta vente' : near.k === 'b' ? 'Ton achat' : 'Vente') + ' du ' + fmtDate(near.t) + ' à ' + hhmm(near.t) + ' : ' + fmt(near.p) + ' ₩' +
+        (own ? '' : ' (' + POINT_KIND[near.k] + ')'));
+    }
+    const day = new Date(t);
+    day.setHours(0, 0, 0, 0);
+    const a = day.getTime(), next = new Date(a);
+    next.setDate(next.getDate() + 1);
+    const label = day.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+    const v = lay.pts.filter(pt => pt.t >= a && pt.t < next.getTime()).map(pt => pt.p).sort((p, q) => p - q);
+    lines.push(label.charAt(0).toUpperCase() + label.slice(1) + ' : ' + (!v.length ? 'aucune vente'
+      : v.length === 1 ? '1 vente, à ' + fmt(v[0]) + ' ₩'
+        : plural(v.length, 'vente', 'ventes') + ', médiane ' + fmt(Math.round(quantile(v, 0.5))) + ' ₩, de ' + fmt(v[0]) + ' à ' + fmt(v[v.length - 1]) + ' ₩'));
+    if (lay.trend) {
+      let m = null;
+      for (const run of lay.trend.runs) for (const b of run) if (Math.abs(b.t - t) <= lay.trend.size && (!m || Math.abs(b.t - t) < Math.abs(m.t - t))) m = b;
+      if (m) lines.push('Prix médian ' + lay.trend.label + ' : ' + fmt(Math.round(m.med)) + ' ₩ · la moitié des ventes entre ' + fmt(Math.round(m.q1)) + ' et ' +
+        fmt(Math.round(m.q3)) + ' ₩');
+    }
+    const w = lay.wks.find(x => t >= x.t && t < x.t + 7 * DAY);
+    if (w) lines.push('Site, semaine du ' + fmtDate(w.t) + ' : moyenne ' + fmt(Math.round(w.avg)) + ' ₩, de ' + fmt(w.min) + ' à ' + fmt(w.max) + ' ₩, ' + plural(w.n, 'vente', 'ventes'));
+    return { x: near ? lay.X(near.t) : x, focus: near ? { cx: lay.X(near.t), cy: near.py } : null, lines };
+  }
+  // La bulle de la courbe : un trait vertical sous la souris, un cercle autour de la vente la plus proche, et le détail à côté
+  // (à droite de la souris sur la moitié gauche, à gauche sur la moitié droite).
+  function hoverChart(svg, lay, tip) {
+    const cross = s('line', { class: 'cross', y1: lay.T, y2: lay.H - lay.B, stroke: '#8b9a94', 'stroke-width': 1, opacity: 0.7, visibility: 'hidden' });
+    const focus = s('circle', { class: 'focus', r: 6, fill: 'none', stroke: '#f3f4f6', 'stroke-width': 2, visibility: 'hidden' });
+    svg.append(cross, focus);
+    const hide = () => { cross.setAttribute('visibility', 'hidden'); focus.setAttribute('visibility', 'hidden'); tip.style.display = 'none'; };
+    svg.addEventListener('mousemove', ev => {
+      const box = svg.getBoundingClientRect(), k = box.width ? lay.W / box.width : 1;
+      const hov = chartHoverAt(lay, (ev.clientX - box.left) * k, (ev.clientY - box.top) * k);
+      if (!hov) { hide(); return; }
+      cross.setAttribute('x1', hov.x);
+      cross.setAttribute('x2', hov.x);
+      cross.setAttribute('visibility', 'visible');
+      if (hov.focus) {
+        focus.setAttribute('cx', hov.focus.cx);
+        focus.setAttribute('cy', hov.focus.cy);
+        focus.setAttribute('visibility', 'visible');
+      } else focus.setAttribute('visibility', 'hidden');
+      tip.replaceChildren(...hov.lines.map((l, i) => h('div', i === 0 && hov.focus ? { class: 'hl' } : null, l)));
+      // Un SVG n'a pas d'offsetLeft : la place de la bulle se compte depuis le cadre (sans son bord), où elle est posée.
+      const host = tip.offsetParent || svg.parentNode, hb = host ? host.getBoundingClientRect() : { left: box.left, top: box.top };
+      const dx = box.left - hb.left - ((host && host.clientLeft) || 0), dy = box.top - hb.top - ((host && host.clientTop) || 0);
+      // Mesurée posée au bord gauche (sa largeur ne dépend pas de l'ancienne place), puis à côté de la souris, jamais hors du cadre.
+      tip.style.transform = 'none';
+      tip.style.left = '0px';
+      tip.style.top = (dy + lay.T / k) + 'px';
+      tip.style.display = 'block';
+      const w = num(tip.offsetWidth), hw = num(host && host.clientWidth), px = dx + hov.x / k;
+      let left = hov.x > lay.W / 2 ? px - w - 14 : px + 14;
+      if (hw) left = Math.max(4, Math.min(left, hw - w - 4));
+      tip.style.left = left + 'px';
+    });
+    svg.addEventListener('mouseleave', hide);
   }
   // replaceChildren du navigateur n'aplatit pas les tableaux et écrirait « null » pour un élément absent : on lui passe une liste propre.
   const fillEl = (el, ...kids) => el.replaceChildren(...kids.flat(5).filter(k => k != null && k !== false));
@@ -4856,13 +5047,11 @@
     const points = src.sales.map(x => ({ t: Math.min(Date.parse(x.t), now), p: x.p, k: ptKind(x) })).filter(pt => Number.isFinite(pt.t));
     const periods = h('div', { class: 'periods' }, CHART_PERIODS.map(([k, label]) =>
       h('button', { class: 'b' + (k === period ? ' on' : ''), onclick: () => { c.period = k; renderCard(); } }, label)));
-    // Les médianes du repère 1 ne sont dessinées que si le prix du moment vient des ventes (pas des moyennes du site).
-    const lines = cues.moment.src === 'sales' ? { med7: cues.moment.med7, medBase: cues.moment.medBase } : { med7: null, medBase: null };
-    // La place de la courbe : la largeur du corps de la fiche, moins le cadre de la courbe.
-    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, lines, weeks, num(e.cardBody.clientWidth) - 24));
-    const legend = h('div', { class: 'note' }, '● vente Pro, exacte ou à toi · ○ prix provisoire, un minimum · ◆ bleu : ta vente, ◆ orange : ton achat · ' +
-      'pointillés : médiane des 30 jours d’avant, trait orange : celle des 7 derniers jours.' +
-      (weeks ? ' Ligne grise : moyenne par semaine du site, barres : son minimum et son maximum.' : '') + ' Survole un point pour le détail.');
+    // La place de la courbe : la largeur du corps de la fiche, moins le cadre de la courbe. La bulle du survol va dans le même cadre.
+    const tip = h('div', { class: 'tip ctip' });
+    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, weeks, num(e.cardBody.clientWidth) - 24, tip), tip);
+    const legend = h('div', { class: 'note' }, 'Passe la souris sur la courbe : la vente la plus proche, et le détail du jour (ses ventes, le prix médian, ' +
+      'la moyenne du site de la semaine).');
     fillEl(e.cardBody, h('div', { class: 'cues' }, rows), periods, chart, legend, actions, table, more);
   }
 
