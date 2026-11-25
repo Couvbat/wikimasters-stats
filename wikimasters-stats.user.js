@@ -231,9 +231,21 @@
       let v;
       try { v = JSON.parse(text); } catch (e) { v = undefined; }
       if (v == null || !okKey(id) || (s === 'o' ? !Array.isArray(v) : !isObj(v))) { written.set(k, ['illisible']); continue; }
+      // La même carte aussi dans wmstats.v1 : base d'avant la 1.32, ou réécrite par un onglet resté sur une version plus ancienne.
+      // Fusionnée, et pas dans written : elle sera écrite au prochain enregistrement.
+      if (Object.prototype.hasOwnProperty.call(base[sec], id)) { base[sec][id] = mergeCard(s, base[sec][id], v); continue; }
       base[sec][id] = v;
       written.set(k, cardSig(s, v));
     }
+  }
+  // Fusion d'une carte de wmstats.v1 (a) avec son entrée (b) : ventes observées réunies ; relevé le plus récent, avec toutes les
+  // ventes des deux ; historique par semaine le plus récent.
+  function mergeCard(s, a, b) {
+    if (s === 'o') return Array.isArray(a) ? keepAll(b.concat(a)) : b;
+    if (!isObj(a)) return b;
+    const [n, o] = num(a.at) > num(b.at) ? [a, b] : [b, a];
+    if (s === 'h') return n;
+    return Object.assign({}, n, { sales: keepAll((Array.isArray(n.sales) ? n.sales : []).concat(Array.isArray(o.sales) ? o.sales : [])) });
   }
   // Pose dans la file d'écriture les cartes dont la signature a changé, et efface les entrées des cartes disparues.
   function saveCards() {

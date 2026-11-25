@@ -88,3 +88,39 @@ test('mode localStorage : une seule clé, comme avant', () => {
   assert.ok(JSON.parse(env.store.get(KEY)).prices.C1, 'les ventes restent dans wmstats.v1');
   assert.deepEqual([...env.store.keys()].filter(k => /\.(p|o|h)\./.test(k)), []);
 });
+
+// ----- Tâche 2 : passage au nouveau rangement et fusion -----
+const W_OLD = { R: [['2026-11-09', 9, 5, 20, 3]] }, W_NEW = { R: [['2026-11-16', 10, 5, 20, 3]] };
+const base = (sections, more = {}) => {
+  const data = new Map([['wmstats.meta', '{"since":1}'], [KEY, JSON.stringify(Object.assign({ userId: '', prices: {}, obsSales: {}, hist: {} }, sections))]]);
+  for (const [k, v] of Object.entries(more)) data.set(k, JSON.stringify(v));
+  data.hasKv = true;
+  return data;
+};
+
+test('une base d’avant la 1.32 passe aux entrées par carte', async () => {
+  const data = base({ prices: { C1: { at: 1, sales: [{ p: 5, t: T, r: 'R' }] } }, obsSales: { C2: [{ p: 7, t: T, g: 0 }] }, hist: { C3: { at: 2, w: W_OLD } } });
+  const { t, idbData } = await idbLoad(data);
+  assert.ok(t.db.prices.C1 && t.db.obsSales.C2 && t.db.hist.C3, 'les cartes sont chargées');
+  t.saveDb();
+  await t.store.idle();
+  assert.deepEqual(entry(idbData, KEY + '.o.C2'), [{ p: 7, t: T, g: 0 }]);
+  assert.ok(entry(idbData, KEY + '.p.C1') && entry(idbData, KEY + '.h.C3'));
+  const s = shared(idbData);
+  assert.deepEqual([s.prices, s.obsSales, s.hist], [{}, {}, {}]);
+});
+
+test('un onglet d’avant la 1.32 a réécrit wmstats.v1 : fusion sans perte', async () => {
+  const data = base(
+    { prices: { C1: { at: 5, sales: [{ p: 6, t: T, r: 'R' }] } }, obsSales: { C2: [{ p: 8, t: T2, g: 0 }, { p: 7, t: T, g: 0 }] }, hist: { C3: { at: 9, w: W_NEW } } },
+    { [KEY + '.p.C1']: { at: 10, sales: [{ p: 5, t: T2, r: 'R' }] }, [KEY + '.o.C2']: [{ p: 7, t: T, g: 0 }], [KEY + '.h.C3']: { at: 2, w: W_OLD } });
+  const { t, idbData } = await idbLoad(data);
+  assert.deepEqual(plain(t.db.obsSales.C2), [{ p: 8, t: T2, g: 0 }, { p: 7, t: T, g: 0 }], 'ventes observées réunies');
+  assert.equal(t.db.prices.C1.at, 10, 'le relevé le plus récent');
+  assert.deepEqual(plain(t.db.prices.C1.sales), [{ p: 5, t: T2, r: 'R' }, { p: 6, t: T, r: 'R' }], 'ventes réunies');
+  assert.deepEqual(plain(t.db.hist.C3), { at: 9, w: W_NEW }, 'l’historique le plus récent');
+  t.saveDb();
+  await t.store.idle();
+  assert.equal(entry(idbData, KEY + '.o.C2').length, 2, 'la fusion est écrite');
+  assert.deepEqual(shared(idbData).obsSales, {});
+});
