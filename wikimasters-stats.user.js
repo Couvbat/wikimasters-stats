@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.30.0
+// @version      1.30.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.30.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.30.1';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -3206,7 +3206,14 @@
     { k: 'n', t: 'Ventes', price: true, get: r => pr(r, 'n'), cell: r => (r.price ? r.price.n : '—') },
     { k: 'total', t: 'Total', price: true, get: r => r.total, cell: r => estCell(r, r.total) },
     { k: 'adv', t: 'Conseil', tip: 'Vendre si la valeur dépasse 1 ₩ (ce que rapporte la défausse), sinon défausser.', price: true, get: r => (pr(r, 'n') ? r.price.med : null),
-      cell: r => { const a = advice(r.price); return r.price ? h('span', { class: 'adv ' + a.cls }, a.text) : '—'; } },
+      // « Vendre ~… » ouvre le formulaire de mise en vente sur le site, comme le nom de la carte dans l'onglet À vendre.
+      cell: r => {
+        const a = advice(r.price);
+        if (!r.price) return '—';
+        return a.cls === 'sell'
+          ? h('a', { class: 'adv sell go', href: sellLink(r.cardId), target: '_blank', rel: 'noopener', title: 'Ouvrir le formulaire de mise en vente sur le site' }, a.text, ' ↗')
+          : h('span', { class: 'adv ' + a.cls }, a.text);
+      } },
     { k: 'ask', t: 'En vente à', tip: 'Annonce la moins chère d’un autre joueur sur cette carte, en ce moment. Un point = une offre a déjà été faite ; entre parenthèses, le nombre d’annonces. Rempli par « Trouver les annonces ».', ask: true, get: r => (r.ask ? r.ask.a : null),
       cell: r => (r.ask ? auctionLink(r.ask.i, fmt(r.ask.a) + (r.ask.b ? ' •' : '') + (r.ask.list.length > 1 ? ' (' + r.ask.list.length + ')' : ''),
         (r.ask.list.length > 1 ? r.ask.list.length + ' annonces, de ' + fmt(r.ask.a) + ' à ' + fmt(r.ask.list[r.ask.list.length - 1].a) + ' ₩ ; la moins chère : ' : '') +
@@ -4711,9 +4718,11 @@
   }
   const POINT_KIND = { pro: 'Pro', exact: 'exacte', prov: 'provisoire', own: 'toi', s: 'ta vente', b: 'ton achat' };
   // points : [{ t (ms), p, k: pro|exact|prov|own }] ; marks : [{ t, p, k: s|b }] ; lines : { med7, medBase } (null sous les minimums) ;
-  // weeks : les semaines de l'historique du site à cette rareté ([début, moyenne, min, max, ventes]), ou rien.
-  function cardChart(points, marks, period, now, lines, weeks) {
-    const W = 760, H = 220, L = 54, R = 12, T = 10, B = 26;
+  // weeks : les semaines de l'historique du site à cette rareté ([début, moyenne, min, max, ventes]), ou rien ; width : la largeur
+  // réelle de la place, en pixels. La courbe est dessinée à cette largeur (480 à 1 600, 760 si on ne la connaît pas) : la feuille de
+  // style l'étire à 100 %, et une largeur fixe agrandissait tout, texte compris, sur un écran large.
+  function cardChart(points, marks, period, now, lines, weeks, width) {
+    const W = Math.round(Math.min(1600, Math.max(480, num(width) || 760))), H = 220, L = 54, R = 12, T = 10, B = 26;
     const per = CHART_PERIODS.find(x => x[0] === period) || CHART_PERIODS[1];
     // Chaque semaine est placée en son milieu (ramené à maintenant pour la semaine en cours).
     const wk = (Array.isArray(weeks) ? weeks : [])
@@ -4847,7 +4856,8 @@
       h('button', { class: 'b' + (k === period ? ' on' : ''), onclick: () => { c.period = k; renderCard(); } }, label)));
     // Les médianes du repère 1 ne sont dessinées que si le prix du moment vient des ventes (pas des moyennes du site).
     const lines = cues.moment.src === 'sales' ? { med7: cues.moment.med7, medBase: cues.moment.medBase } : { med7: null, medBase: null };
-    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, lines, weeks));
+    // La place de la courbe : la largeur du corps de la fiche, moins le cadre de la courbe.
+    const chart = h('div', { class: 'chart' }, cardChart(points, cardMarks(id, rarity), period, now, lines, weeks, num(e.cardBody.clientWidth) - 24));
     const legend = h('div', { class: 'note' }, '● vente Pro, exacte ou à toi · ○ prix provisoire, un minimum · ◆ bleu : ta vente, ◆ orange : ton achat · ' +
       'pointillés : médiane des 30 jours d’avant, trait orange : celle des 7 derniers jours.' +
       (weeks ? ' Ligne grise : moyenne par semaine du site, barres : son minimum et son maximum.' : '') + ' Survole un point pour le détail.');

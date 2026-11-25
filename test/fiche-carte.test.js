@@ -402,3 +402,25 @@ test('pastille au clavier : Entrée ou Espace ouvrent la fiche, les autres touch
   assert.equal(t.ui.card.id, 'C1');
   assert.deepEqual(calls, ['prevent', 'stop', 'prevent', 'stop']);
 });
+
+// ----- 1.30.1 : la courbe à la taille réelle de la fiche -----
+test('courbe : dessinée à la largeur donnée, sans agrandissement (480 à 1 600, 760 sans largeur)', () => {
+  const { t } = load();
+  const pts = [{ t: NOW - DAY, p: 120, k: 'pro' }, { t: NOW - 2 * DAY, p: 110, k: 'pro' }];
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 1200).attrs.viewBox, '0 0 1200 220');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 5000).attrs.viewBox, '0 0 1600 220');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, null, 300).attrs.viewBox, '0 0 480 220');
+  assert.equal(t.cardChart(pts, [], '30', NOW, null, null).attrs.viewBox, '0 0 760 220');
+});
+
+test('fiche : la courbe prend la largeur du corps de la fiche', () => {
+  const { t } = load();
+  t.db.prices.C1 = { at: NOW, sales: [sale(1, 120), sale(2, 110)] };
+  const out = {};
+  t.ui.el.cardHead = { replaceChildren() {} };
+  t.ui.el.cardBody = { clientWidth: 1224, replaceChildren(...k) { out.body = k; } };
+  t.ui.el.cardStatus = { textContent: '' };
+  t.openCard('C1', { rarity: 'SR', title: 'X' });
+  t.renderCard();
+  assert.equal(find(out.body, n => n.tagName === 'svg')[0].attrs.viewBox, '0 0 1200 220');
+});
