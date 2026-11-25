@@ -1734,6 +1734,13 @@
       if (src.mixed) out.rel.level = 0;
       // Relevé Pro reçu d'un ami : son pseudo, pour le dire au survol.
       out.by = (src.kind === 'pro' && rec && rec.by) || '';
+      // L'âge de la dernière vente vieillit : le calcul est aussi à refaire quand l'âge affiché (en jours arrondis, relCell)
+      // change, et quand il passe 30 ou 90 jours (seuils de la fiabilité).
+      const ts0 = Date.parse(sales[0].t);
+      if (Number.isFinite(ts0)) {
+        const age = Math.max(0, (now - ts0) / DAY);
+        until = Math.min(until, ts0 + (Math.floor(age + 0.5) + 0.5) * DAY, ...[30, 90].map(d => ts0 + d * DAY + 1).filter(x => x > now));
+      }
     }
     priceCache.set(key, { out, until, sig });
     return out;

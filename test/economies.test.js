@@ -112,6 +112,22 @@ test('prix : une liste de ventes qui change sur place (une vente ajoutée) est r
   assert.notEqual(t.priceOf('C1'), c1);
 });
 
+test('prix : un prix gardé se refait quand la fiabilité ou l’âge affiché de la dernière vente change avec le temps', () => {
+  let now = Date.parse('2026-11-25T12:00:00Z');
+  const { t } = load({ clock: () => now });
+  const old = d => Array.from({ length: 5 }, (_, i) => ({ p: 100 + i, t: new Date(now - d * DAY - i * 60e3).toISOString(), g: 0, x: 1 }));
+  t.db.obsSales.C1 = old(29.2); // 5 ventes d'il y a 29 jours : fiable
+  assert.equal(t.priceOf('C1').rel.level, 2);
+  assert.equal(Math.round(t.priceOf('C1').rel.age), 29);
+  now += 0.5 * DAY; // 29,7 jours : l'âge affiché passe à 30
+  assert.equal(Math.round(t.priceOf('C1').rel.age), 30);
+  assert.equal(t.priceOf('C1').rel.level, 2);
+  now += 1 * DAY; // 30,7 jours : plus de 30 jours, moyen
+  assert.equal(t.priceOf('C1').rel.level, 1);
+  now += 60 * DAY; // 90,7 jours : douteux
+  assert.equal(t.priceOf('C1').rel.level, 0);
+});
+
 test('prix : la rareté d’une carte apprise après coup (collection) est prise au dessin suivant', () => {
   const { t, document } = load();
   document.querySelectorAll = () => [];
