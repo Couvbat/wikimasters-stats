@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.31.0
+// @version      1.31.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.31.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.31.1';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -316,8 +316,10 @@
     ? ' · ⚠ Enregistrement impossible : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.'
     : ' · ⚠ Navigateur plein : tes derniers changements ne sont pas enregistrés et seront perdus au rechargement de la page.');
   // En mode 'idb', les données (plusieurs Mo quand le pool est reçu) ne sont remises en texte qu'une fois par rafale
-  // d'enregistrements : au plus une fois toutes les SAVE_EVERY ms pendant un relevé, et tout de suite quand l'onglet est caché ou
-  // quitté, avant un changement de compte, et quand on attend la fin des écritures (store.idle).
+  // d'enregistrements : au plus une fois toutes les SAVE_EVERY ms pendant un relevé, et tout de suite à la fin d'un relevé ou d'une
+  // réception du pool, quand l'onglet est caché, avant un changement de compte, et quand on attend la fin des écritures (store.idle).
+  // Quand la page se ferme ou se recharge, Chrome ne finit pas une écriture IndexedDB commencée à ce moment-là, même petite
+  // (vérifié) : pagehide reste un dernier essai, sans garantie.
   const SAVE_EVERY = 5000;
   function saveDb() {
     // Rien n'est encore chargé : écrire maintenant remplacerait les données par un db vide.
@@ -1238,6 +1240,7 @@
       return locks ? await locks.request('wmstats-feed', { ifAvailable: true }, lock => (lock ? feedPass(f) : 0)) : await feedPass(f);
     } finally {
       poolState.feeding = false;
+      saveNow(true); // comme à la fin d'un relevé : tout de suite
     }
   }
   async function feedPass(f) {
@@ -2102,7 +2105,9 @@
     job.running = true; job.stop = false; job.where = where || 'status'; job.delay = PRICE_DELAY;
     setStatus(msg, where); syncButtons();
   }
-  function endJob(msg, where) { job.running = false; setStatus(msg, where); syncButtons(); refresh(); }
+  // Fin d'un relevé : enregistré tout de suite (saveNow), pas 5 secondes plus tard. Une écriture de plus de 10 Mo commencée quand la
+  // page se ferme n'a pas le temps de finir : on recharge souvent la page juste après un relevé.
+  function endJob(msg, where) { job.running = false; saveNow(true); setStatus(msg, where); syncButtons(); refresh(); }
 
   // Lit toute la collection, page après page. hit(f) fait la requête f (et l'attente qui suit) ; onPage(n) suit la progression.
   // Renvoie null si stop() devient vrai avant la fin : une collection lue à moitié ne doit rien remplacer.

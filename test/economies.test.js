@@ -4,7 +4,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { load, fakeBus, fire } = require('./harness');
+const { load, reply, fakeBus, fire } = require('./harness');
 
 const KEY = 'wmstats.v1';
 const DAY = 864e5;
@@ -77,6 +77,32 @@ test('IndexedDB : un autre onglet qui enregistre ne fait pas perdre un enregistr
   assert.equal(a.t.db.pool.url, 'A', 'A ne recharge pas par-dessus son changement');
   await a.t.store.idle();
   assert.equal(JSON.parse(data.get(KEY)).pool.url, 'A');
+});
+
+// 1.31.1 : une écriture de plus de 10 Mo commencée quand la page se ferme n'a pas le temps de finir (vu dans Chrome). La fin d'un
+// relevé et celle d'une réception du pool enregistrent donc tout de suite, sans attendre les 5 secondes.
+const T = '2026-11-25T10:00:00.000Z';
+test('fin d’un relevé de prix : enregistré tout de suite, sans attendre 5 secondes', async () => {
+  const fetch = async url => reply(/\/sales/.test(url) ? { recent: [{ final_price: 77, settled_at: T, rarity: 'R' }] } : {});
+  const env = load({ idb: {}, fetch });
+  await env.ready;
+  const { t } = env;
+  t.db.userId = 'U1';
+  await t.fetchPricesFor([['C7', 'R']], 'status', 'carte', 'cartes');
+  const shared = JSON.parse(t.store.get(KEY) || '{}');
+  assert.ok(shared.prices && shared.prices.C7, 'le prix relevé est déjà remis en texte');
+});
+
+test('fin d’une réception du pool : enregistrée tout de suite, sans attendre 5 secondes', async () => {
+  const fetch = async () => reply({ pool: 'p1', max: 1, next: 1, more: false, sales: [[1, 'C9', 42, T, 'exact', 'A1', 0, null]], pro: [], unsold: [] });
+  const env = load({ idb: {}, fetch });
+  await env.ready;
+  const { t } = env;
+  Object.assign(t.db.pool, { url: 'https://pool.test/', key: 'cle-du-groupe-assez-longue-123', on: true });
+  await t.poolFeed(true);
+  assert.ok(t.db.obsSales.C9, 'la vente est reçue');
+  const shared = JSON.parse(t.store.get(KEY) || '{}');
+  assert.ok(shared.obsSales && shared.obsSales.C9, 'et déjà remise en texte');
 });
 
 // ----- prix -----
