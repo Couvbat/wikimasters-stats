@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.32.0
+// @version      1.32.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.32.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.32.1';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -2749,15 +2749,25 @@
   }
   // Relève les ventes d'une liste [carte, rareté].
   // Rend vrai quand le relevé s'est fini sans erreur ni arrêt (y compris quand rien n'était à relever).
+  // Des prix encore à jour : pour une seule carte, quand et par qui elle a été relevée.
+  function freshText(todo) {
+    if (todo.length !== 1) return 'Tous les prix sont déjà à jour.';
+    const [id, r] = todo[0], rec = db.prices[id];
+    return 'Prix déjà à jour (relevé ' + ago(fetchedAt(rec, r)) + (isObj(rec) && rec.by ? ' par ' + rec.by : '') + ') : rien à relever.';
+  }
   async function fetchPricesFor(todo, where, one, many) {
+    const todo0 = todo;
     if (job.running) return false;
     if (!canFetchPrices()) { setStatus('Compte pas encore reconnu : recharge la page (F5) pour relever les prix.', where); return false; }
     if (!todo.length) { setStatus('Tous les prix sont déjà à jour.', where); return true; }
     startJob('Prix : 0 / ' + todo.length, where);
     if (poolOn()) {
-      await poolPrefetch(todo.map(x => x[0]));
+      // Déjà à jour avant même de demander au pool : on le dit tel quel. (Jusqu'à la 1.32.0, la fiche disait « dans le pool du
+      // groupe » même quand le pool n'y était pour rien, ou qu'il était injoignable.)
+      const fresh = !todo.some(([id, r]) => priceDue(id, r));
+      if (!fresh) await poolPrefetch(todo.map(x => x[0]));
       todo = todo.filter(([id, r]) => priceDue(id, r));
-      if (!todo.length) { endJob('Tous les prix étaient dans le pool du groupe.', where); return true; }
+      if (!todo.length) { endJob(fresh ? freshText(todo0) : 'Tous les prix étaient dans le pool du groupe.', where); return true; }
     }
     let i = 0;
     try {
@@ -4840,7 +4850,12 @@
     // L'historique ne part qu'après un relevé des ventes sans erreur ni arrêt, et jamais pendant la pause imposée par le site.
     const ok = await fetchPricesFor([[c.id, c.rarity]], 'cardStatus', 'carte', 'cartes');
     const before = ui.el.cardStatus ? String(ui.el.cardStatus.textContent || '') : '';
-    if (ok && !job.running && !job.stop && !(num(db.autoPauseUntil) > Date.now())) {
+    const pause = num(db.autoPauseUntil);
+    if (ok && pause > Date.now()) {
+      // Le site limite les relevés automatiques : l'historique attend, et la fiche dit jusqu'à quand.
+      setStatus((before ? before + ' ' : '') + 'Historique non relevé : le site a mis en pause les relevés automatiques jusqu’au ' + fmtDate(pause) +
+        ' à ' + new Date(pause).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) + '.', 'cardStatus');
+    } else if (ok && !job.running && !job.stop) {
       startJob('Historique des prix…', 'cardStatus');
       const say = msg => (before ? before + ' ' : '') + msg;
       try {
