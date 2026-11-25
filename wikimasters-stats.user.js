@@ -200,15 +200,23 @@
   const readJson = k => { try { return JSON.parse(store.get(k)); } catch (e) { return null; } };
   // ---------- une entrée par carte (1.32, mode 'idb') ----------
   // Chaque carte de prices, obsSales et hist a sa propre entrée (wmstats.v1.p.<carte>, .o., .h.) : un enregistrement n'écrit que
-  // les cartes qui ont changé, et wmstats.v1 garde ces trois sections vides. written garde, pour chaque entrée, la signature de la
-  // carte à sa dernière écriture ou lecture : une liste remplacée ou allongée, un relevé daté autrement, change sa signature.
+  // les cartes qui ont changé, et wmstats.v1 garde ces trois sections vides. written[section] garde, pour chaque carte, sa signature
+  // à la dernière écriture ou lecture de son entrée : une liste remplacée ou allongée, un relevé daté autrement, la change.
+  // La comparaison se fait sans rien créer (sameCard) : un enregistrement passe sur toutes les cartes (25 000 avec le pool).
   const CARD_SECS = [['p', 'prices'], ['o', 'obsSales'], ['h', 'hist']];
   const CARD_SEC = new Map(CARD_SECS);
   const cardKey = (s, id) => KEY + '.' + s + '.' + id;
-  const cardSig = (s, v) => (s === 'o' ? [v, v ? v.length : -1]
-    : s === 'p' ? [v, v && v.sales, v && Array.isArray(v.sales) ? v.sales.length : -1, v && v.at, v && v.by, v && v.ats] : [v]);
-  const sameSig = (a, b) => !!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]);
-  const written = new Map();
+  const salesLen = v => (v && Array.isArray(v.sales) ? v.sales.length : -1);
+  const cardSig = (s, v) => (s === 'o' ? [v, v ? v.length : -1] : s === 'p' ? [v, v && v.sales, salesLen(v), v && v.at, v && v.by, v && v.ats] : [v]);
+  const sameCard = (s, v, g) => !!g && v === g[0] && (s === 'o' ? (v ? v.length : -1) === g[1]
+    : s !== 'p' || (!!v && v.sales === g[1] && salesLen(v) === g[2] && v.at === g[3] && v.by === g[4] && v.ats === g[5]));
+  const written = { p: new Map(), o: new Map(), h: new Map() };
+  // Une clé d'entrée par carte → [section, carte], sinon null (wmstats.v1, partie personnelle).
+  const cardOfKey = k => {
+    const pre = KEY + '.';
+    if (!k.startsWith(pre) || k.charAt(pre.length + 1) !== '.' || !CARD_SEC.has(k.charAt(pre.length))) return null;
+    return [k.charAt(pre.length), k.slice(pre.length + 2)];
+  };
   let db = loadDb();
   // keep : un db dont on garde les trois sections rangées carte par carte (rechargement de wmstats.v1 et de la partie personnelle
   // seulement, quand un autre onglet les a écrites).
@@ -227,21 +235,19 @@
   }
   // Les entrées par carte rejoignent leur section. Une entrée illisible est ignorée, et effacée au prochain enregistrement.
   function loadCards(base) {
-    written.clear();
-    for (const [, sec] of CARD_SECS) if (!isObj(base[sec])) base[sec] = {};
-    const pre = KEY + '.';
+    for (const [s, sec] of CARD_SECS) { written[s].clear(); if (!isObj(base[sec])) base[sec] = {}; }
     for (const [k, text] of store.texts) {
-      if (!k.startsWith(pre) || k.charAt(pre.length + 1) !== '.') continue;
-      const s = k.charAt(pre.length), sec = CARD_SEC.get(s), id = k.slice(pre.length + 2);
-      if (!sec) continue; // partie personnelle (.u.)
+      const c = cardOfKey(k);
+      if (!c) continue;
+      const [s, id] = c, sec = CARD_SEC.get(s);
       let v;
       try { v = JSON.parse(text); } catch (e) { v = undefined; }
-      if (v == null || !okKey(id) || (s === 'o' ? !Array.isArray(v) : !isObj(v))) { written.set(k, ['illisible']); continue; }
+      if (v == null || !okKey(id) || (s === 'o' ? !Array.isArray(v) : !isObj(v))) { written[s].set(id, ['illisible']); continue; }
       // La même carte aussi dans wmstats.v1 : base d'avant la 1.32, ou réécrite par un onglet resté sur une version plus ancienne.
       // Fusionnée, et pas dans written : elle sera écrite au prochain enregistrement.
       if (Object.prototype.hasOwnProperty.call(base[sec], id)) { base[sec][id] = mergeCard(s, base[sec][id], v); continue; }
       base[sec][id] = v;
-      written.set(k, cardSig(s, v));
+      written[s].set(id, cardSig(s, v));
     }
   }
   // Fusion d'une carte de wmstats.v1 (a) avec son entrée (b) : ventes observées réunies ; relevé le plus récent, avec toutes les
@@ -255,18 +261,19 @@
   }
   // Pose dans la file d'écriture les cartes dont la signature a changé, et efface les entrées des cartes disparues.
   function saveCards() {
-    const seen = new Set();
     for (const [s, sec] of CARD_SECS) {
-      const part = db[sec];
+      const part = db[sec], w = written[s];
+      let n = 0;
       for (const id in part) {
-        const k = cardKey(s, id), sig = cardSig(s, part[id]);
-        seen.add(k);
-        if (sameSig(written.get(k), sig)) continue;
-        store.set(k, JSON.stringify(part[id]));
-        written.set(k, sig);
+        n++;
+        const v = part[id];
+        if (sameCard(s, v, w.get(id))) continue;
+        store.set(cardKey(s, id), JSON.stringify(v));
+        w.set(id, cardSig(s, v));
       }
+      // Toutes les cartes de la section sont maintenant dans w : s'il y en a plus, certaines ont disparu.
+      if (w.size > n) for (const id of w.keys()) if (!Object.prototype.hasOwnProperty.call(part, id)) { store.del(cardKey(s, id)); w.delete(id); }
     }
-    for (const k of [...written.keys()]) if (!seen.has(k)) { store.del(k); written.delete(k); }
   }
   // Filet de sécurité (toutes les 10 minutes, minuteTick) : chaque carte est remise en texte et comparée à son entrée. Rattrape une
   // liste changée sur place sans que sa signature change. Rend le nombre d'entrées réécrites.
@@ -277,7 +284,7 @@
       for (const id in db[sec]) {
         const k = cardKey(s, id), text = JSON.stringify(db[sec][id]);
         if (store.texts.get(k) !== text) { store.set(k, text); n++; }
-        written.set(k, cardSig(s, db[sec][id]));
+        written[s].set(id, cardSig(s, db[sec][id]));
       }
     }
     return n;
@@ -287,19 +294,20 @@
   // personnelle de ce compte : rechargées si l'onglet n'est pas occupé, au plus une fois par seconde (reloadBase).
   function applyRemote(got) {
     let cards = 0, base = false;
-    const mine = acctKey(db.userId), pre = KEY + '.';
+    const mine = acctKey(db.userId);
     for (const [k, text] of got) {
       if (store.pending.has(k)) continue; // écrite ici, en attente : la nôtre gagne
       if (text == null) store.texts.delete(k); else store.texts.set(k, text);
-      const s = k.startsWith(pre) && k.charAt(pre.length + 1) === '.' ? k.charAt(pre.length) : '', sec = CARD_SEC.get(s);
-      if (!sec) { if (k === KEY || k === mine) base = true; continue; }
-      const id = k.slice(pre.length + 2), cur = db[sec][id];
-      if (cur === undefined ? written.has(k) : !sameSig(written.get(k), cardSig(s, cur))) continue;
+      const c = cardOfKey(k);
+      if (!c) { if (k === KEY || k === mine) base = true; continue; }
+      const [s, id] = c, sec = CARD_SEC.get(s), w = written[s];
+      const cur = Object.prototype.hasOwnProperty.call(db[sec], id) ? db[sec][id] : undefined;
+      if (cur === undefined ? w.has(id) : !sameCard(s, cur, w.get(id))) continue;
       let v = null;
       try { v = text == null ? null : JSON.parse(text); } catch (e) { continue; }
-      if (v == null) { delete db[sec][id]; written.delete(k); } else if (okKey(id) && (s === 'o' ? Array.isArray(v) : isObj(v))) {
+      if (v == null) { delete db[sec][id]; w.delete(id); } else if (okKey(id) && (s === 'o' ? Array.isArray(v) : isObj(v))) {
         db[sec][id] = v;
-        written.set(k, cardSig(s, v));
+        w.set(id, cardSig(s, v));
       } else continue;
       cards++;
     }
