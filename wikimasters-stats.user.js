@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.33.0
+// @version      1.33.1
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.33.0';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.33.1';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -156,6 +156,9 @@
       if (store.texts.get(k) === text) return; // rien de changé (déjà écrit, ou déjà en attente) : pas d'écriture
       store.texts.set(k, text); store.pending.set(k, text); scheduleFlush();
     },
+    // Une partie (wmstats.v1, partie personnelle, 1.33.1) : le texte provisoire tout de suite dans le cache, et merge(texte de la
+    // base) appelé dans la transaction d'écriture, qui rend le texte à écrire (ou null : rien à écrire).
+    setMerge: (k, text, merge) => { store.texts.set(k, text); store.pending.set(k, merge); scheduleFlush(); },
     del: k => {
       if (store.mode !== 'idb') { try { localStorage.removeItem(k); } catch (e) {} return; }
       store.texts.delete(k); store.pending.set(k, null); scheduleFlush();
@@ -217,8 +220,10 @@
     if (!k.startsWith(pre) || k.charAt(pre.length + 1) !== '.' || !CARD_SEC.has(k.charAt(pre.length))) return null;
     return [k.charAt(pre.length), k.slice(pre.length + 2)];
   };
-  // Le texte de wmstats.v1 et de la partie personnelle du compte tel que cet onglet l'a lu ou écrit en dernier (syncPart).
-  const partBase = new Map();
+  // wmstats.v1 et la partie personnelle du compte (fusion entre onglets, syncParts) : partSeen, le texte de la base tel que cet onglet
+  // l'a lu ou écrit en dernier (un autre texte veut dire qu'un autre onglet a écrit) ; partBase, cette même version telle que cet
+  // onglet l'a chargée, normalisée (cleanDb) : la référence pour savoir quels champs cet onglet a changés.
+  const partSeen = new Map(), partBase = new Map();
   let db = loadDb();
   function loadDb() {
     const base = defaults();
@@ -230,11 +235,10 @@
     if (store.mode === 'idb') loadCards(base);
     const out = cleanDb(base);
     if (store.mode === 'idb') {
-      // La référence de la fusion (syncPart) : le texte lu ; sans texte dans la base, les données telles que chargées (par défaut).
       const { shared, mine: own } = splitDb(out), acct = acctKey(out.userId);
-      partBase.clear();
-      partBase.set(KEY, store.texts.has(KEY) ? store.texts.get(KEY) : JSON.stringify(shared));
-      partBase.set(acct, store.texts.has(acct) ? store.texts.get(acct) : JSON.stringify(own));
+      partSeen.clear(); partBase.clear();
+      partSeen.set(KEY, store.texts.get(KEY)); partSeen.set(acct, store.texts.get(acct));
+      partBase.set(KEY, JSON.stringify(shared)); partBase.set(acct, JSON.stringify(own));
     }
     return out;
   }
@@ -326,36 +330,41 @@
     reloadState.at = Date.now();
     if (syncParts(false)) { resetPrices(); refresh(); }
   }
-  // Fusion à trois de wmstats.v1 ou de la partie personnelle (1.32.2). partBase[k] : le texte que cet onglet a lu ou écrit en
-  // dernier ; store.texts[k] : ce qui est dans la base, qu'un autre onglet a pu écrire depuis. Un champ que cet onglet n'a pas
-  // changé prend la version de la base ; un champ changé ici garde la nôtre (changé des deux côtés : le dernier qui écrit).
-  // Sans cela, un onglet qui n'avait pas encore repris les derniers changements les effaçait en enregistrant autre chose : vu le
-  // 27 novembre, des ventes en cours et des achats revenaient en arrière après « Recharger mes enchères ».
-  // ours : la partie construite depuis db (splitDb) ; allow(champ) : les champs de cette partie ; apply(ours) remet dans db les
-  // champs repris. write : écrire le résultat (rien s'il est identique à la base). Rend vrai si des champs ont été repris.
-  function syncPart(k, ours, allow, apply, write) {
-    const base = partBase.get(k), remote = store.texts.get(k);
+  // Fusion à trois de wmstats.v1 ou de la partie personnelle (1.32.2, revue en 1.33.1). Un champ que cet onglet n'a pas changé
+  // depuis sa référence (partBase) prend la version de la base ; un champ changé ici garde la nôtre (changé des deux côtés : le
+  // dernier qui écrit). Sans cela, un onglet qui n'avait pas encore repris les derniers changements les effaçait en enregistrant
+  // autre chose : vu le 27 novembre, des ventes en cours et des achats revenaient en arrière après « Recharger mes enchères ».
+  // Reprend dans ours, puis dans db (apply), les champs que remote a changés et que cet onglet n'a pas changés. Rend vrai si des
+  // champs ont été repris.
+  function mergeFields(k, ours, allow, apply, remote) {
+    if (remote == null || remote === partSeen.get(k)) return false;
+    let b = {}, r = null;
+    try { b = JSON.parse(partBase.get(k) || '{}'); } catch (e) { b = {}; }
+    try { r = JSON.parse(remote); } catch (e) { r = null; }
+    if (!isObj(r)) return false;
+    if (!isObj(b)) b = {};
     let took = false;
-    if (remote != null && remote !== base) {
-      let b = {}, r = null;
-      try { b = base == null ? {} : JSON.parse(base); } catch (e) { b = {}; }
-      try { r = JSON.parse(remote); } catch (e) { r = null; }
-      if (isObj(r)) {
-        if (!isObj(b)) b = {};
-        for (const f of Object.keys(r)) {
-          if (!allow(f)) continue;
-          const o = JSON.stringify(ours[f]);
-          if (o === JSON.stringify(b[f]) && o !== JSON.stringify(r[f])) { ours[f] = r[f]; took = true; }
-        }
-        if (took) apply(ours);
-      }
+    for (const f of Object.keys(r)) {
+      if (!allow(f)) continue;
+      const o = JSON.stringify(ours[f]);
+      if (o === JSON.stringify(b[f]) && o !== JSON.stringify(r[f])) { ours[f] = r[f]; took = true; }
     }
-    if (write) {
-      const text = JSON.stringify(ours);
-      store.set(k, text);
-      partBase.set(k, text);
-    } else if (remote != null) partBase.set(k, remote);
+    if (took) apply(ours);
     return took;
+  }
+  // Écriture d'une partie : lue, fusionnée et écrite dans la même transaction (store.setMerge). La partie personnelle d'un compte
+  // quitté entre-temps (setAccount) s'écrit telle qu'elle était au moment de l'enregistrement, sans fusion.
+  function writePart(k, which, allow, apply, snapshot, text) {
+    const acct = db.userId;
+    store.setMerge(k, text, current => {
+      const live = k === KEY || acct === db.userId;
+      const ours = live ? splitDb()[which] : snapshot;
+      const took = live && mergeFields(k, ours, allow, apply, current);
+      const out = JSON.stringify(ours);
+      partSeen.set(k, out); partBase.set(k, out); store.texts.set(k, out);
+      if (took) { resetPrices(); refresh(); }
+      return out === current ? null : out;
+    });
   }
   const CARD_NAMES = new Set(CARD_SECS.map(([, sec]) => sec));
   const allowMine = f => PERSONAL_SET.has(f) || f === 'marketMine';
@@ -370,12 +379,29 @@
       if (f === 'market') { if (isObj(o.market)) { db.market.at = num(o.market.at); db.market.asks = isObj(o.market.asks) ? o.market.asks : {}; } } else db[f] = o[f];
     }
   }
-  // La partie personnelle du compte (d'abord, comme avant) puis wmstats.v1. Rend vrai si des champs venus d'ailleurs ont été repris.
+  // La partie personnelle du compte (d'abord, comme avant ; le compte au moment de l'appel) puis wmstats.v1.
+  // write faux (rechargement, un autre onglet a écrit) : les champs venus d'ailleurs, sans rien écrire ; une partie en cours
+  // d'écriture ici sera fusionnée par sa propre transaction. Rend vrai si des champs ont été repris.
+  // write vrai : seulement une partie que cet onglet a changée depuis sa référence, ou dont le texte de la base n'est pas encore
+  // sous sa forme normalisée (base d'une version précédente, première écriture) ; la fusion se fait dans la transaction.
   function syncParts(write) {
-    const { shared, mine } = splitDb();
-    const a = syncPart(acctKey(db.userId), mine, allowMine, applyMine, write); // le compte au moment de l'appel (setAccount change db.userId juste après)
-    const b = syncPart(KEY, shared, allowShared, applyShared, write);
-    return a || b;
+    const parts = splitDb();
+    let took = false;
+    for (const [k, which, allow, apply] of [[acctKey(db.userId), 'mine', allowMine, applyMine], [KEY, 'shared', allowShared, applyShared]]) {
+      const ours = parts[which];
+      if (!write) {
+        if (store.pending.has(k)) continue;
+        const remote = store.texts.get(k);
+        if (remote == null || remote === partSeen.get(k)) continue;
+        if (mergeFields(k, ours, allow, apply, remote)) took = true;
+        partSeen.set(k, remote); partBase.set(k, remote);
+        continue;
+      }
+      const text = JSON.stringify(ours);
+      if (text === partBase.get(k) && partSeen.get(k) === partBase.get(k) && !store.pending.has(k)) continue; // rien de changé ici
+      writePart(k, which, allow, apply, ours, text);
+    }
+    return took;
   }
   // ---------- base IndexedDB ----------
   const IDB_NAME = 'wmstats', IDB_STORE = 'kv', IDB_VERSION = 1;
@@ -409,7 +435,13 @@
   function idbWrite(idb, entries) {
     return new Promise((resolve, reject) => {
       const tx = idb.transaction(IDB_STORE, 'readwrite'), os = tx.objectStore(IDB_STORE);
-      for (const [k, v] of entries) { if (v == null) os.delete(k); else os.put(v, k); }
+      for (const [k, v] of entries) {
+        // Une fusion (store.setMerge) : lue, fusionnée et écrite dans cette même transaction ; un autre onglet ne peut pas écrire entre-temps.
+        if (typeof v === 'function') {
+          const g = os.get(k);
+          g.onsuccess = () => { let t = null; try { t = v(g.result == null ? null : String(g.result)); } catch (e) { t = null; } if (t != null) os.put(t, k); };
+        } else if (v == null) os.delete(k); else os.put(v, k);
+      }
       tx.oncomplete = () => resolve();
       tx.onerror = tx.onabort = () => reject(tx.error || new Error('écriture impossible'));
     });
@@ -576,8 +608,8 @@
     const mine = readJson(acctKey(uid));
     applyPersonal(db, isObj(mine) ? mine : personalDefaults());
     cleanDb(db);
-    // La partie personnelle lue devient la référence de la fusion (syncPart) ; sans texte, les données par défaut.
-    if (store.mode === 'idb') partBase.set(acctKey(uid), store.texts.has(acctKey(uid)) ? store.texts.get(acctKey(uid)) : JSON.stringify(splitDb().mine));
+    // La partie personnelle lue devient la référence de la fusion (syncParts).
+    if (store.mode === 'idb') { partSeen.set(acctKey(uid), store.texts.get(acctKey(uid))); partBase.set(acctKey(uid), JSON.stringify(splitDb().mine)); }
     resetPrices();
     saveDb();
     return true;

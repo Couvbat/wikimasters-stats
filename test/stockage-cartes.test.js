@@ -217,3 +217,50 @@ test('deux onglets : un onglet occupé qui enregistre autre chose ne remet pas l
   assert.equal(JSON.parse(data.get(KEY)).market.at, 777, 'le changement de B est enregistré');
   assert.equal(a.t.db.market.at, 777, 'et A le reprend');
 });
+
+// ----- 1.33.1 : remarques de Copilot sur la 1.32.2 -----
+const waitFor = async f => { for (let i = 0; i < 50 && !f(); i++) await new Promise(r => setTimeout(r, 50)); };
+
+test('deux onglets : B enregistre la même partie juste après A, avant d’avoir été prévenu : les deux changements restent', async () => {
+  const data = new Map(), bus = fakeBus();
+  const a = load({ idb: { data, bus } });
+  await a.ready;
+  a.t.db.selling = [{ i: 'V1', c: 'C1' }];
+  a.t.saveDb();
+  await a.t.store.idle();
+  const b = load({ idb: { data, bus } });
+  await b.ready;
+  a.t.db.selling = a.t.db.selling.concat([{ i: 'V2', c: 'C2' }, { i: 'V3', c: 'C3' }]);
+  a.t.saveDb();
+  await a.t.store.idle(); // A a écrit ; sa notification est en route vers B
+  b.t.db.cards = { x1: { cardId: 'K1', title: 'K1', rarity: 'R', count: 1 } }; // B change une autre donnée de la même partie, tout de suite
+  b.t.saveDb();
+  await b.t.store.idle();
+  await waitFor(() => a.t.db.cards.x1 && b.t.db.selling.length === 3);
+  const mine = JSON.parse(data.get(KEY + '.u._'));
+  assert.equal(mine.selling.length, 3, 'les ventes de A restent dans la base');
+  assert.deepEqual(Object.keys(mine.cards), ['x1'], 'et la collection de B aussi');
+  assert.equal(a.t.db.selling.length, 3);
+  assert.ok(a.t.db.cards.x1, 'A reprend la collection de B');
+  assert.equal(b.t.db.selling.length, 3, 'B reprend les ventes de A');
+});
+
+test('une sauvegarde ancienne sans liste de ventes : une vente ajoutée dans un autre onglet n’est pas écrasée par la liste vide par défaut', async () => {
+  const data = new Map([['wmstats.meta', '{"since":1}'], [KEY, '{"userId":"","prices":{}}'], [KEY + '.u._', '{"cards":{}}']]);
+  data.hasKv = true;
+  const bus = fakeBus();
+  const a = load({ idb: { data, bus } }), b = load({ idb: { data, bus } });
+  await a.ready;
+  await b.ready;
+  a.t.db.selling = [{ i: 'V1', c: 'C1' }];
+  a.t.saveDb();
+  await a.t.store.idle();
+  await waitFor(() => b.t.db.selling.length === 1);
+  assert.equal(b.t.db.selling.length, 1, 'B reprend la vente de A');
+  b.t.db.cards = { x1: { cardId: 'K1', title: 'K1', rarity: 'R', count: 1 } };
+  b.t.saveDb();
+  await b.t.store.idle();
+  await waitFor(() => !!a.t.db.cards.x1);
+  assert.equal(JSON.parse(data.get(KEY + '.u._')).selling.length, 1, 'la vente reste dans la base');
+  assert.equal(a.t.db.selling.length, 1);
+});
