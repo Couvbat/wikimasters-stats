@@ -143,6 +143,8 @@ Le marché compte des milliers d'enchères, donc le script ne le parcourt pas en
 
 **Bonnes affaires** : une annonce au moins 30 % sous la valeur médiane de la carte (sur 3 ventes ou plus) porte une étiquette verte « bonne affaire −40 % » et remonte en tête. Une case filtre sur elles seules. Pour qu'elles soient repérées, il faut la valeur médiane : « Relever les prix des souhaits en vente » la relève pour les seuls souhaits actuellement en vente.
 
+**Annonces trop chères** : une annonce dont le prix atteint déjà la valeur médiane de sa rareté porte l'étiquette rouge « trop cher » (enchérir reviendrait à payer la carte plus cher qu'elle ne se vend d'habitude). La case « Cacher les annonces trop chères » les retire de la liste : une carte dont toutes les annonces sont trop chères disparaît, une carte sans valeur connue ou sans annonce reste. La case reste cochée d'une visite à l'autre, pour chaque compte.
+
 **Annonces de plusieurs raretés** : chaque annonce porte la rareté de son exemplaire. La ligne d'une carte présente d'abord les annonces à la rareté de ta liste, et une annonce d'une autre rareté porte son étiquette, sur la ligne comme une fois dépliée. Bonne affaire, enchère max et marge comparent chaque annonce à la valeur de sa propre rareté.
 
 **Enchère max** : la valeur médiane de la carte. Jusqu'à ce montant, tu ne paies pas la carte plus cher qu'elle ne se vend d'habitude. L'étiquette verte « +75 ₩ » donne la marge qu'il te reste sur l'annonce de la ligne, la rouge « trop cher » dit qu'elle a déjà dépassé. En dépliant une carte, chaque annonce a sa propre marge.
