@@ -36,7 +36,7 @@
     return {
       cards: {}, prices: {}, pro: {}, userId: '', collectionAt: 0, autoPull: true,
       pulls: [], mySales: {}, market: { at: 0, max: 0, selling: null, asks: {} },
-      auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {},
+      auctions: {}, history: {}, wish: {}, wishAt: 0, wishFullAt: 0, alerts: {}, wishSeen: {}, wishHideOwned: false, wishHideDear: false,
       obs: {}, obsSales: {}, obsRar: {}, finQ: {}, trades: {}, tradesAt: 0, hist: {},
       friends: {}, me: '', sell: { min: 10, favs: false, doubt: true, v: 2 }, ov: {}, bids: [], selling: [], sellingAt: 0, tagCat: [],
       pool: { url: '', key: '', on: false, share: false, published: {}, pushAt: 0, pullAt: 0, sent: 0, recv: 0, err: '', retryAt: 0, wait: 0,
@@ -3513,6 +3513,8 @@
   }
   function syncButtons() {
     const e = ui.el;
+    if (e.wishOwnedIn) e.wishOwnedIn.checked = !!db.wishHideOwned;
+    if (e.wishDearIn) e.wishDearIn.checked = !!db.wishHideDear;
     if (e.poolInfo && !poolUi.testing) e.poolInfo.textContent = poolLine();
     if (e.acctInfo) e.acctInfo.textContent = accountLine();
     if (e.storeInfo) e.storeInfo.textContent = storeLine();
@@ -3572,6 +3574,10 @@
     const stopBtn = () => btn('Stop', 'Arrête le traitement en cours. Ce qui a déjà été relevé est gardé.', () => { job.stop = true; });
     const chk = (label, tip, checked, onchange) => h('label', { class: 'chk', 'data-tip': tip },
       h('input', { type: 'checkbox', checked: !!checked, onchange }), label);
+    // Une case dont l'état peut changer ailleurs (autre onglet, changement de compte) : son input est gardé sous e[key], et
+    // syncButtons la remet en accord avec les données à chaque dessin.
+    const chkRef = (key, label, tip, checked, onchange) => h('label', { class: 'chk', 'data-tip': tip },
+      (e[key] = h('input', { type: 'checkbox', checked: !!checked, onchange })), label);
 
     const UPD_TIP = 'Fait tout de suite, et sans limite, ce que fait la mise à jour automatique : collection et liste de souhaits si elles ont plus d’un jour, ' +
       'souhaits signalés en vente, prix à relire, prix finaux. Une requête par seconde ; Stop l’arrête.';
@@ -3775,11 +3781,11 @@
           ev => { ui.wishAvail = ev.target.checked; renderWish(); }),
         chk('Bonnes affaires seulement', 'Ne garde que les annonces au moins 30 % sous la valeur médiane.', false,
           ev => { ui.wishDeals = ev.target.checked; renderWish(); }),
-        chk('Cacher les annonces trop chères', 'Cache les annonces dont le prix atteint déjà la valeur médiane de leur rareté (« trop cher ») : ' +
+        chkRef('wishDearIn', 'Cacher les annonces trop chères', 'Cache les annonces dont le prix atteint déjà la valeur médiane de leur rareté (« trop cher ») : ' +
           'enchérir reviendrait à payer la carte plus cher qu’elle ne se vend d’habitude. Une carte dont toutes les annonces sont trop chères ' +
           'disparaît de la liste ; une carte sans valeur connue, ou sans annonce, reste.',
           db.wishHideDear, ev => { db.wishHideDear = ev.target.checked; saveDb(); renderWish(); }),
-        chk('Cacher mes cartes', 'Cache les souhaits que tu possèdes déjà, d’après ta collection chargée. Ils sont aussi exclus des recherches.',
+        chkRef('wishOwnedIn', 'Cacher mes cartes', 'Cache les souhaits que tu possèdes déjà, d’après ta collection chargée. Ils sont aussi exclus des recherches.',
           db.wishHideOwned, ev => { db.wishHideOwned = ev.target.checked; saveDb(); syncButtons(); renderWish(); }),
         e.wishFold),
       e.wishTiles, e.wishBody,

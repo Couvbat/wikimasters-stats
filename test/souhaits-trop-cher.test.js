@@ -71,3 +71,39 @@ test('onglet Souhaits : la case cochée retire la carte dont toutes les annonces
   assert.ok(s.includes('Pas chère'), 'la carte à 60 ₩ reste');
   assert.ok(!s.includes('Trop chère'), 'la carte à 140 ₩ (valeur 100 ₩) disparaît');
 });
+
+// ----- remarques de Copilot sur la PR 27 -----
+const { fakeBus } = require('./harness');
+const tick = () => new Promise(r => setImmediate(r));
+
+test('« Effacer les données de ce compte » remet la case à zéro, et les autres onglets le reprennent', async () => {
+  const data = new Map(), bus = fakeBus();
+  const a = load({ idb: { data, bus } }), b = load({ idb: { data, bus } });
+  await a.ready;
+  await b.ready;
+  a.t.db.wishHideDear = true;
+  a.t.saveDb();
+  await a.t.store.idle();
+  for (let i = 0; i < 30; i++) await tick();
+  assert.equal(b.t.db.wishHideDear, true, 'B reprend la case cochée');
+  a.t.clearAccount();
+  await a.t.store.idle();
+  // L'autre onglet recharge au plus une fois par seconde.
+  for (let i = 0; i < 40 && b.t.db.wishHideDear !== false; i++) await new Promise(r => setTimeout(r, 50));
+  assert.equal(a.t.db.wishHideDear, false);
+  assert.equal(b.t.db.wishHideDear, false, 'B reprend la remise à zéro');
+});
+
+test('les cases « Cacher… » suivent les données à chaque dessin (autre onglet, changement de compte)', () => {
+  const { t } = load();
+  t.ui.el.wishDearIn = { checked: false };
+  t.ui.el.wishOwnedIn = { checked: false };
+  t.db.wishHideDear = true;
+  t.db.wishHideOwned = true;
+  t.syncButtons();
+  assert.equal(t.ui.el.wishDearIn.checked, true);
+  assert.equal(t.ui.el.wishOwnedIn.checked, true);
+  t.db.wishHideDear = false;
+  t.syncButtons();
+  assert.equal(t.ui.el.wishDearIn.checked, false);
+});
