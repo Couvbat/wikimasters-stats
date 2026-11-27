@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiMasters – Stats de collection
 // @namespace    wm-stats
-// @version      1.32.2
+// @version      1.33.0
 // @description  Valeur de ta collection WikiMasters, cartes à vendre, bilan de tes ventes, liste de souhaits, stats de boosters, comparaison entre amis. Lecture seule : ne joue pas, n'ouvre rien, n'échange rien.
 // @match        https://www.wiki-masters.com/*
 // @match        https://wiki-masters.com/*
@@ -51,7 +51,7 @@
   // Tampermonkey met le script à jour tout seul (une fois par jour par défaut) grâce à @updateURL.
   // Pour ne pas attendre : le panneau compare la version installée à celle publiée sur GitHub, et propose un lien.
   const SCRIPT_URL = 'https://raw.githubusercontent.com/Couvbat/wikimasters-stats/main/wikimasters-stats.user.js';
-  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.32.2';
+  const VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '1.33.0';
   const newerThan = (a, b) => {
     const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number);
     for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
@@ -98,7 +98,7 @@
   // wmstats.v1.u.<compte> ; les prix du marché et les réglages d'affichage sont communs à tous, sous wmstats.v1.
   // Tant que le compte n'est pas reconnu, sa partie personnelle est sous wmstats.v1.u._.
   const PERSONAL = ['cards', 'collectionAt', 'collectionFullAt', 'pulls', 'mySales', 'auctions', 'history', 'wish', 'wishAt', 'wishFullAt',
-    'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'selling', 'sellingAt', 'tagCat', 'friends', 'me', 'sell', 'wishHideOwned'];
+    'alerts', 'wishSeen', 'trades', 'tradesAt', 'bids', 'bidsAt', 'selling', 'sellingAt', 'tagCat', 'friends', 'me', 'sell', 'wishHideOwned', 'wishHideDear'];
   const PERSONAL_SET = new Set(PERSONAL);
   const acctKey = uid => KEY + '.u.' + (uid || '_');
   function personalDefaults() {
@@ -1967,6 +1967,20 @@
   const isDeal = c => dealOf(c) > 0;
   // Enchère max conseillée : la valeur médiane. Au-delà, tu paies la carte plus cher que ce qu'elle se vend d'habitude.
   const maxBid = price => (price && price.n ? Math.max(DISCARD, Math.floor(price.med)) : null);
+  // Une annonce trop chère : son prix atteint déjà l'enchère max conseillée, la valeur médiane de sa rareté (le badge « trop cher »).
+  // Sans valeur connue, rien ne permet de le dire : elle reste.
+  const tooDear = (c, au) => { const mx = maxBid(priceForAsk(c.id, au, c.price)); return mx != null && au.a >= mx; };
+  // Case « Cacher les annonces trop chères » de l'onglet Souhaits : la ligne d'une carte sans ses annonces trop chères, la moins
+  // chère restante devenant celle de la ligne ; null quand toutes l'étaient. Une carte sans annonce reste telle quelle.
+  function withoutDear(c) {
+    if (!c || !c.ask) return c;
+    const keep = c.ask.list.filter(au => !tooDear(c, au));
+    if (!keep.length) return null;
+    if (keep.length === c.ask.list.length) return c;
+    const same = keep.filter(x => !rarOk(x.r) || x.r === c.rarity), top = (same.length ? same : keep)[0];
+    return Object.assign({}, c, { ask: Object.assign({}, c.ask, { a: top.a, b: top.b, e: top.e, i: top.i, r: rarOk(top.r) ? top.r : '',
+      list: keep, other: keep.length - same.length }) });
+  }
 
   // ---------- repères de la fiche d'une carte ----------
   // Des repères sur « maintenant », jamais un verdict : Jules décide. Sous les minimums, « pas assez de ventes » plutôt qu'un chiffre.
@@ -3761,6 +3775,10 @@
           ev => { ui.wishAvail = ev.target.checked; renderWish(); }),
         chk('Bonnes affaires seulement', 'Ne garde que les annonces au moins 30 % sous la valeur médiane.', false,
           ev => { ui.wishDeals = ev.target.checked; renderWish(); }),
+        chk('Cacher les annonces trop chères', 'Cache les annonces dont le prix atteint déjà la valeur médiane de leur rareté (« trop cher ») : ' +
+          'enchérir reviendrait à payer la carte plus cher qu’elle ne se vend d’habitude. Une carte dont toutes les annonces sont trop chères ' +
+          'disparaît de la liste ; une carte sans valeur connue, ou sans annonce, reste.',
+          db.wishHideDear, ev => { db.wishHideDear = ev.target.checked; saveDb(); renderWish(); }),
         chk('Cacher mes cartes', 'Cache les souhaits que tu possèdes déjà, d’après ta collection chargée. Ils sont aussi exclus des recherches.',
           db.wishHideOwned, ev => { db.wishHideOwned = ev.target.checked; saveDb(); syncButtons(); renderWish(); }),
         e.wishFold),
@@ -4396,8 +4414,8 @@
       withPrices ? tile('Bonnes affaires', fmt(all.filter(c => isDeal(c)).length), 'au moins ' + DEAL_PCT + ' % sous la valeur médiane') : null,
       tile('Chez un ami', fmt(atFriends), plural(Object.keys(db.friends).length, 'ami importé', 'amis importés')));
     const left = ms => { const m = Math.round(ms / 6e4); return m < 60 ? m + ' min' : Math.round(m / 60) + ' h'; };
-    const list = all
-      .filter(c => (!ui.wishRarity || c.rarity === ui.wishRarity) && (!ui.wishAvail || rank(c) < 3) && !(db.wishHideOwned && c.owned) &&
+    const list = all.map(c => (db.wishHideDear ? withoutDear(c) : c))
+      .filter(c => c && (!ui.wishRarity || c.rarity === ui.wishRarity) && (!ui.wishAvail || rank(c) < 3) && !(db.wishHideOwned && c.owned) &&
         (!ui.wishDeals || isDeal(c)))
       .sort((a, b) => rank(a) - rank(b) || dealOf(b) - dealOf(a) || (a.ask && b.ask ? a.ask.a - b.ask.a : 0) ||
         rarOrder(a.rarity) - rarOrder(b.rarity) || a.title.localeCompare(b.title));
