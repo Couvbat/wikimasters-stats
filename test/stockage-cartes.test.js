@@ -184,3 +184,36 @@ test('un onglet d’avant la 1.32 prévient sans liste de clés : toute la base 
   assert.deepEqual(plain(a.t.db.obsSales.C2), [{ p: 2, t: T, g: 0 }], 'la carte de l’ancien onglet arrive');
   assert.deepEqual(plain(a.t.db.obsSales.C1), [{ p: 1, t: T, g: 0 }], 'et les nôtres restent');
 });
+
+// ----- 1.32.2 : un onglet qui n'a pas vu les derniers changements ne les efface plus -----
+// Vu sur le site le 27 novembre : « Recharger mes enchères » montrait 5 ventes en cours, puis 3, et les achats repassaient de 381 à
+// 379. Un autre onglet, occupé au moment où il était prévenu, réécrivait toute la partie personnelle depuis sa copie d'avant.
+test('deux onglets : un onglet occupé qui enregistre autre chose ne remet pas les ventes et enchères d’avant', async () => {
+  const data = new Map(), bus = fakeBus();
+  const a = load({ idb: { data, bus } });
+  await a.ready;
+  a.t.db.selling = [{ i: 'V1', c: 'C1' }];
+  a.t.db.auctions = { V1: { c: 'C1', k: 's' } };
+  a.t.saveDb();
+  await a.t.store.idle();
+  const b = load({ idb: { data, bus } });
+  await b.ready;
+  b.t.job.running = true; // B est occupé (un relevé) quand A le prévient
+  a.t.db.selling = a.t.db.selling.concat([{ i: 'V2', c: 'C2' }, { i: 'V3', c: 'C3' }]);
+  a.t.db.auctions = Object.assign({}, a.t.db.auctions, { A2: { c: 'C2', k: 'b' }, A3: { c: 'C3', k: 'b' } });
+  a.t.saveDb();
+  await a.t.store.idle();
+  for (let i = 0; i < 30; i++) await tick();
+  b.t.db.market.at = 777; // B enregistre autre chose (sa page du marché)
+  b.t.saveDb();
+  await b.t.store.idle();
+  b.t.job.running = false;
+  for (let i = 0; i < 30; i++) await tick();
+  const mine = JSON.parse(data.get(KEY + '.u._'));
+  assert.equal(mine.selling.length, 3, 'la base garde les 3 ventes en cours');
+  assert.equal(Object.keys(mine.auctions).length, 3, 'et les 3 enchères');
+  assert.equal(a.t.db.selling.length, 3, 'A les garde');
+  assert.equal(b.t.db.selling.length, 3, 'B les a reprises');
+  assert.equal(JSON.parse(data.get(KEY)).market.at, 777, 'le changement de B est enregistré');
+  assert.equal(a.t.db.market.at, 777, 'et A le reprend');
+});

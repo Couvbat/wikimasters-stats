@@ -225,6 +225,8 @@ Depuis la 1.32, les ventes de chaque carte sont rangées à part dans cette base
 
 Ne reviens pas à une version d'avant la 1.32 : elle n'afficherait plus les ventes (elles restent rangées, et reviennent avec la 1.32). Si un onglet resté sur une ancienne version enregistre entre-temps, la 1.32 fusionne ce qu'il a écrit, sans rien perdre.
 
+Plusieurs onglets du site ouverts : chacun reprend ce que les autres ont changé, champ par champ. Depuis la 1.32.2, un onglet qui n'avait pas encore vu tes derniers changements (ventes en cours, enchères, collection…) ne les efface plus en enregistrant autre chose. Si deux onglets changent la même chose au même moment, le dernier qui enregistre l'emporte.
+
 Tes données sont rangées dans le navigateur, donc Chrome et Zen ont chacun les leurs. « Exporter toutes mes données » crée un fichier à importer dans l'autre navigateur. L'import fusionne : il ajoute ce qui manque et ne remplace un prix ou une collection que par plus récent. Garde ce fichier pour toi, il contient des prix issus de ton compte.
 
 ### Plusieurs comptes
